@@ -165,6 +165,8 @@ import {
   OWNER_CHAT_ID,
 } from "./telegram-client.mjs";
 import { parseDecisionOptionsFromComments } from "./telegram-decision-options.mjs";
+import { handleCommand, parseCommand } from "./telegram-commands.mjs";
+import { pauseBanner, readPause } from "./pause-gate.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -213,6 +215,101 @@ const DEDUPE_WINDOW_MS = 60_000;
 
 const iso = () => new Date().toISOString();
 
+export function checkPauseReal() {
+  return readPause();
+}
+
+function normalizePauseState(state) {
+  if (!state || typeof state !== "object") return { paused: false, reason: "", atIso: null, by: null };
+  return {
+    paused: Boolean(state.paused),
+    reason: String(state.reason || "").trim(),
+    atIso: state.atIso || null,
+    by: state.by || null,
+  };
+}
+
+async function getPauseState(_checkPause, log) {
+  try {
+    return normalizePauseState(await _checkPause());
+  } catch (err) {
+    const reason = `Pause check failed: ${err && err.message ? err.message : err}`;
+    if (log) log(`telegram-listener: ${reason} — treating FounderOS as paused`);
+    return { paused: true, reason, atIso: null, by: null };
+  }
+}
+
+function pausedReply(state) {
+  const banner = pauseBanner(state) || `FounderOS PAUSED: ${state && state.reason ? state.reason : "tanpa alasan tertulis"}`;
+  return [
+    banner,
+    "",
+    "Aksi ini tidak dijalankan karena emergency stop aktif.",
+    "Tidak ada perubahan Paperclip dan heartbeat tidak akan dijalankan.",
+    "Kirim /resume untuk melanjutkan.",
+  ].join("\n");
+}
+
+function commandPauseLead(state) {
+  const banner = pauseBanner(state) || `FounderOS PAUSED: ${state && state.reason ? state.reason : "tanpa alasan tertulis"}`;
+  return `${banner}\nKirim /resume untuk melanjutkan.`;
+}
+
+function hasLabel(issue, name, labelMap = {}) {
+  if (!issue || !name) return false;
+  const labels = Array.isArray(issue.labels) ? issue.labels : [];
+  if (labels.some((l) => String((l && (l.name || l.title || l)) || "").toUpperCase() === name)) return true;
+  const names = Array.isArray(issue.labelNames) ? issue.labelNames : [];
+  if (names.some((l) => String(l || "").toUpperCase() === name)) return true;
+  const id = labelMap && labelMap[name];
+  const ids = Array.isArray(issue.labelIds) ? issue.labelIds : [];
+  return Boolean(id && ids.includes(id));
+}
+
+async function listIssuesForCommands(base, companyId, _get) {
+  if (!base || !_get) return null;
+  try {
+    const res = await _get(`${base}/api/companies/${companyId}/issues`);
+    if (!res || res.networkError || !Array.isArray(res.body)) return null;
+    return res.body;
+  } catch {
+    return null;
+  }
+}
+
+async function getInboxForCommand({ base, companyId, _get, labelMap }) {
+  const issues = await listIssuesForCommands(base, companyId, _get);
+  if (!issues) return null;
+  let needsYou = 0;
+  let stuck = 0;
+  let working = 0;
+  const stuckItems = [];
+  for (const it of issues) {
+    const status = String((it && it.status) || "").toLowerCase();
+    if (hasLabel(it, "OWNER_REQUIRED", labelMap)) needsYou += 1;
+    if (status === "blocked") {
+      stuck += 1;
+      stuckItems.push({
+        identifier: it.identifier || it.id || "?",
+        reason: it.blockedReason || it.errorReason || it.reason || "tidak tersedia",
+      });
+    }
+    if (["todo", "in_progress", "in_review"].includes(status)) working += 1;
+  }
+  return { needsYou, stuck, working, stuckItems };
+}
+
+async function getHeartbeatForCommand(ctx) {
+  const inbox = await getInboxForCommand(ctx);
+  return { succeeded: null, total: null, ageMs: null, lanes: [], needsYou: inbox ? inbox.needsYou : null };
+}
+
+function commandDeps(ctx) {
+  return {
+    getHeartbeat: ctx._getHeartbeat || (() => getHeartbeatForCommand(ctx)),
+    getInbox: ctx._getInbox || (() => getInboxForCommand(ctx)),
+  };
+}
 
 // ---- Event-driven wake: spawn heartbeat --once (DI seam) ----
 // The REAL implementation: spawns a detached `node ops-watcher/heartbeat.mjs
@@ -338,7 +435,9 @@ export async function buildIdentifierMap(base, companyId, _get) {
 
 // Ensure the labels this listener may add/remove exist. Returns { name -> id }.
 // Exported so the daemon can build the same label map without duplicating logic.
-export async function ensureLabelMap(base, companyId, _ensureLabel) {
+export async function ensureLabelMap(base, companyId, _ensureLabel, _checkPause = checkPauseReal) {
+  const pauseState = await getPauseState(_checkPause);
+  if (pauseState.paused) return {};
   const labelMap = {};
   for (const [name, color] of Object.entries(LABEL_SPECS)) {
     const r = await _ensureLabel(base, companyId, name, color);
@@ -466,6 +565,10 @@ export async function processUpdateForCallback(upd, ctx) {
     _answerCallbackQuery, _editMessageText, _sendMessage,
     _httpPost = httpPost,
     _spawnHeartbeat = spawnHeartbeatReal,
+    _handleCommand = handleCommand,
+    _checkPause = checkPauseReal,
+    _getHeartbeat = null,
+    _getInbox = null,
     log, now = Date.now, dedupeWindowMs = DEDUPE_WINDOW_MS,
     decisionDedupe = null,
   } = ctx;
@@ -505,10 +608,30 @@ export async function processUpdateForCallback(upd, ctx) {
     // multi-line instruction whose first line starts with `/`, is real work and
     // falls through to the directive path below.
     if (isBareSlashCommand(msgText)) {
+      const pauseState = await getPauseState(_checkPause, log);
+      const commandResult = await _handleCommand(msgText, commandDeps({
+        base, companyId, _get, labelMap, _getHeartbeat, _getInbox,
+      }));
+      if (commandResult && commandResult.handled) {
+        const cmd = parseCommand(msgText);
+        const reply = pauseState.paused && (cmd === "status" || cmd === "inbox")
+          ? `${commandPauseLead(pauseState)}\n\n${commandResult.reply}`
+          : commandResult.reply;
+        await _sendMessage(reply, upOpts).catch(() => {});
+        log(`telegram-listener: update ${uid} command "${msgText.slice(0, 40)}" handled, replied once, no issue created`);
+        return { update_id: uid, outcome: "slash-command-handled", command: msgText.split(/\s+/)[0] };
+      }
       const slashReply = slashCommandNotImplementedReply(msgText);
       await _sendMessage(slashReply, upOpts).catch(() => {});
       log(`telegram-listener: update ${uid} bare slash command "${msgText.slice(0, 40)}" — not implemented, replied once, no issue created`);
       return { update_id: uid, outcome: "slash-command-not-implemented", command: msgText.split(/\s+/)[0] };
+    }
+
+    const pauseState = await getPauseState(_checkPause, log);
+    if (pauseState.paused) {
+      await _sendMessage(pausedReply(pauseState), upOpts).catch(() => {});
+      log(`telegram-listener: update ${uid} text ingress blocked by pause — no Paperclip mutation, no heartbeat spawn`);
+      return { update_id: uid, outcome: "paused" };
     }
 
     // ---- Sub-path (A): reply-to-decision-card note capture ----
@@ -622,6 +745,13 @@ export async function processUpdateForCallback(upd, ctx) {
     await _answerCallbackQuery(cq.id, "aksi tidak terbaca", upOpts).catch(() => {});
     return { update_id: uid, outcome: "unparseable" };
   }
+  const pauseState = await getPauseState(_checkPause, log);
+  if (pauseState.paused) {
+    await _answerCallbackQuery(cq.id, "FounderOS paused - kirim /resume", upOpts).catch(() => {});
+    await sendOwnerMessage(pausedReply(pauseState));
+    log(`telegram-listener: update ${uid} ${parsed.action} ${parsed.shortId} blocked by pause — no Paperclip mutation, no heartbeat spawn`);
+    return { update_id: uid, action: parsed.action, shortId: parsed.shortId, outcome: "paused" };
+  }
   const issue = idMap[parsed.shortId];
   if (!issue) {
     log(`telegram-listener: update ${uid} ${parsed.action} shortId=${parsed.shortId} — no matching Paperclip issue; answering + skipping`);
@@ -677,6 +807,10 @@ export async function runListenerOnce(deps) {
     readState: _readState = defaultReadState,
     writeState: _writeState = defaultWriteState,
     _spawnHeartbeat = spawnHeartbeatReal,
+    _handleCommand = handleCommand,
+    _checkPause = checkPauseReal,
+    _getHeartbeat = null,
+    _getInbox = null,
     log = (m) => console.log(m),
   } = deps;
 
@@ -721,7 +855,7 @@ export async function runListenerOnce(deps) {
   }
 
   // Ensure labels we may need to add exist (idempotent).
-  const labelMap = await ensureLabelMap(base, companyId, _ensureLabel);
+  const labelMap = await ensureLabelMap(base, companyId, _ensureLabel, _checkPause);
 
   // Build identifier -> issue map once.
   const mapResult = await buildIdentifierMap(base, companyId, _get);
@@ -740,7 +874,7 @@ export async function runListenerOnce(deps) {
       base, companyId, labelMap, idMap, upOpts, immediateAck: false,
       _get, _listLabels, _ensureLabel, _postComment, _patchIssue,
       _answerCallbackQuery, _editMessageText, _sendMessage,
-      _spawnHeartbeat, log, decisionDedupe,
+      _spawnHeartbeat, _handleCommand, _checkPause, _getHeartbeat, _getInbox, log, decisionDedupe,
     });
     results.push(r);
   }
