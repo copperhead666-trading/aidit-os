@@ -61,6 +61,8 @@ export const REJECTED_MARKER = "DIRECTIVE PLAN REJECTED";
 export const RESULT_MARKER = "DIRECTIVE RESULT";
 export const REFUSED_MARKER = "PLAN_REFUSED";
 export const DISPATCH_MARKER = "AHMAD DISPATCH";
+const ATTEMPT_CAP_MARKER = "DIRECTIVE OWNER REQUIRED";
+const OWNER_REQUIRED_LABEL = "OWNER_REQUIRED";
 export const DEFAULT_STALLED_AFTER_MS = 6 * 60 * 60 * 1000;
 export const DEFAULT_MAX_PLANS_PER_SWEEP = 1;
 export const DEFAULT_MAX_PLAN_ATTEMPTS = 2;
@@ -139,6 +141,9 @@ function isPlanComment(c) {
     !b.includes(APPROVED_MARKER) &&
     !b.includes(REJECTED_MARKER) &&
     !b.includes(REFUSED_MARKER);
+}
+function isAttemptCapEscalationComment(c) {
+  return bodyOf(c).trim().startsWith(ATTEMPT_CAP_MARKER);
 }
 function findLastIndex(comments, pred) {
   for (let i = (comments || []).length - 1; i >= 0; i--) if (pred(comments[i])) return i;
@@ -324,14 +329,25 @@ async function loadState(file, _fs) {
   try {
     const st = JSON.parse(await _fs.readFile(file, "utf8"));
     return st && typeof st === "object"
-      ? { attempts: st.attempts || {}, lastSweepMs: Number(st.lastSweepMs) || 0 }
-      : { attempts: {}, lastSweepMs: 0 };
-  } catch { return { attempts: {}, lastSweepMs: 0 }; }
+      ? {
+        attempts: st.attempts || {},
+        lastPlanFailures: st.lastPlanFailures && typeof st.lastPlanFailures === "object" ? st.lastPlanFailures : {},
+        lastSweepMs: Number(st.lastSweepMs) || 0,
+      }
+      : { attempts: {}, lastPlanFailures: {}, lastSweepMs: 0 };
+  } catch { return { attempts: {}, lastPlanFailures: {}, lastSweepMs: 0 }; }
 }
 async function saveState(file, st, _fs) {
   try { await _fs.writeFile(file, JSON.stringify(st, null, 2), "utf8"); } catch { /* best-effort */ }
 }
 function attemptsKey(issue) { return String(issue?.id || issue?.identifier || "unknown"); }
+function recordPlanFailureAttempt(state, key, prior, failure) {
+  const attempt = prior + 1;
+  state.attempts[key] = attempt;
+  state.lastPlanFailures = state.lastPlanFailures && typeof state.lastPlanFailures === "object" ? state.lastPlanFailures : {};
+  state.lastPlanFailures[key] = { ...failure, attempt, at: iso() };
+  return attempt;
+}
 function cap(s, n = OUTPUT_CAP) {
   s = String(s || "");
   return s.length > n ? s.slice(0, n) + `\n...[truncated ${s.length - n} chars]` : s;
@@ -378,10 +394,10 @@ export function dispatchPlanReal(prompt, { timeoutMs = PLAN_TIMEOUT_MS } = {}) {
   });
 }
 
-function refusalComment(violations) {
+function refusalComment(violations, attempt, max, reason) {
   return [
     `${REFUSED_MARKER} (${iso()}): rencana ditolak otomatis sebelum dikirim ke owner.`,
-    "Alasan: rencana gagal validasi aman directive-runner tahap 1.",
+    `Alasan: rencana gagal validasi aman directive-runner tahap 1 (${reason || "tidak diketahui"}). Percobaan ${attempt}/${max}.`,
     "Pelanggaran:",
     ...violations.map((v) => `- ${v}`),
   ].join("\n");
@@ -400,6 +416,39 @@ function planComment(planText, { stalled = false } = {}) {
 }
 function parseFailureComment(error, attempt, max) {
   return `DIRECTIVE DRAFT FAILED (${iso()}): rencana belum bisa diproduksi dalam format yang valid (${error}). Percobaan ${attempt}/${max}. Issue tetap menunggu rencana.`;
+}
+function inferLastPlanFailure(comments) {
+  for (let i = (comments || []).length - 1; i >= 0; i--) {
+    const b = bodyOf(comments[i]);
+    if (b.trim().startsWith("DIRECTIVE DRAFT FAILED")) return { reason: "parse-failed" };
+    if (b.includes(REFUSED_MARKER)) {
+      return /VERIFY:/i.test(b) ? { reason: "verify-out-of-scope" } : { reason: "file-scope-out-of-scope" };
+    }
+  }
+  return { reason: "unknown" };
+}
+function plainPlanFailureReason(failure) {
+  const reason = String(failure?.reason || failure || "");
+  if (reason === "verify-out-of-scope") {
+    return "perintah verifikasi di rencana berada di luar bentuk aman yang boleh dijalankan";
+  }
+  if (reason === "file-scope-out-of-scope") {
+    return "daftar file rencana keluar dari batas aman repo atau menyentuh file operasional yang dilarang";
+  }
+  if (reason === "parse-failed") {
+    return "rencana yang dihasilkan belum bisa dibaca dalam format directive yang valid";
+  }
+  return "rencana terakhir belum bisa melewati validasi aman directive-runner";
+}
+function attemptCapComment({ attempts, failure, nowMs }) {
+  return [
+    `${ATTEMPT_CAP_MARKER} (${iso(nowMs)}): directive perlu keputusan owner.`,
+    "",
+    `Directive ini belum bisa direncanakan atau dijalankan setelah ${attempts} percobaan.`,
+    `Alasan terakhir: ${plainPlanFailureReason(failure)}.`,
+    "",
+    "Owner bisa memberi arahan yang lebih spesifik agar rencana baru dapat dibuat dengan aman, atau menutup issue ini jika sudah tidak perlu dilanjutkan.",
+  ].join("\n");
 }
 
 // ---- Stage 2: deliver the plan to the owner as a decision card -------------\n// Builds the phone-screen summary card text in professional Indonesian: issue
@@ -561,7 +610,8 @@ export async function runDirectiveSweepOnce(deps = {}) {
       return summary;
     }
     const issues = Array.isArray(issuesRes.issues) ? issuesRes.issues : [];
-    const state = dryRun ? { attempts: {} } : await loadState(stateFile, _fs);
+    const state = dryRun ? { attempts: {}, lastPlanFailures: {} } : await loadState(stateFile, _fs);
+    const addOwnerRequiredLabelFn = addIssueLabel || (async (iss, label) => _post(`${base}/api/issues/${iss.id}/labels`, { label }));
     let plannedThisSweep = 0;
     // Approved directives captured here (issue + parsed plan) for the stage 3b
     // execution pass that runs AFTER the planning loop. Only directives whose
@@ -630,6 +680,28 @@ export async function runDirectiveSweepOnce(deps = {}) {
       const prior = Number(state.attempts[key] || 0);
       if (prior >= maxPlanAttempts) {
         log(`directive-runner: ${ident} reached plan attempt cap (${prior}/${maxPlanAttempts})`);
+        const alreadyEscalated = hasLabel(issue, OWNER_REQUIRED_LABEL) || comments.some(isAttemptCapEscalationComment);
+        if (!dryRun && !alreadyEscalated) {
+          let labelOk = false;
+          try {
+            const labelRes = await addOwnerRequiredLabelFn(issue, OWNER_REQUIRED_LABEL);
+            if (labelRes && labelRes.networkError) {
+              summary.errors.push(`${ident}: owner-required label network error: ${labelRes.networkErrorMessage}`);
+            } else {
+              labelOk = true;
+            }
+          } catch (err) {
+            summary.errors.push(`${ident}: owner-required label error: ${err && err.message ? err.message : err}`);
+          }
+          if (labelOk) {
+            const failure = state.lastPlanFailures?.[key] || inferLastPlanFailure(comments);
+            const post = await _post(`${base}/api/issues/${issue.id}/comments`, {
+              body: attemptCapComment({ attempts: prior, failure, nowMs: asMs(now) }),
+              authorType: "user",
+            });
+            if (post.networkError) summary.errors.push(`${ident}: owner-required comment network error: ${post.networkErrorMessage}`);
+          }
+        }
         continue;
       }
       const stalledRePlan = cls.state === "stalled";
@@ -647,8 +719,7 @@ export async function runDirectiveSweepOnce(deps = {}) {
       const text = cap(out && out.stdout ? out.stdout : out && out.text ? out.text : "");
       const parsed = parsePlan(text);
       if (!parsed.ok) {
-        const attempt = prior + 1;
-        state.attempts[key] = attempt;
+        const attempt = recordPlanFailureAttempt(state, key, prior, { reason: "parse-failed", detail: parsed.error });
         await saveState(stateFile, state, _fs);
         const post = await _post(`${base}/api/issues/${issue.id}/comments`, { body: parseFailureComment(parsed.error, attempt, maxPlanAttempts), authorType: "user" });
         if (post.networkError) summary.errors.push(`${ident}: parse-failure comment network error: ${post.networkErrorMessage}`);
@@ -657,7 +728,10 @@ export async function runDirectiveSweepOnce(deps = {}) {
       }
       const scope = validatePlanScope(parsed);
       if (!scope.ok) {
-        const post = await _post(`${base}/api/issues/${issue.id}/comments`, { body: refusalComment(scope.violations), authorType: "user" });
+        const reason = "file-scope-out-of-scope";
+        const attempt = recordPlanFailureAttempt(state, key, prior, { reason, violations: scope.violations });
+        await saveState(stateFile, state, _fs);
+        const post = await _post(`${base}/api/issues/${issue.id}/comments`, { body: refusalComment(scope.violations, attempt, maxPlanAttempts, reason), authorType: "user" });
         if (post.networkError) summary.errors.push(`${ident}: refusal comment network error: ${post.networkErrorMessage}`);
         else summary.refused += 1;
         plannedThisSweep += 1;
@@ -665,7 +739,10 @@ export async function runDirectiveSweepOnce(deps = {}) {
       }
       const verifyScope = validateVerifyCommand(parsed.verify);
       if (!verifyScope.ok) {
-        const post = await _post(`${base}/api/issues/${issue.id}/comments`, { body: refusalComment([`VERIFY: ${verifyScope.reason}`]), authorType: "user" });
+        const reason = "verify-out-of-scope";
+        const attempt = recordPlanFailureAttempt(state, key, prior, { reason, detail: verifyScope.reason });
+        await saveState(stateFile, state, _fs);
+        const post = await _post(`${base}/api/issues/${issue.id}/comments`, { body: refusalComment([`VERIFY: ${verifyScope.reason}`], attempt, maxPlanAttempts, reason), authorType: "user" });
         if (post.networkError) summary.errors.push(`${ident}: refusal comment network error: ${post.networkErrorMessage}`);
         else summary.refused += 1;
         plannedThisSweep += 1;

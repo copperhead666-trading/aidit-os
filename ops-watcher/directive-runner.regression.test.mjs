@@ -192,25 +192,38 @@ await t("scope-violating plan posts refusal comment and no plan comment", async 
   await resetTmp();
   const badScope = goodPlan.replace("ops-watcher/foo.mjs, docs/bar.md", "ventures/x.mjs");
   const comments = { i1: [] };
-  const { deps, posts } = makeSweepDeps({ issues: [issue({ id: "i1" })], comments, plan: badScope });
+  const { deps, posts, cards, labels } = makeSweepDeps({ issues: [issue({ id: "i1" })], comments, plan: badScope });
   const res = await runDirectiveSweepOnce(deps);
   assert.equal(res.refused, 1);
   assert.equal(posts.length, 1);
   assert.match(posts[0].body.body, /^PLAN_REFUSED/);
+  assert.match(posts[0].body.body, /file-scope-out-of-scope/);
+  assert.match(posts[0].body.body, /Percobaan 1\/2/);
   assert.doesNotMatch(posts[0].body.body, /^DIRECTIVE PLAN \(/);
+  assert.equal(cards.length, 0);
+  assert.equal(labels.length, 0);
+  const st = JSON.parse(await fs.readFile(TMP_STATE, "utf8"));
+  assert.equal(st.attempts.i1, 1);
+  assert.equal(st.lastPlanFailures.i1.reason, "file-scope-out-of-scope");
 });
 
 await t("bad VERIFY plan posts refusal comment and sends no decision card", async () => {
   await resetTmp();
   const badVerify = goodPlan.replace("VERIFY: node ops-watcher/foo.mjs --check", "VERIFY: $c = Get-Content ops-watcher/canary-step.mjs; if ($c -match 'canaryAdd') { exit 0 } else { exit 1 }");
   const comments = { i1: [] };
-  const { deps, posts, cards } = makeSweepDeps({ issues: [issue({ id: "i1", identifier: "KOL-73" })], comments, plan: badVerify });
+  const { deps, posts, cards, labels } = makeSweepDeps({ issues: [issue({ id: "i1", identifier: "KOL-73" })], comments, plan: badVerify });
   const res = await runDirectiveSweepOnce(deps);
   assert.equal(res.refused, 1);
   assert.equal(posts.length, 1);
   assert.match(posts[0].body.body, /^PLAN_REFUSED/);
   assert.match(posts[0].body.body, /VERIFY:/);
+  assert.match(posts[0].body.body, /verify-out-of-scope/);
+  assert.match(posts[0].body.body, /Percobaan 1\/2/);
   assert.equal(cards.length, 0);
+  assert.equal(labels.length, 0);
+  const st = JSON.parse(await fs.readFile(TMP_STATE, "utf8"));
+  assert.equal(st.attempts.i1, 1);
+  assert.equal(st.lastPlanFailures.i1.reason, "verify-out-of-scope");
 });
 
 await t("good VERIFY plan posts the plan and sends exactly one decision card", async () => {
@@ -232,7 +245,76 @@ await t("unparseable plan increments attempt counter and stops after MAX_PLAN_AT
   let cRun = mk(); await runDirectiveSweepOnce(cRun.deps);
   const st = JSON.parse(await fs.readFile(TMP_STATE, "utf8"));
   assert.equal(st.attempts.i1, 2);
+  assert.equal(st.lastPlanFailures.i1.reason, "parse-failed");
   assert.equal(comments.i1.filter((x) => /DIRECTIVE DRAFT FAILED/.test(x.body)).length, 2);
+});
+
+await t("plan attempt cap adds OWNER_REQUIRED and one plain Indonesian escalation comment", async () => {
+  await resetTmp();
+  await fs.writeFile(TMP_STATE, JSON.stringify({
+    attempts: { i1: 2 },
+    lastPlanFailures: { i1: { reason: "verify-out-of-scope", attempt: 2 } },
+    lastSweepMs: 0,
+  }), "utf8");
+  const comments = { i1: [] };
+  const { deps, posts, labels, cards } = makeSweepDeps({
+    issues: [issue({ id: "i1", identifier: "KOL-70" })],
+    comments,
+    extra: { maxPlanAttempts: 2 },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.scanned, 1);
+  assert.equal(res.planned, 0);
+  assert.deepEqual(labels.map((x) => x.label), ["OWNER_REQUIRED"]);
+  assert.equal(posts.length, 1);
+  assert.match(posts[0].body.body, /^DIRECTIVE OWNER REQUIRED/);
+  assert.match(posts[0].body.body, /setelah 2 percobaan/);
+  assert.match(posts[0].body.body, /perintah verifikasi di rencana berada di luar bentuk aman/i);
+  assert.match(posts[0].body.body, /memberi arahan yang lebih spesifik/i);
+  assert.match(posts[0].body.body, /menutup issue/i);
+  assert.doesNotMatch(posts[0].body.body, /verify-out-of-scope/);
+  assert.equal(cards.length, 0);
+});
+
+await t("plan attempt cap escalation is idempotent on the next sweep", async () => {
+  await resetTmp();
+  await fs.writeFile(TMP_STATE, JSON.stringify({
+    attempts: { i1: 2 },
+    lastPlanFailures: { i1: { reason: "file-scope-out-of-scope", attempt: 2 } },
+    lastSweepMs: 0,
+  }), "utf8");
+  const comments = { i1: [] };
+  const issues = [issue({ id: "i1", identifier: "KOL-70" })];
+  const first = makeSweepDeps({ issues, comments, extra: { maxPlanAttempts: 2 } });
+  await runDirectiveSweepOnce(first.deps);
+  const second = makeSweepDeps({ issues, comments, extra: { maxPlanAttempts: 2 } });
+  await runDirectiveSweepOnce(second.deps);
+  assert.equal(first.labels.length, 1);
+  assert.equal(first.posts.length, 1);
+  assert.equal(second.labels.length, 0);
+  assert.equal(second.posts.length, 0);
+  assert.equal(comments.i1.filter((x) => /^DIRECTIVE OWNER REQUIRED/.test(x.body)).length, 1);
+});
+
+await t("plan attempt cap translates parse, file-scope, and verify reasons", async () => {
+  const cases = [
+    ["parse-failed", /format directive yang valid/i, /parse-failed/],
+    ["file-scope-out-of-scope", /daftar file rencana keluar dari batas aman repo/i, /file-scope-out-of-scope/],
+    ["verify-out-of-scope", /perintah verifikasi di rencana berada di luar bentuk aman/i, /verify-out-of-scope/],
+  ];
+  for (const [reason, plain, raw] of cases) {
+    await resetTmp();
+    await fs.writeFile(TMP_STATE, JSON.stringify({
+      attempts: { i1: 2 },
+      lastPlanFailures: { i1: { reason, attempt: 2 } },
+      lastSweepMs: 0,
+    }), "utf8");
+    const comments = { i1: [] };
+    const { deps, posts } = makeSweepDeps({ issues: [issue({ id: "i1" })], comments, extra: { maxPlanAttempts: 2 } });
+    await runDirectiveSweepOnce(deps);
+    assert.match(posts[0].body.body, plain);
+    assert.doesNotMatch(posts[0].body.body, raw);
+  }
 });
 
 await t("MAX_PLANS_PER_SWEEP is honoured with three eligible directives", async () => {
