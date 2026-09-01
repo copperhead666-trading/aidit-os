@@ -70,9 +70,23 @@
 //      Paperclip (no local message_id->issue lookup file). If the reply target
 //      is not a known decision card, the message falls through to path 1.
 //
+// BARE SLASH-COMMAND GUARD:
+//   When the OWNER's message is a bare slash command — the whole trimmed text is
+//   a single line starting with `/`, optionally followed by arguments on that
+//   same line (e.g. "/pause" or "/stop extra args") — do NOT create an issue.
+//   We do NOT implement any command's behaviour: what pausing should actually
+//   pause is a real decision the owner has not made, and guessing it would be
+//   worse than honestly saying we do not have it. Instead we reply once in
+//   Indonesian naming what actually does work (tap APPROVE/REJECT on a card,
+//   reply to a card to attach a note, or send a normal message without a leading
+//   slash to assign new work). A message that merely CONTAINS a slash, or a
+//   multi-line instruction whose first line happens to start with one, is real
+//   work and must still become a directive — only a message whose entire content
+//   is one slash-token (plus optional same-line arguments) is a command.
+//
 // Every state-changing decision is persisted to Paperclip (a label change and/or
 // a comment) — Paperclip is canonical, so a human reading only Paperclip sees it.
-// The Paperclip comment trail (decision comments + [TELEGRAM SENT] markers +
+// The Paperclip comment trail (decision comments + [TELEGRAM SENT] markers + 
 // failure comments + OWNER NOTE comments) IS the audit ledger of every decision
 // (who/what/when/which issue). There is intentionally NO separate structured
 // audit log file: a second copy would duplicate canonical state and risk drift.
@@ -181,7 +195,7 @@ const LABEL_SPECS = {
 // "DITERIMA ... GAGAL"), so a prior failure comment does NOT suppress a later
 // success comment — only a prior SUCCESS comment does.
 // Copy is professional Indonesian (owner-facing); only these string VALUES are
-// language, the object KEYS ("APPROVE"/"REJECT"/.../"ASK AHMAD") stay as the
+// language, the object KEYS ("APPROVE"/"REJECT"/.../ "ASK AHMAD") stay as the
 // internal action names used throughout this file's control flow — do not
 // translate the keys.
 const DECISION_COMMENT_PREFIX = {
@@ -263,6 +277,35 @@ export async function defaultWriteState(file, obj) {
 // specials, so shortId in backticks is left alone). Escapes: \ * _ ` [.
 export function escMd(s) {
   return String(s == null ? "" : s).replace(/([\\*_`\[])/g, "\\$1");
+}
+
+// Detect a "bare slash command": a message whose ENTIRE trimmed content is a
+// single line starting with `/` (optionally followed by arguments on that same
+// line) — e.g. "/pause" or "/stop extra args". A message that merely CONTAINS
+// a slash somewhere, or a multi-line instruction whose first line happens to
+// start with one, is NOT a bare command and remains real work (a directive).
+// We intentionally do NOT implement any command's behaviour: what pausing
+// should pause is a real decision the owner has not made, and guessing would be
+// worse than honestly saying we do not have it. Exported so tests can assert on it.
+export function isBareSlashCommand(text) {
+  const t = String(text == null ? "" : text).trim();
+  if (!t) return false;
+  if (t.includes("\n") || t.includes("\r")) return false;
+  return t.startsWith("/");
+}
+
+// The single Indonesian reply sent for a bare slash command. Names the three
+// things that actually work so the owner is not left guessing what to do instead.
+export function slashCommandNotImplementedReply(rawText) {
+  const t = String(rawText == null ? "" : rawText).trim();
+  const cmd = (t.split(/\s+/)[0] || t);
+  return (
+    `Maaf, ${cmd} bukan perintah yang diterapkan sistem ini — sistem belum punya perintah apa pun saat ini.\n\n` +
+    `Yang tersedia:\n` +
+    `• Ketuk SETUJUI atau TOLAK pada kartu keputusan untuk memutuskan.\n` +
+    `• Balas sebuah kartu keputusan untuk menambahkan catatan.\n` +
+    `• Kirim pesan biasa tanpa garis miring di awal untuk memberikan pekerjaan baru.`
+  );
 }
 
 // Parse "a:KOL-9" -> { action: "APPROVE", actionLetter: "a", shortId: "KOL-9" }
@@ -451,6 +494,21 @@ export async function processUpdateForCallback(upd, ctx) {
     if (chatId !== OWNER_CHAT_ID) {
       log(`telegram-listener: update ${uid} text from non-owner chat_id=${chatId} — skipping`);
       return { update_id: uid, outcome: "non-owner-text-skipped" };
+    }
+
+    // ---- Bare slash-command guard ----
+    // If the OWNER's message is a bare slash command (entire trimmed text is a
+    // single line starting with `/`, optionally with arguments on that line),
+    // do NOT create an issue. We do not implement any command; reply once in
+    // Indonesian naming what actually works (tap a button, reply to a card, or
+    // send a normal message). A message that merely CONTAINS a slash, or a
+    // multi-line instruction whose first line starts with `/`, is real work and
+    // falls through to the directive path below.
+    if (isBareSlashCommand(msgText)) {
+      const slashReply = slashCommandNotImplementedReply(msgText);
+      await _sendMessage(slashReply, upOpts).catch(() => {});
+      log(`telegram-listener: update ${uid} bare slash command "${msgText.slice(0, 40)}" — not implemented, replied once, no issue created`);
+      return { update_id: uid, outcome: "slash-command-not-implemented", command: msgText.split(/\s+/)[0] };
     }
 
     // ---- Sub-path (A): reply-to-decision-card note capture ----
