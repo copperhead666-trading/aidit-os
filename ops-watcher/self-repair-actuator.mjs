@@ -42,6 +42,20 @@ export {
 
 export const BACKUP_DIR = path.join(__dirname, ".self-repair-backups");
 
+// =====================================================================
+// Repair lane registry. Each entry maps a lane name to the node-wrapper relay
+// a real dispatch spawns through (`wrapper`, repo-relative) and the lane-guard
+// identity (`guardName`) used by guardLaneStart / recordLaneOutcome. The
+// default lane is CORLEONE; a drill may select HATTA when CORLEONE is
+// quota-blocked, because a real end-to-end repair must run on whichever lane is
+// actually alive.
+// =====================================================================
+export const REPAIR_LANES = {
+  corleone: { wrapper: "ops-watcher/corleone-dispatch.mjs", guardName: "corleone" },
+  hatta:    { wrapper: "ops-watcher/hatta-dispatch.mjs",    guardName: "hatta" },
+};
+export const DEFAULT_REPAIR_LANE = "corleone";
+
 // The repo root is one level above ops-watcher; repair packets must print
 // repo-relative paths so a repair lane never sees machine-specific prefixes.
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -242,48 +256,59 @@ async function defaultRunSuite(suiteBasename) {
   return makeDefaultRunSuite(defaultRunAllTests)(suiteBasename);
 }
 
-// Default repair dispatcher: spawns the CORLEONE relay with shell:false so the
-// free-form packet is one argv element, a 12-minute timeout, captured
-// stdout/stderr, and never throws.
-function defaultDispatchRepair(packet) {
-  return new Promise((resolve) => {
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    let settled = false;
-    let child;
-    const finish = (r) => { if (settled) return; settled = true; resolve(r); };
-    try {
-      child = spawn(NODE, ["ops-watcher/corleone-dispatch.mjs", packet], {
-        cwd: REPO_ROOT,
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-        shell: false,
+// Default repair dispatcher factory: builds a dispatcher that spawns the
+// lane's node-wrapper relay with shell:false so the free-form packet is one
+// argv element, a 12-minute timeout, captured stdout/stderr, and never throws.
+// The wrapper path is repo-relative (e.g. "ops-watcher/corleone-dispatch.mjs"
+// or "ops-watcher/hatta-dispatch.mjs"), so a real drill can run on whichever
+// implementation lane is actually alive.
+function makeDefaultDispatchRepair(wrapperRel) {
+  return function defaultDispatchRepair(packet) {
+    return new Promise((resolve) => {
+      let stdout = "";
+      let stderr = "";
+      let timedOut = false;
+      let settled = false;
+      let child;
+      const finish = (r) => { if (settled) return; settled = true; resolve(r); };
+      try {
+        child = spawn(NODE, [wrapperRel, packet], {
+          cwd: REPO_ROOT,
+          stdio: ["ignore", "pipe", "pipe"],
+          windowsHide: true,
+          shell: false,
+        });
+      } catch (err) {
+        finish({ ok: false, stdout: "", stderr: String((err && err.message) || err) });
+        return;
+      }
+      const timer = setTimeout(() => {
+        timedOut = true;
+        try { child.kill("SIGTERM"); } catch { /* best-effort */ }
+      }, DISPATCH_TIMEOUT_MS);
+      child.stdout.on("data", (d) => { stdout += d.toString(); });
+      child.stderr.on("data", (d) => { stderr += d.toString(); });
+      child.on("error", (err) => {
+        clearTimeout(timer);
+        finish({ ok: false, stdout, stderr: stderr + String((err && err.message) || err) });
       });
-    } catch (err) {
-      finish({ ok: false, stdout: "", stderr: String((err && err.message) || err) });
-      return;
-    }
-    const timer = setTimeout(() => {
-      timedOut = true;
-      try { child.kill("SIGTERM"); } catch { /* best-effort */ }
-    }, DISPATCH_TIMEOUT_MS);
-    child.stdout.on("data", (d) => { stdout += d.toString(); });
-    child.stderr.on("data", (d) => { stderr += d.toString(); });
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      finish({ ok: false, stdout, stderr: stderr + String((err && err.message) || err) });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        finish({ ok: code === 0 && !timedOut, stdout, stderr });
+      });
     });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      finish({ ok: code === 0 && !timedOut, stdout, stderr });
-    });
-  });
+  };
 }
 
 // attemptRepair — the bounded repair attempt. Every branch appends exactly one
 // evidence entry. Branches (c)–(h) record an attempt timestamp (they reached
-// the lane); (a) and (b) do not. Never calls git, pm2, Paperclip or Telegram.
+// the lane); (a), (b), and the unknown-lane refusal do not. Never calls git,
+// pm2, Paperclip or Telegram.
+//
+// deps.lane selects the repair lane (default DEFAULT_REPAIR_LANE). The guard,
+// dispatch wrapper, and lane-outcome recording all use that lane's guardName /
+// wrapper; the lane name is carried in the evidence entry and the returned
+// object. An unknown lane is refused before anything else.
 export async function attemptRepair(fault, deps = {}) {
   const nowFn = deps.now || Date.now;
   const startedAt = nowFn();
@@ -297,14 +322,17 @@ export async function attemptRepair(fault, deps = {}) {
   const runSuiteFn = deps.runSuite || makeDefaultRunSuite(runAllTestsFn);
   const guardLane = deps.guardLane || defaultGuardLaneStart;
   const recordOutcome = deps.recordOutcome || defaultRecordLaneOutcome;
-  const dispatchRepair = deps.dispatchRepair || defaultDispatchRepair;
   const snapshotFn = deps.snapshotFiles || snapshotFiles;
   const restoreFn = deps.restoreFiles || restoreFiles;
   const stepName = fault && fault.name;
+  const laneName = deps.lane || DEFAULT_REPAIR_LANE;
+  const lane = REPAIR_LANES[laneName];
+  const makeDispatchRepairFn = deps.makeDispatchRepair || makeDefaultDispatchRepair;
+  const dispatchRepair = deps.dispatchRepair || makeDispatchRepairFn(lane && lane.wrapper);
 
   async function emit(result) {
-    await appendEvidence({ type: "repair-attempt", name: stepName, ...result }, evidenceDeps);
-    return result;
+    await appendEvidence({ type: "repair-attempt", name: stepName, ...result, lane: laneName }, evidenceDeps);
+    return { ...result, lane: laneName };
   }
 
   async function recordAttempt() {
@@ -312,6 +340,11 @@ export async function attemptRepair(fault, deps = {}) {
     fresh.attempts = fresh.attempts || {};
     fresh.attempts[stepName] = { ...(fresh.attempts[stepName] || {}), lastAttemptMs: nowFn() };
     await writeStateRaw(fresh, { writeFile: deps.writeFile, stateFile });
+  }
+
+  // (0) Unknown lane: reject before doing anything else.
+  if (!lane) {
+    return emit({ outcome: "refused", reason: "unknown-lane" });
   }
 
   // (a) Envelope: deny-listed / unscoped step.
@@ -328,8 +361,8 @@ export async function attemptRepair(fault, deps = {}) {
 
   const suiteBasename = path.basename(scope.suite);
 
-  // (c) Lane guard skip: the corleone lane is not healthy right now.
-  const guard = await guardLane("corleone", deps.guardLaneDeps || {});
+  // (c) Lane guard skip: the chosen lane is not healthy right now.
+  const guard = await guardLane(lane.guardName, deps.guardLaneDeps || {});
   if (guard && guard.skip) {
     await recordAttempt();
     return emit({ outcome: "skipped", reason: "lane-" + (guard.reason || "unknown") });
@@ -357,7 +390,7 @@ export async function attemptRepair(fault, deps = {}) {
   const evidence = Array.isArray(fault.records) ? fault.records : [];
   const packet = buildRepairPacket(fault, scope, evidence);
   const dispatch = await dispatchRepair(packet);
-  await recordOutcome("corleone", {
+  await recordOutcome(lane.guardName, {
     ok: !!(dispatch && dispatch.ok),
     stdout: dispatch && dispatch.stdout,
     stderr: dispatch && dispatch.stderr,
@@ -437,7 +470,7 @@ export async function escalate(fault, _evidence, deps = {}) {
 //
 // A dry drill PASSES only when ALL FIVE of these hold:
 //   1. baseline suite red          (the injected logic fault is detected)
-//   2. attempt outcome             ("reverted:scoped-suite-red")
+//   2. attempt outcome             (\"reverted:scoped-suite-red\")
 //   3. rollback by attemptRepair   (the rollback ran inside attemptRepair,
 //                                    not only via the outer safety net)
 //   4. matchesCorrupted            (immediately after attemptRepair the canary
@@ -476,9 +509,23 @@ export function evaluateDrillChecks({
 
 // =====================================================================
 // The drill CLI — the proof.
-//   node ops-watcher/self-repair-actuator.mjs --drill [--dry]
+//   node ops-watcher/self-repair-actuator.mjs --drill [--dry] [--lane <corleone|hatta>]
+//
+// `--lane` selects the repair lane for the drill (default corleone). In --dry
+// mode the lane is still recorded and printed, but the dispatcher and guard
+// stay stubbed as they are today. For a REAL drill (no --dry) a real lane is
+// expected to actually fix the canary, so the success checks differ (see the
+// live verdict below). The acceptable non-success result is a clean rollback.
+// Exit 1 happens ONLY when a SAFETY property breaks: the canary is left
+// corrupted, the rollback did not happen when it should have, or the outer
+// restore failed.
 // =====================================================================
-async function runDrill({ dry }) {
+async function runDrill({ dry, lane }) {
+  if (!REPAIR_LANES[lane]) {
+    console.error(`unknown lane: ${lane} (valid: ${Object.keys(REPAIR_LANES).join(", ")})`);
+    return 1;
+  }
+
   const realFsApi = realFs;
   const canaryFile = path.join(__dirname, "canary-step.mjs");
   const canaryTestFile = path.join(__dirname, "canary-step.regression.test.mjs");
@@ -489,8 +536,8 @@ async function runDrill({ dry }) {
   let snapshot = null;
   let intendedExit = 1;
   // v collects every measurement the verdict needs. `aborted` is set whenever
-  // the drill bails before reaching attemptRepair; in that case the five-check
-  // verdict is skipped (there is nothing to evaluate) and we exit 1.
+  // the drill bails before reaching attemptRepair; in that case the verdict is
+  // skipped (there is nothing to evaluate) and we exit 1.
   const v = { rollbackByAttempt: false, aborted: null };
 
   try {
@@ -535,7 +582,7 @@ async function runDrill({ dry }) {
     // 5. Synthetic fault + attemptRepair. In --dry the lane is simulated healthy
     //    and the dispatcher changes nothing but reports success, so the expected
     //    outcome is `reverted` (the rollback path inside attemptRepair). Without
-    //    --dry the real CORLEONE dispatcher and lane guard run.
+    //    --dry the real lane dispatcher and lane guard run for the chosen lane.
     const fault = {
       name: "canary-step",
       kind: "test-red",
@@ -543,6 +590,7 @@ async function runDrill({ dry }) {
     };
     const attemptDeps = dry
       ? {
+          lane,
           dispatchRepair: async () => ({ ok: true, stdout: "dry-run: no file change", stderr: "" }),
           recordOutcome: async () => ({ recorded: true }),
           guardLane: async () => ({ skip: false, reason: null, remainingMs: 0, laneKey: "codex" }),
@@ -551,9 +599,10 @@ async function runDrill({ dry }) {
             return restoreFiles(snap, opts);
           },
         }
-      : {};
+      : { lane };
     const result = await attemptRepair(fault, attemptDeps);
     v.outcome = result.outcome + (result.reason ? ":" + result.reason : "");
+    v.lane = result.lane || lane;
 
     // 6. Immediately after attemptRepair: prove the rollback restored the
     //    PRE-REPAIR (corrupted) state byte-for-byte. attemptRepair snapshots the
@@ -566,6 +615,18 @@ async function runDrill({ dry }) {
     v.matchesCorrupted = !!(corruptedBytes && afterAttemptBytes.equals(corruptedBytes));
     const afterAttemptMod = await import(pathToFileURL(canaryFile) + "?afterattempt=" + Date.now());
     v.afterAttemptAdd = afterAttemptMod.canaryAdd(2, 2);
+
+    // Live-only: the scoped suite state immediately after the attempt (real
+    // check 4). In dry mode this is unnecessary — the dry verdict does not use
+    // it — so it is skipped to keep the dry path byte-for-byte unchanged.
+    if (!dry) {
+      try {
+        const scopedAfter = await defaultRunSuite(suiteBasename);
+        v.scopedGreenAfter = !!scopedAfter.ok;
+      } catch {
+        v.scopedGreenAfter = false;
+      }
+    }
 
     // Evidence count (best-effort; the log may not exist).
     try {
@@ -618,8 +679,8 @@ async function runDrill({ dry }) {
       return intendedExit;
     }
 
-    // 8. After the outer restore: check 5. The canary must be byte-identical to
-    //    its ORIGINAL content, canaryAdd(2,2)===4, and the canary suite green.
+    // 8. After the outer restore: the canary must be byte-identical to its
+    //    ORIGINAL content, canaryAdd(2,2)===4, and the canary suite green.
     let matchesOriginal = false;
     let finalSuiteGreen = false;
     let restoredLen = null;
@@ -636,40 +697,114 @@ async function runDrill({ dry }) {
       console.log("DRILL: post-restore measurement threw:", e && e.message);
     }
 
-    // 9. Evaluate the five dry-drill checks (always; for a live drill the
-    //    dry-only checks simply report their state and the verdict still drives
-    //    the exit code so a live drill must also leave the repo clean).
-    const verdict = evaluateDrillChecks({
-      baselineRed: v.baselineState === "red",
-      outcome: v.outcome,
-      rollbackByAttempt: v.rollbackByAttempt === true,
-      matchesCorrupted: v.matchesCorrupted === true,
-      matchesOriginal,
-      finalSuiteGreen,
-    });
+    // =====================================================================
+    // DRY verdict — unchanged five-check block, with the lane printed.
+    // =====================================================================
+    if (dry) {
+      const verdict = evaluateDrillChecks({
+        baselineRed: v.baselineState === "red",
+        outcome: v.outcome,
+        rollbackByAttempt: v.rollbackByAttempt === true,
+        matchesCorrupted: v.matchesCorrupted === true,
+        matchesOriginal,
+        finalSuiteGreen,
+      });
+
+      console.log("==== DRILL VERDICT ====");
+      console.log(`mode: dry`);
+      console.log(`lane: ${v.lane || lane}`);
+      console.log(`baseline suite: ${v.baselineState}`);
+      console.log(`attempt outcome: ${v.outcome}`);
+      console.log(`canary bytes before: ${v.beforeLen}, after attemptRepair: ${v.afterAttemptLen}, after restore: ${restoredLen}`);
+      console.log(`canaryAdd(2,2) before: ${v.beforeAdd}, after attemptRepair: ${v.afterAttemptAdd}, after restore: ${restoredAdd}`);
+      console.log(`rollback by attempt: ${v.rollbackByAttempt ? "yes" : "no"}`);
+      console.log(`evidence entries appended: ${v.evidenceCount}`);
+      console.log(`final suite (after outer restore): ${finalSuiteGreen ? "green" : "red"}`);
+      console.log(`--- dry-drill checks ---`);
+      for (const c of verdict.checks) {
+        console.log(`${c.pass ? "PASS" : "FAIL"}: ${c.name}`);
+      }
+
+      if (verdict.ok) {
+        console.log("DRILL OK: all five checks passed");
+        intendedExit = 0;
+      } else {
+        console.log(`DRILL FAILURE: ${verdict.failedCheck}`);
+        intendedExit = 1;
+      }
+      return intendedExit;
+    }
+
+    // =====================================================================
+    // LIVE verdict — a real lane is expected to actually fix the canary.
+    // The five success checks:
+    //   1. baseline suite red
+    //   2. attempt outcome `repaired`
+    //   3. rollback NOT performed by attemptRepair
+    //   4. after the attempt, canaryAdd(2,2) === 4 and the scoped suite green
+    //   5. after the outer restore, canary byte-identical to ORIGINAL and suite
+    //      still green
+    // If the lane fails to fix it, the expected-and-acceptable outcome is
+    // `reverted` with a clean rollback -> exit 0. Exit 1 ONLY when a SAFETY
+    // property breaks: the canary is left corrupted, the rollback did not
+    // happen when it should have, or the outer restore failed.
+    // =====================================================================
+    const isRepaired = v.outcome === "repaired";
+    const isReverted = typeof v.outcome === "string" && v.outcome.startsWith("reverted");
+    const scopedGreenAfter = v.scopedGreenAfter === true;
+    const safetyRestored = matchesOriginal && finalSuiteGreen;
+
+    const liveChecks = [
+      { name: "baseline suite red", pass: v.baselineState === "red" },
+      { name: "attempt outcome repaired", pass: isRepaired },
+      { name: "rollback NOT performed by attemptRepair", pass: v.matchesCorrupted === false },
+      { name: "canaryAdd(2,2)===4 and scoped suite green after attempt", pass: v.afterAttemptAdd === 4 && scopedGreenAfter },
+      { name: "canary byte-identical to original and suite green after outer restore", pass: matchesOriginal && finalSuiteGreen },
+    ];
+    const allSuccessChecksPass = liveChecks.every((c) => c.pass);
 
     console.log("==== DRILL VERDICT ====");
-    console.log(`mode: ${dry ? "dry" : "live"}`);
+    console.log(`mode: live`);
+    console.log(`lane: ${v.lane || lane}`);
     console.log(`baseline suite: ${v.baselineState}`);
     console.log(`attempt outcome: ${v.outcome}`);
     console.log(`canary bytes before: ${v.beforeLen}, after attemptRepair: ${v.afterAttemptLen}, after restore: ${restoredLen}`);
     console.log(`canaryAdd(2,2) before: ${v.beforeAdd}, after attemptRepair: ${v.afterAttemptAdd}, after restore: ${restoredAdd}`);
-    console.log(`rollback by attempt: ${v.rollbackByAttempt ? "yes" : "no"}`);
+    console.log(`rollback by attempt: ${v.matchesCorrupted ? "yes (canary matches corrupted pre-repair state)" : "no"}`);
+    console.log(`scoped suite after attempt: ${scopedGreenAfter ? "green" : "red"}`);
     console.log(`evidence entries appended: ${v.evidenceCount}`);
     console.log(`final suite (after outer restore): ${finalSuiteGreen ? "green" : "red"}`);
-    console.log(`--- ${dry ? "dry-drill" : "drill"} checks ---`);
-    for (const c of verdict.checks) {
+    console.log(`--- drill checks ---`);
+    for (const c of liveChecks) {
       console.log(`${c.pass ? "PASS" : "FAIL"}: ${c.name}`);
     }
 
-    if (verdict.ok) {
+    if (allSuccessChecksPass) {
       console.log("DRILL OK: all five checks passed");
-      intendedExit = 0;
-    } else {
-      console.log(`DRILL FAILURE: ${verdict.failedCheck}`);
-      intendedExit = 1;
+      return 0;
     }
-    return intendedExit;
+
+    // The lane could not fix it. A clean rollback is a valid, honest result.
+    if (isReverted) {
+      const rollbackClean = v.matchesCorrupted === true && safetyRestored;
+      if (rollbackClean) {
+        console.log("DRILL RESULT: lane could not repair, rollback clean");
+        return 0;
+      }
+      // Rollback did not happen when it should have, or the outer restore failed.
+      console.log("DRILL SAFETY FAILURE: rollback not clean or outer restore failed");
+      return 1;
+    }
+
+    // Any other outcome (skipped / refused / aborted / not-reproducible): no
+    // repair was attempted or completed. That is not itself a safety break; the
+    // only thing that matters is that the canary was left whole.
+    if (safetyRestored) {
+      console.log(`DRILL RESULT: ${v.outcome} — no safety break, canary restored`);
+      return 0;
+    }
+    console.log("DRILL SAFETY FAILURE: canary corrupted or outer restore failed");
+    return 1;
   }
 }
 
@@ -677,10 +812,15 @@ async function main() {
   const argv = process.argv.slice(2);
   if (argv[0] === "--drill") {
     const dry = argv.includes("--dry");
-    const code = await runDrill({ dry });
+    let lane = DEFAULT_REPAIR_LANE;
+    const laneIdx = argv.indexOf("--lane");
+    if (laneIdx !== -1 && argv[laneIdx + 1]) {
+      lane = argv[laneIdx + 1];
+    }
+    const code = await runDrill({ dry, lane });
     process.exit(code);
   }
-  console.error("usage: node ops-watcher/self-repair-actuator.mjs --drill [--dry]");
+  console.error("usage: node ops-watcher/self-repair-actuator.mjs --drill [--dry] [--lane <corleone|hatta>]");
   process.exit(2);
 }
 
