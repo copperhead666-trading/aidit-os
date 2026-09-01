@@ -3,6 +3,7 @@ export const dynamic = 'force-dynamic';
 import { readHeartbeat, readLanes, readSelfRepair, readDecisions, readLayers } from '@/lib/founderos';
 import { PageHeader } from '@/components/PageHeader';
 import { Dot, Badge, SectionHead } from '@/components/terminal';
+import type { LaneStat, RepairEntry } from '@/lib/founderos';
 
 function formatRelativeTime(value: string | number): string {
   const then = typeof value === 'number' ? new Date(value).getTime() : new Date(value).getTime();
@@ -24,6 +25,67 @@ function formatDuration(ms: number): string {
   const minutes = totalMinutes % 60;
   if (hours > 0) return `${hours}h ${minutes}m`;
   return `${minutes}m`;
+}
+
+// Derives the status cell for a lane from its real numbers, not from a single
+// flag. A lane that has run and never succeeded must never read "ok"; a lane
+// whose success rate is at or below half is degraded, not healthy. Quota state
+// is reported separately and never reads as "ready" once the flag is set, even
+// when the cooldown window has elapsed.
+function laneStatus(lane: LaneStat): { tone: 'ok' | 'warn' | 'err'; label: string; ghost?: boolean } {
+  if (lane.quotaExhausted) {
+    if (lane.cooldownRemainingMs > 0) {
+      return { tone: 'warn', label: `cooldown ${formatDuration(lane.cooldownRemainingMs)}` };
+    }
+    return { tone: 'warn', label: 'quota exhausted' };
+  }
+  if (lane.runs === 0) {
+    return { tone: 'warn', label: 'no runs', ghost: true };
+  }
+  if (lane.ok === 0) {
+    return { tone: 'err', label: 'no successful runs' };
+  }
+  const successRate = Math.round((lane.ok / lane.runs) * 100);
+  if (successRate <= 50) {
+    return { tone: 'warn', label: `${successRate}% — degraded` };
+  }
+  return { tone: 'ok', label: 'ok', ghost: true };
+}
+
+// Maps a repair outcome to a Dot state. `repaired`/`ok` are healthy, `reverted`/
+// `failed` are errors, `skipped` is inert (off), anything else is uncertain.
+// Matching is anchored to avoid false positives (e.g. "broken" containing "ok").
+function repairState(outcome: string): 'ok' | 'warn' | 'err' | 'off' {
+  const o = outcome.toLowerCase();
+  if (o === 'ok' || o === 'repaired' || o.includes('repair')) return 'ok';
+  if (o.includes('revert') || o.includes('fail')) return 'err';
+  if (o.includes('skip')) return 'off';
+  return 'warn';
+}
+
+interface CollapsedRepair {
+  name: string;
+  type: string;
+  outcome: string;
+  reason: string;
+  ts: number;
+  repeat: number;
+}
+
+// Collapses consecutive repair entries that share name, outcome and reason into
+// a single line carrying a repeat count. `repairs` arrives newest-first, so the
+// first entry of each run is the most recent — its timestamp is the one shown.
+function collapseRepairs(repairs: RepairEntry[]): CollapsedRepair[] {
+  const out: CollapsedRepair[] = [];
+  for (const r of repairs) {
+    const last = out[out.length - 1];
+    if (last && last.name === r.name && last.outcome === r.outcome && last.reason === r.reason) {
+      last.repeat += 1;
+      continue;
+    }
+    out.push({ name: r.name, type: r.type, outcome: r.outcome, reason: r.reason, ts: r.ts, repeat: 1 });
+  }
+  return out;
 }
 
 function EmptyState({ file }: { file: string }) {
@@ -62,6 +124,8 @@ export default async function Page() {
       .filter((s) => statusCounts[s])
       .map((s) => `${statusCounts[s]} ${s}`)
       .join(' · ');
+
+  const collapsedRepairs = repairs ? collapseRepairs(repairs) : null;
 
   return (
     <main className="min-h-screen bg-os-bg text-os-text px-4 py-6 sm:px-6 sm:py-8 max-w-3xl mx-auto space-y-8">
@@ -121,6 +185,7 @@ export default async function Page() {
               <tbody>
                 {lanes.map((lane) => {
                   const successRate = lane.runs > 0 ? Math.round((lane.ok / lane.runs) * 100) : null;
+                  const status = laneStatus(lane);
                   return (
                     <tr key={lane.lane} className="border-b border-os-border last:border-b-0">
                       <td className="px-3 py-2">{lane.lane}</td>
@@ -136,17 +201,9 @@ export default async function Page() {
                         {(lane.avgDurationMs / 1000).toFixed(1)}s
                       </td>
                       <td className="px-3 py-2 text-right">
-                        {lane.quotaExhausted ? (
-                          <Badge tone="warn">cooldown {formatDuration(lane.cooldownRemainingMs)}</Badge>
-                        ) : lane.runs === 0 ? (
-                          <Badge tone="warn" ghost>
-                            no runs
-                          </Badge>
-                        ) : (
-                          <Badge tone="ok" ghost>
-                            ok
-                          </Badge>
-                        )}
+                        <Badge tone={status.tone} ghost={status.ghost}>
+                          {status.label}
+                        </Badge>
                       </td>
                     </tr>
                   );
@@ -169,19 +226,18 @@ export default async function Page() {
             </div>
           ) : (
             <ul className="border border-os-border bg-os-surface divide-y divide-os-border">
-              {repairs.map((r, i) => {
-                const outcome = r.outcome.toLowerCase();
-                const state = outcome.includes('repair') || outcome.includes('ok')
-                  ? 'ok'
-                  : outcome.includes('revert') || outcome.includes('fail')
-                  ? 'err'
-                  : 'warn';
+              {collapsedRepairs!.map((r, i) => {
+                const state = repairState(r.outcome);
                 return (
                   <li key={`${r.ts}-${i}`} className="p-3 flex items-start gap-2 text-xs">
                     <Dot state={state} />
                     <div className="min-w-0">
                       <div className="text-os-text">
                         {r.name} <span className="text-os-dim">· {r.type}</span>
+                        <span className="text-os-dim"> · {r.outcome}</span>
+                        {r.repeat > 1 && (
+                          <span className="text-os-dim"> · ×{r.repeat}</span>
+                        )}
                       </div>
                       <div className="text-os-muted">{r.reason}</div>
                       <div className="text-os-dim">{formatRelativeTime(r.ts)}</div>
