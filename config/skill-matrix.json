@@ -1,0 +1,168 @@
+[
+  {
+    "taskClass": "frontend-design",
+    "requiredSkills": [
+      "ui-ux-pro-max",
+      "impeccable"
+    ],
+    "requiredStandards": [
+      "docs/standards/design-quality-standard.md",
+      "docs/standards/project-layer-standard.md"
+    ],
+    "preferredMaker": "CORLEONE",
+    "preferredReviewer": "HATTA",
+    "compactContextRule": "Include target route/component paths, viewport risks, and only affected project layers.",
+    "hardStops": [
+      "do not install Framer Motion unless motion is used"
+    ]
+  },
+  {
+    "taskClass": "backend-api",
+    "requiredSkills": [
+      "agent-dev-backend-api",
+      "verification-quality"
+    ],
+    "requiredStandards": [
+      "docs/standards/project-layer-standard.md",
+      "docs/standards/prompting-standards.md"
+    ],
+    "preferredMaker": "HATTA",
+    "preferredReviewer": "CORLEONE",
+    "compactContextRule": "Include route/service/schema paths, API contract, and targeted tests.",
+    "hardStops": [
+      "no credential write",
+      "no public deploy",
+      "no billing mutation"
+    ]
+  },
+  {
+    "taskClass": "database-storage",
+    "requiredSkills": [
+      "agentdb-memory-patterns",
+      "verification-quality"
+    ],
+    "requiredStandards": [
+      "docs/standards/project-layer-standard.md"
+    ],
+    "preferredMaker": "HATTA",
+    "preferredReviewer": "CORLEONE",
+    "compactContextRule": "Include schema/table names, migration behavior, compatibility expectations, and rollback evidence.",
+    "hardStops": [
+      "no DROP TABLE or destructive migration without owner approval",
+      "preserve existing SQLite rows"
+    ]
+  },
+  {
+    "taskClass": "agent-dispatch",
+    "requiredSkills": [
+      "agent-orchestrator-task",
+      "agent-sandbox",
+      "verification-quality"
+    ],
+    "requiredStandards": [
+      "docs/standards/prompting-standards.md",
+      "docs/standards/self-evolution-governance.md"
+    ],
+    "preferredMaker": "HATTA",
+    "preferredReviewer": "CORLEONE",
+    "compactContextRule": "Use a compact dispatch packet; include authority, mutation, mission, urgency, and hard stops.",
+    "hardStops": [
+      "no scheduled worker resume",
+      "no unaudited or unallowlisted GLM shell exposure",
+      "no permanent role expansion"
+    ]
+  },
+  {
+    "taskClass": "repo-analysis",
+    "requiredSkills": [
+      "graphify",
+      "agent-code-analyzer"
+    ],
+    "requiredStandards": [
+      "docs/standards/prompting-standards.md",
+      "docs/standards/project-layer-standard.md"
+    ],
+    "preferredMaker": "SJAHRIR",
+    "preferredReviewer": "GIBRAN",
+    "compactContextRule": "Prefer graphify-out/README.md, graph.json, and exact file paths over broad repo dumps.",
+    "hardStops": [
+      "no automatic Graphify run from dashboard",
+      "no paid semantic extraction without owner approval"
+    ]
+  },
+  {
+    "taskClass": "cleanup-archive",
+    "requiredSkills": [
+      "verification-quality",
+      "agent-sandbox"
+    ],
+    "requiredStandards": [
+      "docs/standards/project-layer-standard.md",
+      "docs/standards/self-evolution-governance.md"
+    ],
+    "preferredMaker": "HATTA",
+    "preferredReviewer": "GIBRAN",
+    "compactContextRule": "Include target path, classification, dry-run/evidence path, archive path, and verification method.",
+    "hardStops": [
+      "archive before delete",
+      "never delete private files",
+      "never touch active repo without registry evidence"
+    ]
+  },
+  {
+    "taskClass": "trading-safety",
+    "requiredSkills": [
+      "anthropic-skills:caveman",
+      "agent-trading-predictor",
+      "verification-quality"
+    ],
+    "requiredStandards": [
+      "docs/standards/project-layer-standard.md",
+      "docs/standards/self-evolution-governance.md"
+    ],
+    "preferredMaker": "HATTA",
+    "preferredReviewer": "SOEKARNO",
+    "compactContextRule": "Include Caveman control files, risk gate, broker boundary, and no-live-trading mutation statement.",
+    "hardStops": [
+      "no live broker mutation",
+      "no weakened risk gate",
+      "no credential exposure"
+    ]
+  },
+  {
+    "taskClass": "infra-network",
+    "requiredSkills": [
+      "agent-security-manager",
+      "agent-ops-cicd-github"
+    ],
+    "requiredStandards": [
+      "docs/standards/project-layer-standard.md",
+      "docs/standards/self-evolution-governance.md"
+    ],
+    "preferredMaker": "CORLEONE",
+    "preferredReviewer": "HATTA",
+    "compactContextRule": "Start with read-only inventory: device, access path, config backup status, owner impact, and rollback.",
+    "hardStops": [
+      "no router config write without backup",
+      "no firewall/NAT/VPN mutation without owner approval",
+      "no credential readout"
+    ]
+  },
+  {
+    "taskClass": "owner-communication",
+    "requiredSkills": [
+      "internal-comms",
+      "verification-quality"
+    ],
+    "requiredStandards": [
+      "docs/standards/prompting-standards.md"
+    ],
+    "preferredMaker": "AHMAD",
+    "preferredReviewer": "GIBRAN",
+    "compactContextRule": "Owner-facing output must be short, Indonesian-first, and show approve/reject/edit impact.",
+    "hardStops": [
+      "no scattered approval prompts",
+      "batch login/credential actions"
+    ]
+  }
+]

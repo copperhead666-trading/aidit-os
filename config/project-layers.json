@@ -1,0 +1,93 @@
+[
+  {
+    "id": "frontend",
+    "label": "Frontend Layer",
+    "ownerQuestion": "Can the owner and operators understand and use the product without reading code?",
+    "status": "partial",
+    "evidence": "No Next.js/TS/build frontend was found in this repo; repo frontend-glob scan only matched ops-watcher/cockpit-snapshot.html. The real owner-facing surface is Telegram: docs/standards/design-quality-standard.md:30, ops-watcher/telegram-notify.mjs:12-15, ops-watcher/telegram-notify.mjs:95-98, ops-watcher/telegram-listener.mjs:20-55."
+  },
+  {
+    "id": "api-backend",
+    "label": "API And Backend Logic",
+    "ownerQuestion": "Are workflows exposed through typed APIs and server-side business logic?",
+    "status": "partial",
+    "evidence": "Backend orchestration exists as Node .mjs workers around Paperclip and Telegram, not as a typed app API: ops-watcher/heartbeat.mjs:9-23, ops-watcher/directive-runner.mjs:2-18, ops-watcher/ahmad-dispatch.mjs:496-535."
+  },
+  {
+    "id": "database-storage",
+    "label": "Database And Storage",
+    "ownerQuestion": "Is durable state separated from file artifacts?",
+    "status": "implemented",
+    "evidence": "Operational state is separated across Paperclip/local database identity, config JSON, and append-only/log state files: config/paperclip-endpoint.json:3-28, config/agent-registry.json:97, knowledge/p4-research/technical-integration-sketch.md:7-10, ops-watcher/watcher.mjs:27-28, ops-watcher/heartbeat.mjs:174, ops-watcher/lane-usage.mjs:28-31."
+  },
+  {
+    "id": "authentication-authorization",
+    "label": "Authentication And Authorization",
+    "ownerQuestion": "Who may access the system, and what are they allowed to do?",
+    "status": "partial",
+    "evidence": "Telegram owner gating and role authority exist, but no web login/Mini App auth is implemented yet: ops-watcher/telegram-client.mjs:44, ops-watcher/telegram-listener.mjs:448-452, hatta/harness.mjs:205-237, config/agent-registry.json:272, knowledge/ahmad-mini-app/AHMAD-TELEGRAM-MINI-APP-SCOPE-2026-08-30.md:11-17."
+  },
+  {
+    "id": "hosting-deployment",
+    "label": "Hosting And Deployment",
+    "ownerQuestion": "How does the app run, restart, and get promoted?",
+    "status": "partial",
+    "evidence": "Local PM2 hosting/supervision exists, but production/cloud promotion is deferred: ops-watcher/ecosystem.config.cjs:73-75, ops-watcher/ecosystem.config.cjs:146-220, ops-watcher/pm2-supervisor.mjs:1-18, scripts/pm2-supervisor-run.cmd:4, handoffs/ahmad/NEXT-SESSION-PROMPT-2026-08-31.md:17."
+  },
+  {
+    "id": "cloud-compute",
+    "label": "Cloud Compute",
+    "ownerQuestion": "Which work runs locally, and which bounded work may use free or already-paid cloud capacity?",
+    "status": "partial",
+    "evidence": "Lane routing knows local/cloud/free lanes and cooldowns, but the zero-laptop/cloud migration is not implemented: ops-watcher/routing.mjs:2-18, ops-watcher/routing.mjs:39-64, config/agent-registry.json:143, config/agent-registry.json:706-708."
+  },
+  {
+    "id": "cicd-version-control",
+    "label": "CI/CD And Version Control",
+    "ownerQuestion": "Can changes be reviewed, verified, and rolled forward predictably?",
+    "status": "partial",
+    "evidence": "Local regression and promotion gates exist, but no .github CI directory was found: docs/standards/self-evolution-governance.md:28, docs/standards/self-evolution-governance.md:39, ops-watcher/run-all-tests.mjs:1-5, ops-watcher/run-all-tests.mjs:134-146, ops-watcher/run-all-tests.mjs:247-250."
+  },
+  {
+    "id": "role-level-security",
+    "label": "Role-Level Security",
+    "ownerQuestion": "Does every AI role have explicit authority, scope, and mutation limits?",
+    "status": "implemented",
+    "evidence": "HATTA has lexical/realpath workspace jail, command policy, secret/package mutation guards, and registry-defined role authority: hatta/harness.mjs:12, hatta/harness.mjs:200-237, hatta/harness.mjs:255-268, hatta/harness.mjs:420-433, hatta/harness.security.test.mjs:139-152, config/agent-registry.json:259-272, config/agent-registry.json:286."
+  },
+  {
+    "id": "rate-limiting",
+    "label": "Rate Limiting",
+    "ownerQuestion": "Can the system stop costly or runaway calls before quota burns?",
+    "status": "partial",
+    "evidence": "Lane-level quota/cooldown guards exist, including long quota cooldown and skip reasons, but no general HTTP edge rate limit layer is present: ops-watcher/lane-guard.mjs:52-92, ops-watcher/routing.mjs:45-64, ops-watcher/routing.mjs:227-310, ops-watcher/routing.regression.test.mjs:580-614."
+  },
+  {
+    "id": "cache-cdn",
+    "label": "Cache And CDN",
+    "ownerQuestion": "What is cached, and what must always be live/honest?",
+    "status": "deferred",
+    "evidence": "Deferred because this repo has no deployed frontend/CDN path; the richer Telegram Mini App requires HTTPS always-on cloud hosting and is explicitly held until P6 opens: knowledge/ahmad-mini-app/AHMAD-TELEGRAM-MINI-APP-SCOPE-2026-08-30.md:15-19, knowledge/ahmad-mini-app/AHMAD-TELEGRAM-MINI-APP-SCOPE-2026-08-30.md:55-68, handoffs/ahmad/NEXT-SESSION-PROMPT-2026-08-31.md:17."
+  },
+  {
+    "id": "load-balancer-scaling",
+    "label": "Load Balancer And Scaling",
+    "ownerQuestion": "How does the system handle more users, agents, or machines?",
+    "status": "deferred",
+    "evidence": "Deferred because current scaling is local PM2 supervision plus lane routing/queue discipline, while multi-host/cloud scaling remains P6/future work: ops-watcher/pm2-supervisor.mjs:60, ops-watcher/routing.mjs:324-357, config/agent-registry.json:662, config/agent-registry.json:706-708."
+  },
+  {
+    "id": "error-tracking",
+    "label": "Error And Tracking",
+    "ownerQuestion": "Can failures be diagnosed from durable evidence instead of vibes?",
+    "status": "implemented",
+    "evidence": "Durable tracking is real: ops-watcher/heartbeat-steps.jsonl and ops-watcher/lane-usage.jsonl are present and populated. Writers and failure handling are defined in ops-watcher/heartbeat.mjs:122-124, ops-watcher/heartbeat.mjs:300-303, ops-watcher/lane-usage.mjs:9-18, ops-watcher/lane-usage.mjs:34-58, ops-watcher/telegram-listener.mjs:76-112, ops-watcher/telegram.regression.test.mjs:767-909."
+  },
+  {
+    "id": "availability-recovery",
+    "label": "Availability And Recovery",
+    "ownerQuestion": "What happens when a model, machine, DB, or owner approval is unavailable?",
+    "status": "partial",
+    "evidence": "Availability/recovery mechanisms exist in PM2 supervision, heartbeat step logging, bounded self-repair, and actuator snapshots, but cloud/zero-laptop recovery remains deferred: ops-watcher/pm2-supervisor.mjs:1-18, ops-watcher/pm2-supervisor.mjs:506-610, ops-watcher/self-repair.mjs:4-23, ops-watcher/self-repair.mjs:44-46, ops-watcher/self-repair-actuator.mjs:43-55, ops-watcher/self-repair-actuator.mjs:378-427, config/agent-registry.json:706-708."
+  }
+]
