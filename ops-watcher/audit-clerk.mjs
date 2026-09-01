@@ -10,6 +10,14 @@
 //      (dispatchKimiReal) and legacy hermes (dispatchHermesReal) dispatchers
 //      remain available as explicit alternate lanes.
 //
+// The orphaned-allowlist check is local and instant and runs EVERY cycle. The
+// LLM-dispatched registry-drift check is throttled to at most once per
+// DRIFT_MIN_INTERVAL_MS (6h) because its own canonical role-map trigger is
+// "weekly cron / ledger write" and a per-5-minute CORLEONE dispatch was burning
+// a paid lane's rate budget. Before dispatching, the lane guard is consulted;
+// if the lane is unhealthy the dispatch is skipped entirely (the interval is
+// NOT restarted because the lane was never called).
+//
 // ALERTING: any current finding can alert AHMAD, but the state file
 // (audit-clerk-state.json) suppresses repeat alerts for the same key/detail for
 // 24 hours. Alertable findings are bundled into one ahmad-notify spawn.
@@ -19,6 +27,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { ALLOWED_SCRIPTS } from "./ahmad-mcp-server.mjs";
+import { guardLaneStart } from "./lane-guard.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -38,10 +47,32 @@ const COOLDOWN_MS = 24 * 60 * 60 * 1000;
 export const KIMI_TIMEOUT_MS = 10 * 60 * 1000;
 export const CORLEONE_TIMEOUT_MS = 10 * 60 * 1000;
 
+// Minimum interval between LLM-dispatched registry-drift checks. The
+// orphaned-allowlist check is NOT affected by this and still runs every cycle.
+// 6h bounds a paid CORLEONE lane to at most ~4 dispatches/day instead of ~288.
+export const DRIFT_MIN_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
+
 const REGISTRY_REL = "config/agent-registry.json";
 const ROLE_MAP_REL = "handoffs/sjahrir/CANONICAL-ROLE-MAP.json";
 
 const iso = () => new Date().toISOString();
+
+// Pure helper: should the LLM-dispatched registry-drift check run now?
+// Returns true when there is no recorded lastAttemptMs, or
+// nowMs - lastAttemptMs >= minIntervalMs. A malformed/missing state object is
+// treated as "should run" (never block a first/repair attempt on bad state).
+export function shouldRunDriftCheck(state, nowMs, minIntervalMs = DRIFT_MIN_INTERVAL_MS) {
+  try {
+    if (!state || typeof state !== "object") return true;
+    const dc = state.driftCheck;
+    if (!dc || typeof dc !== "object") return true;
+    const last = dc.lastAttemptMs;
+    if (typeof last !== "number" || !Number.isFinite(last)) return true;
+    return nowMs - last >= minIntervalMs;
+  } catch {
+    return true;
+  }
+}
 
 async function defaultReadAllowedScripts() {
   return ALLOWED_SCRIPTS.slice();
@@ -475,13 +506,23 @@ function buildAlertMessage(findings) {
 
 // Core, dependency-injected for tests. deps: { repoRoot, readAllowedScripts,
 // statFile, readFile, dispatchDrift, dispatchHermes (legacy), readState,
-// writeState, stateFile, postAlert, log, now }
+// writeState, stateFile, postAlert, log, now, guardLane, driftMinIntervalMs }
 //
 // The drift dispatcher is selected as: deps.dispatchDrift if
 // provided, else deps.dispatchHermes (legacy hermes lane) if provided, else the
 // real dispatchCorleoneReal. This keeps older callers/tests that inject
 // `dispatchHermes` working without silently spawning a real process, while new
 // callers default to the CORLEONE lane.
+//
+// The LLM-dispatched registry-drift check is throttled by
+// DRIFT_MIN_INTERVAL_MS via shouldRunDriftCheck and gated by the lane guard
+// (deps.guardLane, defaulting to guardLaneStart("corleone")). The
+// orphaned-allowlist check always runs every cycle. When the drift check is
+// actually dispatched, driftCheck.lastAttemptMs is recorded in the state file
+// (whether the check succeeded, failed, or hit a quota) so the paid lane is
+// never called more than once per interval. When the check is skipped due to
+// the interval OR an unhealthy lane, lastAttemptMs is NOT updated (the lane
+// was never called, so the interval should not restart).
 export async function runAuditClerkOnce(deps = {}) {
   const {
     repoRoot = REPO_ROOT,
@@ -496,9 +537,30 @@ export async function runAuditClerkOnce(deps = {}) {
     postAlert = spawnAlertReal,
     log = (m) => console.log(m),
     now = Date.now,
+    guardLane = guardLaneStart,
+    driftMinIntervalMs = DRIFT_MIN_INTERVAL_MS,
   } = deps;
 
   const driftDispatcher = dispatchDrift || dispatchHermes || dispatchCorleoneReal;
+  const nowMs = toMillis(now);
+
+  // Read state up front so we can decide whether to dispatch the (paid,
+  // throttled) drift check at all. The orphaned-allowlist check below stays
+  // local and runs every cycle regardless of this decision.
+  let state;
+  try {
+    state = await readState(stateFile);
+  } catch {
+    state = { alerts: {} };
+  }
+  if (!state || typeof state !== "object") state = { alerts: {} };
+  if (!state.alerts || typeof state.alerts !== "object") state.alerts = {};
+  const alerts = state.alerts;
+  const existingDriftCheck =
+    state.driftCheck && typeof state.driftCheck === "object" ? state.driftCheck : {};
+  // driftCheck that will be persisted. Defaults to the existing entry; only
+  // updated with a fresh lastAttemptMs when the lane is actually dispatched.
+  let driftCheck = existingDriftCheck;
 
   const findings = [];
 
@@ -513,26 +575,49 @@ export async function runAuditClerkOnce(deps = {}) {
     });
   }
 
-  try {
-    findings.push(...await checkRegistryDrift({ dispatchDrift: driftDispatcher }));
-  } catch (err) {
-    findings.push({
-      key: "registry-drift-check-failed",
-      check: "registry-drift",
-      severity: "WARNING",
-      detail: `AUDIT-CLERK tidak bisa menjalankan pemeriksaan konsistensi registry-drift pada sweep ini (hermes ${err && err.message || err}) - akan dicoba lagi pada sweep berikutnya.`,
-    });
+  // ---- registry-drift: throttle + lane guard ----
+  if (!shouldRunDriftCheck(state, nowMs, driftMinIntervalMs)) {
+    const lastAttemptMs =
+      typeof existingDriftCheck.lastAttemptMs === "number" ? existingDriftCheck.lastAttemptMs : 0;
+    const nextMs = lastAttemptMs + driftMinIntervalMs;
+    log(`audit-clerk: registry-drift check skipped (next run after ${new Date(nextMs).toISOString()})`);
+  } else {
+    // Consult the lane guard before spending a paid dispatch. A guard error is
+    // treated as "no skip" so a guard hiccup never silently drops the check.
+    let guard;
+    try {
+      guard = await guardLane("corleone");
+    } catch {
+      guard = { skip: false, reason: null, remainingMs: 0 };
+    }
+    if (guard && guard.skip) {
+      if (guard.reason === "quota") {
+        findings.push({
+          key: "registry-drift-quota",
+          check: "registry-drift",
+          severity: "WARNING",
+          detail: "AUDIT-CLERK tidak bisa menjalankan pemeriksaan registry-drift: kuota lane eksekutor habis - pemeriksaan dilewati sampai kuota pulih (tidak ada fallback otomatis ke reasoner yang lebih lemah).",
+        });
+      }
+      log(`audit-clerk: registry-drift check skipped (lane ${guard.reason})`);
+      // The lane was never called -> do NOT restart the interval. driftCheck
+      // stays as existingDriftCheck (lastAttemptMs unchanged).
+    } else {
+      try {
+        findings.push(...await checkRegistryDrift({ dispatchDrift: driftDispatcher }));
+      } catch (err) {
+        findings.push({
+          key: "registry-drift-check-failed",
+          check: "registry-drift",
+          severity: "WARNING",
+          detail: `AUDIT-CLERK tidak bisa menjalankan pemeriksaan konsistensi registry-drift pada sweep ini (hermes ${err && err.message || err}) - akan dicoba lagi pada sweep berikutnya.`,
+        });
+      }
+      // Record the attempt whether the check succeeded, failed, or hit a
+      // quota: the point is to bound how often the paid lane is called.
+      driftCheck = { ...existingDriftCheck, lastAttemptMs: nowMs };
+    }
   }
-
-  let state;
-  try {
-    state = await readState(stateFile);
-  } catch {
-    state = { alerts: {} };
-  }
-  if (!state || !state.alerts) state = { alerts: {} };
-  const alerts = state.alerts || {};
-  const nowMs = toMillis(now);
 
   const toAlert = [];
   for (const f of findings) {
@@ -554,7 +639,7 @@ export async function runAuditClerkOnce(deps = {}) {
     }
   }
   try {
-    await writeState(stateFile, { alerts: newAlerts });
+    await writeState(stateFile, { alerts: newAlerts, driftCheck });
   } catch (err) {
     log(`audit-clerk: state write threw (${err && err.message}) - dedupe may repeat on next run`);
   }

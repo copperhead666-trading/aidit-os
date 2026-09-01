@@ -25,6 +25,23 @@ function first200(value) {
   return String(value || "").slice(0, 200);
 }
 
+// audit-clerk.mjs#classifyDriftOutput and
+// review-runner.mjs#isUnusableReviewerReply are older, task-specific variants
+// of this same idea and are deliberately left alone for now.
+export function isUnusableModelOutput(text) {
+  let trimmed = "";
+  try {
+    trimmed = text == null ? "" : String(text).trim();
+  } catch {
+    trimmed = "";
+  }
+  if (!trimmed) return { unusable: true, reason: "empty output" };
+  if (/response truncated due to output length limit/i.test(trimmed)) return { unusable: true, reason: "output truncated" };
+  if (/provider\.auth_error|usage limit|insufficient_quota|rate limit exceeded/i.test(trimmed)) return { unusable: true, reason: "lane quota/auth error" };
+  if (trimmed.length < 20) return { unusable: true, reason: "output too short" };
+  return { unusable: false };
+}
+
 export async function guardLaneStart(laneName, deps = {}) {
   const laneKey = resolveLaneKey(laneName);
   try {

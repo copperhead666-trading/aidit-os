@@ -23,6 +23,7 @@ import { promises as fs, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { logLaneUsage } from "./lane-usage.mjs";
+import { guardLaneStart, recordLaneOutcome } from "./lane-guard.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -192,6 +193,15 @@ async function main() {
   // Step 5: Build prompt and spawn kimi (SJAHRIR's lane).
   const prompt = buildPrompt(question, graphContent, stalenessNote);
 
+  const guard = await guardLaneStart("sjahrir");
+  if (guard.skip) {
+    const reason = guard.reason || "unknown";
+    const retryMinutes = Math.ceil(guard.remainingMs / 60000);
+    process.stderr.write(`graphify-analyst: lane SJAHRIR dilewati (${reason}), coba lagi dalam ${retryMinutes} menit — tidak ada pemanggilan kimi\n`);
+    await logLaneUsage({ lane: "graphify-analyst", promptLength: prompt.length, ok: false, exitCode: 3, durationMs: 0 });
+    process.exit(3);
+  }
+
   // `kimi` resolves to a native kimi.exe on this machine, so we spawn it
   // directly with shell:false (the safe default) — same reasoning as
   // sjahrir-dispatch.mjs. shell:false passes the args array VERBATIM via
@@ -213,15 +223,18 @@ async function main() {
   if (r.signal === "SIGTERM" && r.status === null) {
     // spawnSync sets status=null + signal="SIGTERM" on timeout kill.
     process.stderr.write(`graphify-analyst: kimi timed out after ${TIMEOUT_MS}ms\n`);
+    await recordLaneOutcome("sjahrir", { ok: false, stdout: r.stdout, stderr: r.stderr });
     await logLaneUsage({ lane: "graphify-analyst", promptLength: prompt.length, ok: false, exitCode: 1, durationMs });
     process.exit(1);
   }
   if (r.error) {
     process.stderr.write(`graphify-analyst: failed to spawn kimi: ${r.error && r.error.message ? r.error.message : r.error}\n`);
+    await recordLaneOutcome("sjahrir", { ok: false, stdout: r.stdout, stderr: r.stderr });
     await logLaneUsage({ lane: "graphify-analyst", promptLength: prompt.length, ok: false, exitCode: 1, durationMs });
     process.exit(1);
   }
   const exitCode = typeof r.status === "number" ? r.status : 1;
+  await recordLaneOutcome("sjahrir", { ok: exitCode === 0, stdout: r.stdout, stderr: r.stderr });
   await logLaneUsage({ lane: "graphify-analyst", promptLength: prompt.length, ok: exitCode === 0, exitCode, durationMs });
   process.exit(exitCode);
 }

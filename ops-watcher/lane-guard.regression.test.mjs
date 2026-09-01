@@ -6,7 +6,7 @@
 //   node ops-watcher/lane-guard.regression.test.mjs
 
 import assert from "node:assert/strict";
-import { LANE_KEYS, guardLaneStart, recordLaneOutcome } from "./lane-guard.mjs";
+import { LANE_KEYS, guardLaneStart, recordLaneOutcome, isUnusableModelOutput } from "./lane-guard.mjs";
 
 let passed = 0;
 let failed = 0;
@@ -151,6 +151,28 @@ async function testRecordOutcomeRecorderThrows() {
   } catch (err) { bad(name, err); }
 }
 
+// =====================================================================
+// G8: unusable model output truth table
+// =====================================================================
+async function testIsUnusableModelOutputTruthTable() {
+  const name = "G8 isUnusableModelOutput classifies empty/meta/quota/short replies";
+  try {
+    assert.deepEqual(isUnusableModelOutput(""), { unusable: true, reason: "empty output" });
+    assert.deepEqual(isUnusableModelOutput("   \n\t  "), { unusable: true, reason: "empty output" });
+    assert.deepEqual(isUnusableModelOutput("Response truncated due to output length limit"), { unusable: true, reason: "output truncated" });
+    assert.deepEqual(
+      isUnusableModelOutput("provider.auth_error: 403 You've reached your weekly (7-day) usage limit."),
+      { unusable: true, reason: "lane quota/auth error" },
+    );
+    assert.deepEqual(isUnusableModelOutput("ok"), { unusable: true, reason: "output too short" });
+    assert.deepEqual(
+      isUnusableModelOutput("Issue ini terblokir karena kredensial owner belum tersedia. Tim tidak bisa melanjutkan deploy sampai akses tersebut diberikan. Mohon konfirmasi kredensial yang aman untuk membuka jalur kerja berikutnya."),
+      { unusable: false },
+    );
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
 async function main() {
   console.log("# ops-watcher lane-guard regression tests");
   await testLaneKeysMapping();
@@ -160,6 +182,7 @@ async function main() {
   await testRecordOutcomeQuotaFailure();
   await testRecordOutcomeOrdinaryFailure();
   await testRecordOutcomeRecorderThrows();
+  await testIsUnusableModelOutputTruthTable();
   console.log("");
   console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
   if (failed > 0) { for (const f of failures) console.log(`  FAILED: ${f}`); process.exit(1); }

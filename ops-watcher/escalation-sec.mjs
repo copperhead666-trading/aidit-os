@@ -17,6 +17,7 @@ import {
   patchIssue,
   postComment,
 } from "./paperclip-write-client.mjs";
+import { isUnusableModelOutput } from "./lane-guard.mjs";
 
 export const COMPANY_ID = "a7011f31-8891-4581-b8fb-bbda8ac6a890";
 
@@ -192,9 +193,15 @@ export async function runEscalationSecOnce(deps = {}) {
       const prompt = buildPrompt(it);
       try {
         const h = await _dispatchHermes(prompt);
-        if (h && h.ok && String(h.stdout || "").trim()) {
-          explanation = String(h.stdout || "").trim();
-          log(`escalation-sec: ${ident} hermes-composed owner explanation`);
+        if (h && h.ok) {
+          const unusable = isUnusableModelOutput(h.stdout);
+          if (!unusable.unusable) {
+            explanation = String(h.stdout || "").trim();
+            log(`escalation-sec: ${ident} hermes-composed owner explanation`);
+          } else {
+            explanation = fallbackExplanation(it);
+            log(`escalation-sec: ${ident} fallback owner explanation (hermes ${unusable.reason})`);
+          }
         } else {
           const reason = h && h.timedOut ? "timeout" : h && h.error ? h.error : "hermes-failed";
           explanation = fallbackExplanation(it);

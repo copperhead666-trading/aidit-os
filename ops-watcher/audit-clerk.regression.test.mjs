@@ -11,6 +11,8 @@ import {
   extractDriftAnswer,
   isQuotaExhaustedFailure,
   runAuditClerkOnce,
+  shouldRunDriftCheck,
+  DRIFT_MIN_INTERVAL_MS,
 } from "./audit-clerk.mjs";
 
 let pass = 0;
@@ -18,6 +20,7 @@ const ok = (label) => { pass += 1; console.log(`OK  ${label}`); };
 
 const NOW = 2_000_000_000;
 const DAY = 24 * 60 * 60 * 1000;
+const HOUR = 60 * 60 * 1000;
 const REAL_KIMI_QUOTA_TEXT = "provider.auth_error: 403 You've reached your weekly (7-day) usage limit.";
 
 function fakeStateStore(initial = { alerts: {} }) {
@@ -40,6 +43,9 @@ function makeDeps(overrides = {}) {
       throw new Error(`unexpected read ${filePath}`);
     },
     dispatchHermes: async () => ({ ok: true, stdout: "NO INCONSISTENCIES FOUND", stderr: "" }),
+    // Default lane guard: lane is healthy, never skip. Existing tests rely on
+    // the drift dispatcher actually running when the interval allows it.
+    guardLane: async () => ({ skip: false, reason: null, remainingMs: 0 }),
     readState: stateStore.readState,
     writeState: stateStore.writeState,
     postAlert: (msg) => {
@@ -443,6 +449,156 @@ async function t24_dispatchHermesStillWinsBeforeRealDefault() {
   ok("T24: no dispatchDrift dep -> injected dispatchHermes wins before real CORLEONE default");
 }
 
+// ---- drift-check throttling + lane guard ----
+
+function t25_shouldRunDriftCheckTruthTable() {
+  // No state at all -> should run.
+  assert.equal(shouldRunDriftCheck(null, NOW), true, "T25: null state -> run");
+  assert.equal(shouldRunDriftCheck(undefined, NOW), true, "T25: undefined state -> run");
+  // Empty object (no driftCheck) -> should run.
+  assert.equal(shouldRunDriftCheck({}, NOW), true, "T25: empty object -> run");
+  assert.equal(shouldRunDriftCheck({ alerts: {} }, NOW), true, "T25: alerts-only state -> run");
+  // driftCheck present but no lastAttemptMs -> run.
+  assert.equal(shouldRunDriftCheck({ driftCheck: {} }, NOW), true, "T25: driftCheck without lastAttemptMs -> run");
+  // 1ms under the interval -> do NOT run.
+  const under = NOW - (DRIFT_MIN_INTERVAL_MS - 1);
+  assert.equal(
+    shouldRunDriftCheck({ driftCheck: { lastAttemptMs: under } }, NOW),
+    false,
+    "T25: 1ms under interval -> skip",
+  );
+  // Exactly at the interval -> run (>= comparison).
+  const exact = NOW - DRIFT_MIN_INTERVAL_MS;
+  assert.equal(
+    shouldRunDriftCheck({ driftCheck: { lastAttemptMs: exact } }, NOW),
+    true,
+    "T25: exactly at interval -> run",
+  );
+  // Well past -> run.
+  const past = NOW - (DRIFT_MIN_INTERVAL_MS + 1000);
+  assert.equal(
+    shouldRunDriftCheck({ driftCheck: { lastAttemptMs: past } }, NOW),
+    true,
+    "T25: well past interval -> run",
+  );
+  // Malformed lastAttemptMs values -> run (treated as never recorded).
+  assert.equal(shouldRunDriftCheck({ driftCheck: { lastAttemptMs: "oops" } }, NOW), true, "T25: string lastAttemptMs -> run");
+  assert.equal(shouldRunDriftCheck({ driftCheck: { lastAttemptMs: NaN } }, NOW), true, "T25: NaN lastAttemptMs -> run");
+  assert.equal(shouldRunDriftCheck({ driftCheck: { lastAttemptMs: null } }, NOW), true, "T25: null lastAttemptMs -> run");
+  assert.equal(shouldRunDriftCheck({ driftCheck: { lastAttemptMs: undefined } }, NOW), true, "T25: undefined lastAttemptMs -> run");
+  // Custom minInterval override is respected.
+  assert.equal(
+    shouldRunDriftCheck({ driftCheck: { lastAttemptMs: NOW - 5 * 1000 } }, NOW, 10 * 1000),
+    false,
+    "T25: custom interval override under -> skip",
+  );
+  assert.equal(
+    shouldRunDriftCheck({ driftCheck: { lastAttemptMs: NOW - 10 * 1000 } }, NOW, 10 * 1000),
+    true,
+    "T25: custom interval override at -> run",
+  );
+  ok("T25: shouldRunDriftCheck truth table (no state, empty, under, exact, past, malformed, custom interval)");
+}
+
+async function t26_driftCheckWithinIntervalSkipsDispatcherAndKeepsAllowlist() {
+  const missing = "ops-watcher/ghost.mjs";
+  const dispatchCalls = { drift: 0 };
+  const logLines = [];
+  const { deps } = makeDeps({
+    initialState: { alerts: {}, driftCheck: { lastAttemptMs: NOW - HOUR } }, // 1h < 6h
+    readAllowedScripts: async () => [missing],
+    statFile: async () => { throw new Error("ENOENT"); },
+    dispatchDrift: async () => {
+      dispatchCalls.drift += 1;
+      return { ok: true, stdout: "- should not appear", stderr: "" };
+    },
+    log: (m) => { logLines.push(m); },
+  });
+  const r = await runAuditClerkOnce(deps);
+  assert.equal(dispatchCalls.drift, 0, "T26: drift dispatcher never called within interval");
+  assert.equal(r.results.find((f) => /^registry-drift/.test(f.key)), undefined, "T26: no registry-drift* finding produced");
+  // Orphaned-allowlist check still ran normally.
+  const orphan = r.results.find((f) => f.key === `orphaned-allowlist:${missing}`);
+  assert.ok(orphan, "T26: orphaned-allowlist check still ran");
+  assert.ok(logLines.some((l) => /registry-drift check skipped \(next run after/.test(l)), "T26: skip log line emitted");
+  ok("T26: driftCheck 1h old -> dispatcher never called, no registry-drift* finding, orphaned-allowlist still runs");
+}
+
+async function t27_driftCheckPastIntervalDispatchesAndRecordsLastAttemptPreservingAlerts() {
+  const text = "- CORLEONE drift present.";
+  const prevAlerts = {
+    "registry-drift": { lastAlertedAt: NOW - HOUR, finding: text },
+  };
+  const initialLastAttempt = NOW - 7 * HOUR; // 7h >= 6h -> should run
+  const { deps, stateStore } = makeDeps({
+    initialState: { alerts: prevAlerts, driftCheck: { lastAttemptMs: initialLastAttempt } },
+    dispatchHermes: async () => ({ ok: true, stdout: text, stderr: "" }),
+  });
+  const r = await runAuditClerkOnce(deps);
+  // Dispatcher was called -> the same-finding-within-cooldown alert is returned
+  // but suppressed from alerting; alerts preserved untouched in written state.
+  const drifts = r.results.filter((f) => f.key === "registry-drift");
+  assert.equal(drifts.length, 1, "T27: dispatcher ran and produced the registry-drift finding");
+  const stored = stateStore.getStored();
+  assert.ok(stored.driftCheck && typeof stored.driftCheck.lastAttemptMs === "number", "T27: driftCheck.lastAttemptMs recorded");
+  assert.equal(stored.driftCheck.lastAttemptMs, NOW, "T27: lastAttemptMs updated to now");
+  assert.deepEqual(
+    stored.alerts["registry-drift"],
+    prevAlerts["registry-drift"],
+    "T27: alerts entry preserved untouched (same finding within cooldown)",
+  );
+  ok("T27: driftCheck 7h old -> dispatcher called, new lastAttemptMs recorded, alerts preserved untouched");
+}
+
+async function t28_guardLaneQuotaSkipDoesNotDispatchAndPreservesLastAttempt() {
+  const dispatchCalls = { drift: 0 };
+  const logLines = [];
+  const initialLastAttempt = NOW - 7 * HOUR; // interval allows a run
+  const { deps, stateStore } = makeDeps({
+    initialState: { alerts: {}, driftCheck: { lastAttemptMs: initialLastAttempt } },
+    guardLane: async () => ({ skip: true, reason: "quota", remainingMs: 3600000 }),
+    dispatchDrift: async () => {
+      dispatchCalls.drift += 1;
+      return { ok: true, stdout: "- should not appear", stderr: "" };
+    },
+    log: (m) => { logLines.push(m); },
+  });
+  const r = await runAuditClerkOnce(deps);
+  assert.equal(dispatchCalls.drift, 0, "T28: dispatcher not called when guard says quota skip");
+  const quotaFindings = r.results.filter((f) => f.key === "registry-drift-quota");
+  assert.equal(quotaFindings.length, 1, "T28: exactly one registry-drift-quota finding");
+  assert.equal(quotaFindings[0].check, "registry-drift", "T28: quota finding is a registry-drift check");
+  assert.equal(r.results.find((f) => f.key === "registry-drift-check-failed"), undefined, "T28: no ordinary check-failed finding");
+  assert.equal(r.results.find((f) => f.key === "registry-drift"), undefined, "T28: no real drift finding");
+  const stored = stateStore.getStored();
+  assert.equal(stored.driftCheck && stored.driftCheck.lastAttemptMs, initialLastAttempt, "T28: lastAttemptMs unchanged (lane never called)");
+  assert.ok(logLines.some((l) => /registry-drift check skipped \(lane quota\)/.test(l)), "T28: lane-skip log line emitted");
+  ok("T28: guardLane quota skip -> dispatcher not called, exactly one registry-drift-quota finding, lastAttemptMs unchanged");
+}
+
+async function t29_guardLaneCooldownSkipProducesNoFinding() {
+  const dispatchCalls = { drift: 0 };
+  const logLines = [];
+  const initialLastAttempt = NOW - 7 * HOUR; // interval allows a run
+  const { deps, stateStore } = makeDeps({
+    initialState: { alerts: {}, driftCheck: { lastAttemptMs: initialLastAttempt } },
+    guardLane: async () => ({ skip: true, reason: "cooldown", remainingMs: 60000 }),
+    dispatchDrift: async () => {
+      dispatchCalls.drift += 1;
+      return { ok: true, stdout: "- should not appear", stderr: "" };
+    },
+    log: (m) => { logLines.push(m); },
+  });
+  const r = await runAuditClerkOnce(deps);
+  assert.equal(dispatchCalls.drift, 0, "T29: dispatcher not called when guard says cooldown skip");
+  assert.equal(r.results.length, 0, "T29: no finding at all on cooldown skip");
+  assert.equal(r.results.find((f) => /^registry-drift/.test(f.key)), undefined, "T29: no registry-drift* finding");
+  const stored = stateStore.getStored();
+  assert.equal(stored.driftCheck && stored.driftCheck.lastAttemptMs, initialLastAttempt, "T29: lastAttemptMs unchanged (lane never called)");
+  assert.ok(logLines.some((l) => /registry-drift check skipped \(lane cooldown\)/.test(l)), "T29: lane-skip log line emitted");
+  ok("T29: guardLane cooldown skip -> dispatcher not called and NO finding at all");
+}
+
 async function main() {
   const tests = [
     t1_orphanedAllowlistExistingNoFinding,
@@ -473,6 +629,11 @@ async function main() {
     t22_registryQuotaFailureBecomesDistinctFinding,
     t23_registryUnrelatedFailureStaysOrdinaryCheckFailed,
     t24_dispatchHermesStillWinsBeforeRealDefault,
+    t25_shouldRunDriftCheckTruthTable,
+    t26_driftCheckWithinIntervalSkipsDispatcherAndKeepsAllowlist,
+    t27_driftCheckPastIntervalDispatchesAndRecordsLastAttemptPreservingAlerts,
+    t28_guardLaneQuotaSkipDoesNotDispatchAndPreservesLastAttempt,
+    t29_guardLaneCooldownSkipProducesNoFinding,
   ];
   for (const t of tests) await t();
   console.log(`\naudit-clerk.regression.test.mjs: ${pass}/${tests.length} passed`);

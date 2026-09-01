@@ -114,6 +114,38 @@ async function t2_hermesFailureFallsBackAndCompletes() {
   ok("T2: Hermes ok:false -> deterministic fallback text still completes label/comment/timestamp escalation");
 }
 
+// ---- T2b: Hermes meta output is treated as unusable and falls back ----
+async function t2b_hermesTruncatedMetaFallsBackAndCompletes() {
+  const issue = blockedIssue({ id: "iss-truncated", identifier: "KOL-102B" });
+  const { deps, calls } = makeDeps({
+    issues: [issue],
+    hermes: async () => ({ ok: true, stdout: "Response truncated due to output length limit", stderr: "" }),
+  });
+  const r = await runEscalationSecOnce(deps);
+
+  const fallback = `Issue ini terblokir: ${JSON.stringify(issue.unblockDescriptor)}. Perlu tindakan Anda untuk melanjutkan.`;
+  assert.equal(r.results[0].outcome, "notified", "T2b: unusable meta output still completes");
+  assert.equal(calls.comment.length, 1, "T2b: comment still posted");
+  assert.equal(calls.comment[0].body, `ESCALATION-SEC NOTIFIED: ${fallback}`, "T2b: deterministic fallback text used");
+  assert.ok(!calls.comment[0].body.includes("Response truncated due to output length limit"), "T2b: meta string is not pasted to owner");
+  ok("T2b: Hermes truncation meta string -> deterministic fallback text");
+}
+
+// ---- T2c: Hermes normal Indonesian paragraph is used ----
+async function t2c_hermesNormalParagraphIsUsed() {
+  const issue = blockedIssue({ id: "iss-composed", identifier: "KOL-102C" });
+  const paragraph = "Issue ini terblokir karena kredensial owner belum tersedia. Tim perlu menerima akses yang benar sebelum deployment dapat dilanjutkan. Setelah kredensial dikonfirmasi, pekerjaan bisa berjalan kembali tanpa mengubah rencana teknis.";
+  const { deps, calls } = makeDeps({
+    issues: [issue],
+    hermes: async () => ({ ok: true, stdout: paragraph, stderr: "" }),
+  });
+  const r = await runEscalationSecOnce(deps);
+
+  assert.equal(r.results[0].outcome, "notified", "T2c: composed output completes");
+  assert.equal(calls.comment[0].body, `ESCALATION-SEC NOTIFIED: ${paragraph}`, "T2c: normal paragraph is used verbatim after marker");
+  ok("T2c: Hermes normal Indonesian paragraph -> owner explanation is used");
+}
+
 // ---- T3: already notified by schema field ----
 async function t3_alreadyBlockedOwnerNotifiedSkips() {
   const { deps, calls } = makeDeps({
@@ -252,6 +284,8 @@ async function main() {
   const tests = [
     t1_notifiesBlockedUnnotifiedIssue,
     t2_hermesFailureFallsBackAndCompletes,
+    t2b_hermesTruncatedMetaFallsBackAndCompletes,
+    t2c_hermesNormalParagraphIsUsed,
     t3_alreadyBlockedOwnerNotifiedSkips,
     t4_markerCommentSkipsDuplicate,
     t5_nonBlockedSkipped,
