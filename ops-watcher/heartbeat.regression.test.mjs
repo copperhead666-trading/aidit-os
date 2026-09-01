@@ -30,9 +30,29 @@
 //        exists to catch.
 //   (H10) the audit-clerk step is present as the 13th step, positioned right
 //        after gbrain-curator, invoked with its mandated argv.
+//
+// Durable step-log coverage (R1–R5):
+//   (R1) buildStepRecord output shape + excerpt cap (>300-char output truncated;
+//        newlines collapsed).
+//   (R2) a sweep calls appendStepLog exactly ONCE with steps.length == step
+//        count, correct succeeded/failed counts, and each entry carrying
+//        name/ok/exitCode.
+//   (R3) a healthy-daemon telegram-listener skip is recorded with
+//        skipped:true, ok:true.
+//   (R4) an appendStepLog that REJECTS does not fail the sweep — the sweep
+//        still returns its normal result and logs a WARN line.
+//   (R5) rotation helper: given a file over the byte cap, only the last
+//        STEP_LOG_KEEP_LINES lines survive (tested with injected fs, not the
+//        real file).
 
 import assert from "node:assert/strict";
-import { runHeartbeatOnce, runStepReal } from "./heartbeat.mjs";
+import {
+  runHeartbeatOnce,
+  runStepReal,
+  buildStepRecord,
+  rotateStepLogFile,
+  STEP_LOG_KEEP_LINES,
+} from "./heartbeat.mjs";
 
 let passed = 0;
 let failed = 0;
@@ -70,6 +90,11 @@ function makeLogCapture() {
   const log = (m) => { lines.push(String(m)); console.log("  | " + m); };
   return { lines, log };
 }
+
+// A no-op durable-step-log writer injected into every existing sweep test so the
+// real heartbeat-steps.jsonl file is never touched during the regression run.
+// (The NEW R-series tests inject their own capturing/rejecting writers.)
+const noopAppendStepLog = async () => {};
 
 const SCRIPTS = {
   watcher:           "ops-watcher/watcher.mjs",
@@ -157,7 +182,7 @@ async function testAllStepsAttemptedOnStep2Fail() {
   table[SCRIPTS.testRunner] = { code: 1, stdout: "test-runner --once: processed 1 issue(s)\n", stderr: "AssertionError: expected 2 === 3\n" };
   const { lines, log } = makeLogCapture();
   try {
-    const r = await runHeartbeatOnce({ runStep: makeFakeRunStep(table), log, now: () => 1700000000000, shouldRunTelegramListenerStep: alwaysRunFallback });
+    const r = await runHeartbeatOnce({ runStep: makeFakeRunStep(table), log, now: () => 1700000000000, shouldRunTelegramListenerStep: alwaysRunFallback, appendStepLog: noopAppendStepLog });
     assert.equal(r.total, 13, "exactly 13 steps in the pipeline");
     assert.equal(r.results.length, 13, "all 13 steps produced a result");
     // Step ordering preserved and names correct.
@@ -183,7 +208,7 @@ async function testSummaryLinesProduced() {
   const table = happyTable();
   const { lines, log } = makeLogCapture();
   try {
-    await runHeartbeatOnce({ runStep: makeFakeRunStep(table), log, now: () => 1700000000000, shouldRunTelegramListenerStep: alwaysRunFallback });
+    await runHeartbeatOnce({ runStep: makeFakeRunStep(table), log, now: () => 1700000000000, shouldRunTelegramListenerStep: alwaysRunFallback, appendStepLog: noopAppendStepLog });
     // One START line, one per-step line (13), one final DONE line.
     const startLines = lines.filter((l) => /heartbeat --once START/.test(l));
     const stepLines = lines.filter((l) => /^\s+\[/.test(l));
@@ -220,7 +245,7 @@ async function testMissingScriptDoesNotCrash() {
   delete table[SCRIPTS.reviewRunner];
   const { lines, log } = makeLogCapture();
   try {
-    const r = await runHeartbeatOnce({ runStep: makeFakeRunStep(table), log, now: () => 1700000000000, shouldRunTelegramListenerStep: alwaysRunFallback });
+    const r = await runHeartbeatOnce({ runStep: makeFakeRunStep(table), log, now: () => 1700000000000, shouldRunTelegramListenerStep: alwaysRunFallback, appendStepLog: noopAppendStepLog });
     assert.equal(r.results.length, 13, "still 13 results — sweep ran to completion");
     // The review-runner step reports a missing-script failure (code null) but
     // did NOT abort the sweep.
@@ -252,7 +277,7 @@ async function testThrowingRunStepCaught() {
   const table = happyTable();
   const { lines, log } = makeLogCapture();
   try {
-    const r = await runHeartbeatOnce({ runStep: makeFakeRunStep(table, { throwFor: SCRIPTS.telegramListener }), log, now: () => 1700000000000, shouldRunTelegramListenerStep: alwaysRunFallback });
+    const r = await runHeartbeatOnce({ runStep: makeFakeRunStep(table, { throwFor: SCRIPTS.telegramListener }), log, now: () => 1700000000000, shouldRunTelegramListenerStep: alwaysRunFallback, appendStepLog: noopAppendStepLog });
     assert.equal(r.results.length, 13);
     const tl = r.results.find((x) => x.name === "telegram-listener");
     assert.equal(tl.code, null, "throwing step -> code null");
@@ -284,7 +309,7 @@ async function testArgvDrift() {
   const seen = [];
   const runStep = async (argv) => { seen.push(argv); return { code: 0, stdout: "", stderr: "", error: null }; };
   try {
-    await runHeartbeatOnce({ runStep, log: () => {}, now: () => 1700000000000, shouldRunTelegramListenerStep: alwaysRunFallback });
+    await runHeartbeatOnce({ runStep, log: () => {}, now: () => 1700000000000, shouldRunTelegramListenerStep: alwaysRunFallback, appendStepLog: noopAppendStepLog });
     assert.equal(seen.length, 13);
     assert.deepEqual(seen[0], ["ops-watcher/watcher.mjs", "--once"]);
     assert.deepEqual(seen[1], ["ops-watcher/test-runner.mjs", "--once"]);
@@ -313,7 +338,7 @@ async function testTelegramListenerSkippedWhenDaemonHealthy() {
   const runStep = async (argv) => { seen.push(argv); return makeFakeRunStep(table)(argv); };
   const { lines, log } = makeLogCapture();
   try {
-    const r = await runHeartbeatOnce({ runStep, log, now: () => 1700000000000, shouldRunTelegramListenerStep: async () => false });
+    const r = await runHeartbeatOnce({ runStep, log, now: () => 1700000000000, shouldRunTelegramListenerStep: async () => false, appendStepLog: noopAppendStepLog });
     assert.equal(r.total, 13, "still 13 steps reported");
     assert.equal(r.results.length, 13, "still 13 results produced");
     assert.deepEqual(r.results.map((x) => x.name), STEP_NAMES);
@@ -352,7 +377,7 @@ async function testTelegramListenerRunsWhenDaemonUnhealthy() {
   const runStep = async (argv) => { seen.push(argv); return makeFakeRunStep(table)(argv); };
   const { log } = makeLogCapture();
   try {
-    const r = await runHeartbeatOnce({ runStep, log, now: () => 1700000000000, shouldRunTelegramListenerStep: async () => true });
+    const r = await runHeartbeatOnce({ runStep, log, now: () => 1700000000000, shouldRunTelegramListenerStep: async () => true, appendStepLog: noopAppendStepLog });
     assert.equal(r.total, 13);
     assert.equal(r.results.length, 13);
     const tl = r.results.find((x) => x.name === "telegram-listener");
@@ -385,6 +410,7 @@ async function testTelegramListenerRunsWhenHealthCheckThrows() {
       log,
       now: () => 1700000000000,
       shouldRunTelegramListenerStep: async () => { throw new Error("lock read failed"); },
+      appendStepLog: noopAppendStepLog,
     });
     assert.equal(r.total, 13);
     assert.equal(r.results.length, 13);
@@ -459,13 +485,235 @@ async function testAuditClerkIsThirteenthStep() {
   const table = happyTable();
   const { log } = makeLogCapture();
   try {
-    const r = await runHeartbeatOnce({ runStep: makeFakeRunStep(table), log, now: () => 1700000000000, shouldRunTelegramListenerStep: alwaysRunFallback });
+    const r = await runHeartbeatOnce({ runStep: makeFakeRunStep(table), log, now: () => 1700000000000, shouldRunTelegramListenerStep: alwaysRunFallback, appendStepLog: noopAppendStepLog });
     assert.deepEqual(
       { name: r.results[12].name, argv: r.results[12].argv },
       { name: "audit-clerk", argv: ["ops-watcher/audit-clerk.mjs", "--once"] },
       "13th result is audit-clerk with the mandated argv",
     );
     assert.equal(r.results[11].name, "gbrain-curator", "12th (preceding) step is gbrain-curator");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// R1: buildStepRecord output shape + excerpt cap (>300 truncated, newlines
+// collapsed). Pure — no I/O.
+// =====================================================================
+async function testBuildStepRecordShapeAndExcerpt() {
+  const name = "R1 buildStepRecord output shape + excerpt cap (>300 truncated, newlines collapsed)";
+  try {
+    const step = { name: "demo", argv: ["a", "b"] };
+
+    // Happy path: exit 0, short output.
+    const rec = buildStepRecord(step, { code: 0, stdout: "hello\n", stderr: "" }, { okStep: true, skippedHealthy: false, durationMs: 42, now: () => 1700 });
+    assert.equal(rec.ts, 1700, "ts from now()");
+    assert.equal(rec.name, "demo", "name carried through");
+    assert.deepEqual(rec.argv, ["a", "b"], "argv carried through (copy)");
+    assert.equal(rec.ok, true, "ok reflects okStep");
+    assert.equal(rec.exitCode, 0, "exitCode is the numeric code");
+    assert.equal(rec.timedOut, false, "timedOut false");
+    assert.equal(rec.skipped, false, "skipped false");
+    assert.equal(rec.durationMs, 42, "durationMs carried through");
+    assert.equal(typeof rec.excerpt, "string", "excerpt is a string");
+    assert.ok(!rec.excerpt.includes("\n"), "newlines collapsed in short excerpt");
+    assert.ok(JSON.stringify(rec).length > 0, "record is JSON-serializable");
+
+    // argv must be a COPY — mutating the record's argv must not touch step.argv.
+    rec.argv.push("MUT");
+    assert.deepEqual(step.argv, ["a", "b"], "buildStepRecord copies argv, no aliasing");
+
+    // >300-char output is truncated to <=300 chars.
+    const longOut = "x".repeat(1000);
+    const rec2 = buildStepRecord(step, { code: 0, stdout: longOut, stderr: "" }, { okStep: true, skippedHealthy: false, durationMs: 0, now: () => 1 });
+    assert.ok(rec2.excerpt.length <= 300, `excerpt capped at <=300, got ${rec2.excerpt.length}`);
+    assert.ok(rec2.excerpt.length < 1000, "excerpt truncated for >300-char input");
+
+    // Newlines collapsed in a multi-line excerpt.
+    const rec3 = buildStepRecord(step, { code: 0, stdout: "line1\nline2\nline3", stderr: "" }, { okStep: true, skippedHealthy: false, durationMs: 0, now: () => 2 });
+    assert.ok(!rec3.excerpt.includes("\n"), "newlines collapsed in multi-line excerpt");
+    assert.match(rec3.excerpt, /line1/, "multi-line content preserved");
+
+    // exitCode null when code is null; timedOut reflects res.timedOut.
+    const rec4 = buildStepRecord(step, { code: null, stdout: "", stderr: "boom", timedOut: true }, { okStep: false, skippedHealthy: false, durationMs: 5, now: () => 3 });
+    assert.equal(rec4.exitCode, null, "null code -> exitCode null");
+    assert.equal(rec4.ok, false, "okStep false");
+    assert.equal(rec4.timedOut, true, "timedOut reflected");
+
+    // stdout + stderr combined for the excerpt.
+    const rec5 = buildStepRecord(step, { code: 0, stdout: "out-part", stderr: "err-part" }, { okStep: true, skippedHealthy: false, durationMs: 0, now: () => 4 });
+    assert.match(rec5.excerpt, /out-part/, "stdout included in excerpt");
+    assert.match(rec5.excerpt, /err-part/, "stderr included in excerpt");
+
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// R2: a sweep calls appendStepLog exactly ONCE, with steps.length == step
+// count, correct succeeded/failed counts, and each entry carrying
+// name/ok/exitCode.
+// =====================================================================
+async function testSweepAppendsStepLogOnce() {
+  const name = "R2 sweep calls appendStepLog exactly ONCE with correct step records";
+  const table = happyTable();
+  // Make step 2 (test-runner) fail so succeeded/failed are non-trivial.
+  table[SCRIPTS.testRunner] = { code: 1, stdout: "test-runner --once: processed 1 issue(s)\n", stderr: "AssertionError: boom\n" };
+  let calls = 0;
+  let lastRecord = null;
+  let lastOpts = null;
+  const appendStepLog = async (record, opts) => { calls += 1; lastRecord = record; lastOpts = opts; };
+  const { log } = makeLogCapture();
+  try {
+    const r = await runHeartbeatOnce({
+      runStep: makeFakeRunStep(table),
+      log,
+      now: () => 1700000000000,
+      shouldRunTelegramListenerStep: alwaysRunFallback,
+      appendStepLog,
+      stepLogFile: "fake-step-log.jsonl",
+    });
+    assert.equal(calls, 1, "appendStepLog called exactly once");
+    assert.equal(lastOpts && lastOpts.file, "fake-step-log.jsonl", "stepLogFile passed through to writer");
+    assert.equal(lastRecord.total, 13, "sweep record total == step count");
+    assert.equal(lastRecord.succeeded, 12, "sweep record succeeded count");
+    assert.equal(lastRecord.failed, 1, "sweep record failed count");
+    assert.equal(lastRecord.steps.length, 13, "one step record per step");
+    assert.equal(lastRecord.startedAt, 1700000000000, "startedAt recorded");
+    assert.equal(lastRecord.finishedAt, 1700000000000, "finishedAt recorded");
+    assert.equal(lastRecord.durationMs, 0, "durationMs recorded");
+    for (const s of lastRecord.steps) {
+      assert.ok("name" in s, "step record has name");
+      assert.ok("ok" in s, "step record has ok");
+      assert.ok("exitCode" in s, "step record has exitCode");
+    }
+    // The failing step is recorded as failed.
+    const tr = lastRecord.steps.find((s) => s.name === "test-runner");
+    assert.equal(tr.ok, false, "failing step ok=false");
+    assert.equal(tr.exitCode, 1, "failing step exitCode=1");
+    // A succeeding step is recorded as ok.
+    const w = lastRecord.steps.find((s) => s.name === "watcher");
+    assert.equal(w.ok, true, "succeeding step ok=true");
+    assert.equal(w.exitCode, 0, "succeeding step exitCode=0");
+    // The sweep still returned its normal result.
+    assert.equal(r.total, 13);
+    assert.equal(r.failed, 1);
+    assert.equal(r.succeeded, 12);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// R3: a healthy-daemon telegram-listener skip is recorded with skipped:true,
+// ok:true.
+// =====================================================================
+async function testHealthySkipRecorded() {
+  const name = "R3 healthy-daemon telegram-listener skip recorded with skipped:true, ok:true";
+  const table = happyTable();
+  let lastRecord = null;
+  const appendStepLog = async (record) => { lastRecord = record; };
+  const { log } = makeLogCapture();
+  try {
+    await runHeartbeatOnce({
+      runStep: makeFakeRunStep(table),
+      log,
+      now: () => 1700000000000,
+      shouldRunTelegramListenerStep: async () => false,
+      appendStepLog,
+    });
+    assert.ok(lastRecord, "appendStepLog received a sweep record");
+    const tl = lastRecord.steps.find((s) => s.name === "telegram-listener");
+    assert.ok(tl, "telegram-listener step record present");
+    assert.equal(tl.skipped, true, "healthy skip recorded with skipped:true");
+    assert.equal(tl.ok, true, "healthy skip recorded with ok:true");
+    assert.equal(tl.exitCode, null, "healthy skip exitCode null");
+    // Other steps are not marked skipped.
+    const w = lastRecord.steps.find((s) => s.name === "watcher");
+    assert.equal(w.skipped, false, "non-skipped step has skipped:false");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// R4: an appendStepLog that REJECTS does not fail the sweep — the sweep still
+// returns its normal result and logs a WARN line.
+// =====================================================================
+async function testRejectingAppendStepLogNonFatal() {
+  const name = "R4 a rejecting appendStepLog does not fail the sweep (WARN logged)";
+  const table = happyTable();
+  const { lines, log } = makeLogCapture();
+  const appendStepLog = async () => { throw new Error("disk full"); };
+  try {
+    const r = await runHeartbeatOnce({
+      runStep: makeFakeRunStep(table),
+      log,
+      now: () => 1700000000000,
+      shouldRunTelegramListenerStep: alwaysRunFallback,
+      appendStepLog,
+    });
+    // Sweep still returns its normal result.
+    assert.equal(r.total, 13, "normal total returned");
+    assert.equal(r.results.length, 13, "normal results returned");
+    assert.equal(r.failed, 0, "no step failures caused by the writer rejection");
+    // A WARN line was logged.
+    const warn = lines.find((l) => /heartbeat: WARN could not append step log/.test(l));
+    assert.ok(warn, "a WARN line was logged for the failed append");
+    assert.match(warn, /disk full/, "WARN line includes the error message");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// R5: rotation helper — given a file over the byte cap, only the last
+// STEP_LOG_KEEP_LINES lines survive (tested with injected fs, not the real
+// file).
+// =====================================================================
+async function testRotationHelper() {
+  const name = "R5 rotation helper keeps only last STEP_LOG_KEEP_LINES when over byte cap";
+  try {
+    // Build a file with well over STEP_LOG_KEEP_LINES lines.
+    const totalLines = STEP_LOG_KEEP_LINES + 1000;
+    const lines = [];
+    for (let i = 0; i < totalLines; i++) lines.push(`line-${i}`);
+    const content = lines.join("\n") + "\n";
+
+    // --- Over the cap: stat reports a size above STEP_LOG_MAX_BYTES. ---
+    let written = null;
+    const fakeFsOver = {
+      stat: async () => ({ size: 10 * 1024 * 1024 }), // 10 MB > 5 MB cap
+      readFile: async () => content,
+      writeFile: async (file, data) => { written = { file, data }; },
+      appendFile: async () => {},
+    };
+    await rotateStepLogFile({ file: "fake.jsonl", _fs: fakeFsOver });
+    assert.ok(written, "rotateStepLogFile rewrote the file when over the byte cap");
+    const kept = written.data.split(/\r?\n/).filter((l) => l !== "");
+    assert.equal(kept.length, STEP_LOG_KEEP_LINES, `only last ${STEP_LOG_KEEP_LINES} lines survive`);
+    assert.equal(kept[0], `line-${totalLines - STEP_LOG_KEEP_LINES}`, "first kept line is the (total - keep)th line");
+    assert.equal(kept[kept.length - 1], `line-${totalLines - 1}`, "last kept line is the final line");
+
+    // --- Under the cap: no rewrite. ---
+    let written2 = null;
+    const fakeFsUnder = {
+      stat: async () => ({ size: 100 }),
+      readFile: async () => "x",
+      writeFile: async (file, data) => { written2 = { file, data }; },
+      appendFile: async () => {},
+    };
+    await rotateStepLogFile({ file: "fake.jsonl", _fs: fakeFsUnder });
+    assert.equal(written2, null, "no rotation rewrite when file is under the byte cap");
+
+    // --- Missing file (stat throws): no throw, no rewrite. ---
+    let written3 = null;
+    const fakeFsMissing = {
+      stat: async () => { throw new Error("ENOENT"); },
+      readFile: async () => "",
+      writeFile: async (file, data) => { written3 = { file, data }; },
+      appendFile: async () => {},
+    };
+    await rotateStepLogFile({ file: "fake.jsonl", _fs: fakeFsMissing });
+    assert.equal(written3, null, "missing file -> no rewrite and no throw");
+
     ok(name);
   } catch (err) { bad(name, err); }
 }
@@ -482,6 +730,11 @@ async function main() {
   await testTelegramListenerRunsWhenHealthCheckThrows();
   await testRunStepRealErrorEventResolvesCleanly();
   await testAuditClerkIsThirteenthStep();
+  await testBuildStepRecordShapeAndExcerpt();
+  await testSweepAppendsStepLogOnce();
+  await testHealthySkipRecorded();
+  await testRejectingAppendStepLogNonFatal();
+  await testRotationHelper();
   console.log("");
   console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
   if (failed > 0) { for (const f of failures) console.log(`  FAILED: ${f}`); process.exit(1); }

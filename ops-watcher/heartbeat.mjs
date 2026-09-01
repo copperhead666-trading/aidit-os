@@ -95,6 +95,15 @@
 // printed (step name, exit code, one-line result excerpt). After all thirteen a
 // final summary is printed (how many succeeded / failed).
 //
+// Durable step log: after every sweep, exactly ONE JSON line is appended to
+// ops-watcher/heartbeat-steps.jsonl describing the whole sweep (timestamps,
+// counts, and a flat per-step record built by buildStepRecord). This gives the
+// self-repair layer a machine-readable answer to "has step X failed on the last
+// three cycles?" without scraping console text. The append is best-effort and
+// never fails the sweep; the file is rotated (by byte size, keeping the last
+// STEP_LOG_KEEP_LINES lines) before appending. The writer is injectable through
+// runHeartbeatOnce's deps so tests never touch the real file.
+//
 // Bounded by design: no setInterval, no while(true), no loop. Whether this is
 // invoked periodically by a human or by an external scheduler is an OWNER
 // decision, not this script's. This script just does ONE sweep and exits.
@@ -134,6 +143,20 @@ const STEP_TIMEOUT_MS = 10 * 60 * 1000;
 // daemon is not confirmed healthy.
 const TELEGRAM_LISTENER_DAEMON_LOCK_FILE = path.join(__dirname, "telegram-listener-daemon.lock");
 
+// ---- Durable step log (one JSON line per sweep) ----
+// Appended after every sweep so the self-repair layer can answer "has step X
+// failed on the last N cycles?" as DATA, not by scraping console text. Rotated
+// by byte size before each append, keeping only the most recent lines. The
+// append is best-effort and never fails the sweep.
+export const STEP_LOG_FILE = path.join(__dirname, "heartbeat-steps.jsonl");
+export const STEP_LOG_MAX_BYTES = 5 * 1024 * 1024;
+export const STEP_LOG_KEEP_LINES = 2000;
+// Hard cap on the per-step excerpt stored in the durable record. Reuses the
+// excerpt() collapsing behaviour but enforces a strict <=300-char bound so a
+// record is always bounded (the per-step console line uses a looser 200-cap +
+// marker that can exceed 300 once the marker is appended).
+const STEP_RECORD_EXCERPT_MAX = 300;
+
 // The thirteen steps, in order. Each entry: { name, argv }. argv is the full argv as
 // a human would type after `node` (the script path relative to repo root + any
 // flags). This is a literal, hand-maintained list of the safe pipeline — NOT
@@ -162,6 +185,97 @@ function excerpt(text, max = 200) {
   const oneLine = String(text || "").replace(/\r?\n/g, " ⏎ ").replace(/\s+/g, " ").trim();
   if (oneLine.length <= max) return oneLine;
   return oneLine.slice(0, max) + " …[truncated]";
+}
+
+// Excerpt for the durable per-step record. Reuses excerpt()'s collapsing
+// behaviour (newlines -> " ⏎ ", whitespace collapse, trim) but enforces a HARD
+// <=STEP_RECORD_EXCERPT_MAX bound on the stored string so the durable record is
+// always bounded (excerpt() otherwise appends a " …[truncated]" marker that can
+// push the result just over the cap).
+function excerptForRecord(text) {
+  const ex = excerpt(text, STEP_RECORD_EXCERPT_MAX);
+  return ex.length <= STEP_RECORD_EXCERPT_MAX ? ex : ex.slice(0, STEP_RECORD_EXCERPT_MAX);
+}
+
+// Pure record builder. Returns a flat, JSON-safe object describing ONE step's
+// outcome in a sweep. Never performs I/O and never throws — a thrown error here
+// would be a bug, but the defensive try/catch guarantees the sweep is never
+// endangered by record construction.
+//
+//   step            : the STEPS entry { name, argv }
+//   res             : the runStep result { code, stdout, stderr, error, timedOut }
+//   opts.okStep     : boolean — did this step count as success?
+//   opts.skippedHealthy : boolean — was this step skipped because the persistent
+//                     daemon was healthy (telegram-listener gate)?
+//   opts.durationMs : number — wall-clock ms this step took
+//   opts.now        : () => ms (default Date.now) — for the record timestamp
+export function buildStepRecord(step, res, { okStep, skippedHealthy, durationMs, now = Date.now } = {}) {
+  const safeRes = res || {};
+  const stdout = safeRes.stdout || "";
+  const stderr = safeRes.stderr || "";
+  const combined = stdout + (stderr ? (stdout ? "\n" : "") + stderr : "");
+  let ex = "";
+  try {
+    ex = excerptForRecord(combined);
+  } catch {
+    ex = "";
+  }
+  const code = safeRes.code;
+  return {
+    ts: now(),
+    name: step && step.name,
+    argv: Array.isArray(step && step.argv) ? step.argv.slice() : [],
+    ok: !!okStep,
+    exitCode: Number.isFinite(code) ? code : null,
+    timedOut: !!safeRes.timedOut,
+    skipped: !!skippedHealthy,
+    durationMs: Number.isFinite(durationMs) ? durationMs : 0,
+    excerpt: ex,
+  };
+}
+
+// Rotate the durable step log BEFORE appending. If the file already exceeds
+// STEP_LOG_MAX_BYTES, keep only the last STEP_LOG_KEEP_LINES lines (rewriting
+// the file in place). Rotation is best-effort and non-fatal: any fs error
+// (missing file, unreadable, unwritable) just returns — the caller's append is
+// still attempted and itself wrapped in its own non-fatal try/catch.
+//
+// `file`, `maxBytes`, `keepLines`, and `_fs` are all injectable so the rotation
+// can be exercised in tests against an in-memory fake fs without touching the
+// real heartbeat-steps.jsonl.
+export async function rotateStepLogFile({ file = STEP_LOG_FILE, maxBytes = STEP_LOG_MAX_BYTES, keepLines = STEP_LOG_KEEP_LINES, _fs = fs } = {}) {
+  let stat;
+  try {
+    stat = await _fs.stat(file);
+  } catch {
+    // File does not exist (or stat failed) — nothing to rotate.
+    return;
+  }
+  if (!stat || !(stat.size > maxBytes)) return;
+  let text;
+  try {
+    text = await _fs.readFile(file, "utf8");
+  } catch {
+    return;
+  }
+  const all = text.split(/\r?\n/);
+  // Drop a single trailing empty line produced by a final "\n" so the line
+  // count is accurate.
+  if (all.length && all[all.length - 1] === "") all.pop();
+  const kept = all.slice(Math.max(0, all.length - keepLines));
+  try {
+    await _fs.writeFile(file, kept.length ? kept.join("\n") + "\n" : "", "utf8");
+  } catch {
+    // Non-fatal: rotation write failed; the append will still be attempted.
+  }
+}
+
+// Default real step-log writer. Rotates (if needed) then appends ONE JSON line
+// describing the whole sweep. Injectable through runHeartbeatOnce's deps as
+// `appendStepLog` (default: this) plus `stepLogFile`.
+export async function appendStepLogReal(record, { file = STEP_LOG_FILE, _fs = fs } = {}) {
+  await rotateStepLogFile({ file, _fs });
+  await _fs.appendFile(file, JSON.stringify(record) + "\n", "utf8");
 }
 
 // Default real child-process runner. Spawns `node <argv...>` with cwd=REPO_ROOT.
@@ -246,28 +360,36 @@ export async function shouldRunTelegramListenerStepReal({ lockFile = TELEGRAM_LI
 }
 
 // Core sweep, dependency-injected for testability.
-// deps: { runStep, shouldRunTelegramListenerStep, log, now }
+// deps: { runStep, shouldRunTelegramListenerStep, log, now, appendStepLog, stepLogFile }
 // runStep: async (argv) => { code, stdout, stderr, error, timedOut }
 // shouldRunTelegramListenerStep: async () => boolean (true = run fallback)
-// Returns { results, succeeded, failed, startedAt, finishedAt }.
+// appendStepLog: async (record, { file }) => void (default: appendStepLogReal)
+// stepLogFile: path string for the durable step log (default: STEP_LOG_FILE)
+// Returns { results, succeeded, failed, total, startedAt, finishedAt }.
 export async function runHeartbeatOnce(deps = {}) {
   const {
     runStep = runStepReal,
     shouldRunTelegramListenerStep = shouldRunTelegramListenerStepReal,
     log = (m) => console.log(m),
     now = Date.now,
+    appendStepLog = appendStepLogReal,
+    stepLogFile = STEP_LOG_FILE,
   } = deps;
 
   const startedAt = now();
   log(`heartbeat --once START ${new Date(startedAt).toISOString()} (${STEPS.length} steps)`);
 
   const results = [];
+  // Per-step metadata kept in PARALLEL to results so the results array's shape
+  // stays byte-for-byte identical to before (it never carried skipped/duration).
+  const stepMeta = [];
   let succeeded = 0;
   let failed = 0;
 
   for (const step of STEPS) {
     let res;
     let skippedHealthy = false;
+    const stepStart = now();
     try {
       if (step.name === "telegram-listener") {
         let shouldRun = true;
@@ -299,6 +421,7 @@ export async function runHeartbeatOnce(deps = {}) {
       // Defensive: even a throwing runStep must not abort the sweep.
       res = { code: null, stdout: "", stderr: String(err && err.stack || err), error: String(err && err.message || err) };
     }
+    const stepEnd = now();
     const code = res.code;
     // A healthy-daemon skip is intentional and counts as success, not failure.
     const okStep = skippedHealthy || code === 0;
@@ -318,10 +441,38 @@ export async function runHeartbeatOnce(deps = {}) {
       stdout: res.stdout || "",
       stderr: res.stderr || "",
     });
+    stepMeta.push({ skippedHealthy, durationMs: stepEnd - stepStart });
   }
 
   const finishedAt = now();
   log(`heartbeat --once DONE ${new Date(finishedAt).toISOString()} — succeeded=${succeeded}/${STEPS.length} failed=${failed}/${STEPS.length} (took ${Math.round((finishedAt - startedAt) / 1000)}s)`);
+
+  // Durable, machine-readable record of every step's outcome. ONE JSON line per
+  // sweep. Best-effort: a failure here MUST NEVER fail the sweep — the sweep's
+  // return value and exit code are already determined by the steps above.
+  try {
+    const steps = results.map((r, i) =>
+      buildStepRecord(STEPS[i], { code: r.code, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut, error: r.error }, {
+        okStep: r.ok,
+        skippedHealthy: stepMeta[i].skippedHealthy,
+        durationMs: stepMeta[i].durationMs,
+        now,
+      })
+    );
+    const sweepRecord = {
+      ts: finishedAt,
+      startedAt,
+      finishedAt,
+      durationMs: finishedAt - startedAt,
+      total: STEPS.length,
+      succeeded,
+      failed,
+      steps,
+    };
+    await appendStepLog(sweepRecord, { file: stepLogFile });
+  } catch (err) {
+    log(`heartbeat: WARN could not append step log (${err && (err.code || err.message) || String(err)})`);
+  }
 
   return { results, succeeded, failed, total: STEPS.length, startedAt, finishedAt };
 }
