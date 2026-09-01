@@ -50,6 +50,8 @@ import {
   hasRecentDecisionComment,
   processUpdateForCallback,
   findIssueByTelegramMessageId,
+  checkPauseReal,
+  slashCommandNotImplementedReply,
   AHMAD_AGENT_ID,
   spawnHeartbeatReal,
 } from "./telegram-listener.mjs";
@@ -137,6 +139,71 @@ function makeCallbackUpdate(updateId, actionLetter, shortId, messageId = 77) {
       message: { message_id: messageId, chat: { id: 8987077084 }, text: "OWNER decision required" },
       from: { id: 8987077084 },
     },
+  };
+}
+
+function makeOwnerTextUpdate(updateId, text, extraMessage = {}) {
+  return {
+    update_id: updateId,
+    message: {
+      message_id: updateId + 1000,
+      text,
+      chat: { id: 8987077084 },
+      from: { id: 8987077084, first_name: "Aidit" },
+      ...extraMessage,
+    },
+  };
+}
+
+function makePausedState(reason = "owner emergency stop") {
+  return { paused: true, reason, atIso: "2026-09-02T00:00:00.000Z", by: "owner" };
+}
+
+function makeProcessCtx(trace, overrides = {}) {
+  return {
+    base: "http://127.0.0.1:9999",
+    companyId: COMPANY_ID,
+    labelMap: { OWNER_REQUIRED: "lbl-OWNER_REQUIRED", DIRECTIVE: "lbl-DIRECTIVE" },
+    idMap: {},
+    upOpts: {},
+    immediateAck: true,
+    _get: async (url) => { trace.push({ fn: "get", url, t: trace.length }); return { networkError: false, status: 200, body: [] }; },
+    _listLabels: async () => ({ labels: [], networkError: false }),
+    _ensureLabel: async (base, companyId, name, color) => {
+      trace.push({ fn: "ensureLabel", name, color, t: trace.length });
+      return { id: "lbl-" + name, created: true, networkError: false };
+    },
+    _postComment: async (base, issueId, body, opts) => {
+      trace.push({ fn: "postComment", issueId, body, t: trace.length });
+      return { comment: { id: "cmt-test" }, status: 201, networkError: false };
+    },
+    _patchIssue: async (base, issueId, patch, opts) => {
+      trace.push({ fn: "patchIssue", issueId, patch, t: trace.length });
+      return { issue: { id: issueId }, status: 200, networkError: false };
+    },
+    _answerCallbackQuery: async (cqId, text, opts) => {
+      trace.push({ fn: "answerCallbackQuery", cqId, text, t: trace.length });
+      return { sent: true, ok: true, status: 200 };
+    },
+    _editMessageText: async (messageId, text, opts) => {
+      trace.push({ fn: "editMessageText", messageId, text, t: trace.length });
+      return { sent: true, ok: true, status: 200 };
+    },
+    _sendMessage: async (text, opts) => {
+      trace.push({ fn: "sendMessage", text, t: trace.length });
+      return { sent: true, ok: true, status: 200, result: { message_id: 999 } };
+    },
+    _spawnHeartbeat: _spawnHeartbeatMock,
+    _httpPost: async (url, body, opts) => {
+      trace.push({ fn: "httpPost", url, body, title: body && body.title, t: trace.length });
+      return { status: 201, body: { id: "iss-new-test", identifier: "KOL-TEST" }, networkError: false };
+    },
+    _handleCommand: async () => ({ handled: false }),
+    _checkPause: async () => ({ paused: false, reason: "", atIso: null, by: null }),
+    log: () => {},
+    now: Date.now,
+    decisionDedupe: new Map(),
+    ...overrides,
   };
 }
 
@@ -699,6 +766,217 @@ async function t6b_nonOwnerTextSkipped() {
 }
 
 // =====================================================================
+// T6c: /status command is routed through _handleCommand
+// =====================================================================
+async function t6c_statusCommandRoutedToHandleCommand() {
+  spawnHeartbeatCalls.length = 0;
+  const trace = [];
+  const handlerReply = "STATUS REPLY FROM HANDLER";
+
+  const result = await processUpdateForCallback(makeOwnerTextUpdate(202, "/status"), makeProcessCtx(trace, {
+    _handleCommand: async (text, deps) => {
+      trace.push({ fn: "handleCommand", text, hasGetHeartbeat: typeof deps.getHeartbeat === "function", t: trace.length });
+      return { handled: true, reply: handlerReply };
+    },
+  }));
+
+  assert.equal(result.outcome, "slash-command-handled", "T6c: /status returns slash-command-handled");
+  assert.equal(trace.filter((e) => e.fn === "handleCommand").length, 1, "T6c: _handleCommand called exactly once");
+  assert.equal(trace.find((e) => e.fn === "handleCommand").text, "/status", "T6c: _handleCommand receives raw command text");
+  const sends = trace.filter((e) => e.fn === "sendMessage");
+  assert.equal(sends.length, 1, "T6c: exactly one command reply is sent");
+  assert.equal(sends[0].text, handlerReply, "T6c: sent reply is exactly the _handleCommand reply");
+  assert.notEqual(sends[0].text, slashCommandNotImplementedReply("/status"), "T6c: not-implemented reply is not sent");
+  assert.ok(!/bukan perintah/.test(sends[0].text), "T6c: sent reply does not contain the old not-implemented copy");
+  assert.equal(trace.filter((e) => e.fn === "httpPost").length, 0, "T6c: command does not create an issue");
+  assert.equal(spawnHeartbeatCalls.length, 0, "T6c: command does not spawn heartbeat");
+  ok("T6c: /status routed through _handleCommand; handler reply sent; fallback not sent");
+}
+
+// =====================================================================
+// T6d: unknown slash command falls back to not-implemented reply
+// =====================================================================
+async function t6d_unknownCommandFallsBack() {
+  spawnHeartbeatCalls.length = 0;
+  const trace = [];
+
+  const result = await processUpdateForCallback(makeOwnerTextUpdate(203, "/nope"), makeProcessCtx(trace, {
+    _handleCommand: async (text) => {
+      trace.push({ fn: "handleCommand", text, t: trace.length });
+      return { handled: false };
+    },
+  }));
+
+  assert.equal(result.outcome, "slash-command-not-implemented", "T6d: unknown slash command uses fallback outcome");
+  assert.equal(trace.filter((e) => e.fn === "handleCommand").length, 1, "T6d: _handleCommand called before fallback");
+  const sends = trace.filter((e) => e.fn === "sendMessage");
+  assert.equal(sends.length, 1, "T6d: exactly one fallback reply is sent");
+  assert.equal(sends[0].text, slashCommandNotImplementedReply("/nope"), "T6d: not-implemented reply is sent for handled:false");
+  assert.equal(trace.filter((e) => e.fn === "httpPost").length, 0, "T6d: unknown command does not create an issue");
+  assert.equal(spawnHeartbeatCalls.length, 0, "T6d: unknown command does not spawn heartbeat");
+  ok("T6d: /nope reaches _handleCommand, then sends the not-implemented reply");
+}
+
+// =====================================================================
+// T6e: pause blocks plain text ingress mutations
+// =====================================================================
+async function t6e_pausedPlainTextBlocked() {
+  spawnHeartbeatCalls.length = 0;
+  const trace = [];
+  const pause = makePausedState("owner pulled the emergency stop");
+
+  const result = await processUpdateForCallback(makeOwnerTextUpdate(204, "Ship the invoice cleanup"), makeProcessCtx(trace, {
+    _checkPause: async () => pause,
+  }));
+
+  assert.equal(result.outcome, "paused", "T6e: paused text ingress returns paused outcome");
+  assert.equal(trace.filter((e) => e.fn === "httpPost" && /\/issues$/.test(e.url)).length, 0, "T6e: no issue create POST while paused");
+  assert.equal(trace.filter((e) => e.fn === "patchIssue").length, 0, "T6e: no patchIssue while paused");
+  assert.equal(trace.filter((e) => e.fn === "postComment").length, 0, "T6e: no comment post while paused");
+  assert.equal(spawnHeartbeatCalls.length, 0, "T6e: no heartbeat spawn while paused");
+  const sends = trace.filter((e) => e.fn === "sendMessage");
+  assert.equal(sends.length, 1, "T6e: owner is told the text was blocked");
+  assert.match(sends[0].text, /FounderOS PAUSED/, "T6e: pause reply names the paused state");
+  assert.match(sends[0].text, /owner pulled the emergency stop/, "T6e: pause reply includes the pause reason");
+  ok("T6e: paused plain text creates no issue, no comment, no patch, no heartbeat; owner is told why");
+}
+
+// =====================================================================
+// T6f: pause blocks APPROVE callback mutations but still answers the tap
+// =====================================================================
+async function t6f_pausedApproveCallbackBlockedAndAnswered() {
+  spawnHeartbeatCalls.length = 0;
+  const trace = [];
+  const issue = makeIssue({ id: "iss-paused", identifier: "KOL-PAUSED", labelIds: ["lbl-OWNER_REQUIRED"] });
+  const pause = makePausedState("maintenance window");
+
+  const result = await processUpdateForCallback(makeCallbackUpdate(205, "a", "KOL-PAUSED"), makeProcessCtx(trace, {
+    idMap: { "KOL-PAUSED": issue },
+    _checkPause: async () => pause,
+  }));
+
+  assert.equal(result.outcome, "paused", "T6f: APPROVE callback returns paused outcome");
+  assert.equal(result.action, "APPROVE", "T6f: callback action is still parsed");
+  assert.equal(result.shortId, "KOL-PAUSED", "T6f: callback shortId is still parsed");
+  assert.equal(trace.filter((e) => e.fn === "patchIssue").length, 0, "T6f: no patchIssue while paused");
+  assert.equal(trace.filter((e) => e.fn === "postComment").length, 0, "T6f: no confirmation comment while paused");
+  assert.equal(trace.filter((e) => e.fn === "httpPost").length, 0, "T6f: no POST while paused");
+  assert.equal(spawnHeartbeatCalls.length, 0, "T6f: no heartbeat spawn while paused");
+  const acks = trace.filter((e) => e.fn === "answerCallbackQuery");
+  assert.equal(acks.length, 1, "T6f: callback tap is answered, not silently swallowed");
+  assert.match(acks[0].text, /paused/i, "T6f: callback answer says paused");
+  const sends = trace.filter((e) => e.fn === "sendMessage");
+  assert.equal(sends.length, 1, "T6f: owner also receives the full pause message");
+  assert.match(sends[0].text, /maintenance window/, "T6f: owner message includes pause reason");
+  ok("T6f: paused APPROVE does not mutate Paperclip or spawn heartbeat, and the owner gets a visible pause response");
+}
+
+// =====================================================================
+// T6g: paused /resume-shaped command still reaches _handleCommand
+// =====================================================================
+async function t6g_pausedResumeCommandStillRouted() {
+  spawnHeartbeatCalls.length = 0;
+  const trace = [];
+  const pause = makePausedState("owner stop active");
+
+  const result = await processUpdateForCallback(makeOwnerTextUpdate(206, "/resume"), makeProcessCtx(trace, {
+    _checkPause: async () => pause,
+    _handleCommand: async (text) => {
+      trace.push({ fn: "handleCommand", text, t: trace.length });
+      return { handled: true, reply: "resume route reached" };
+    },
+  }));
+
+  assert.equal(result.outcome, "slash-command-handled", "T6g: /resume-shaped command is not blocked before command routing");
+  assert.equal(trace.filter((e) => e.fn === "handleCommand").length, 1, "T6g: _handleCommand called while paused");
+  assert.equal(trace.find((e) => e.fn === "handleCommand").text, "/resume", "T6g: raw /resume command reaches handler");
+  const sends = trace.filter((e) => e.fn === "sendMessage");
+  assert.equal(sends.length, 1, "T6g: command response is still sent while paused");
+  assert.equal(sends[0].text, "resume route reached", "T6g: non-status command reply is not replaced by pause blocker");
+  assert.equal(trace.filter((e) => e.fn === "httpPost").length, 0, "T6g: /resume-shaped command creates no issue");
+  assert.equal(spawnHeartbeatCalls.length, 0, "T6g: /resume-shaped command does not spawn heartbeat");
+  ok("T6g: paused /resume-shaped command reaches _handleCommand, so the stop cannot hide its own undo route");
+}
+
+// =====================================================================
+// T6h: paused /status reply leads with pause state
+// =====================================================================
+async function t6h_pausedStatusReplyLeadsWithPause() {
+  spawnHeartbeatCalls.length = 0;
+  const trace = [];
+  const pause = makePausedState("nightly freeze");
+  const normalStatus = "*Status sistem*\nHeartbeat: 3/3 berhasil, baru saja";
+
+  const result = await processUpdateForCallback(makeOwnerTextUpdate(207, "/status"), makeProcessCtx(trace, {
+    _checkPause: async () => pause,
+    _handleCommand: async (text) => {
+      trace.push({ fn: "handleCommand", text, t: trace.length });
+      return { handled: true, reply: normalStatus };
+    },
+  }));
+
+  assert.equal(result.outcome, "slash-command-handled", "T6h: paused /status is still a handled command");
+  const sends = trace.filter((e) => e.fn === "sendMessage");
+  assert.equal(sends.length, 1, "T6h: exactly one status reply is sent");
+  assert.ok(sends[0].text.startsWith("FounderOS PAUSED"), "T6h: reply leads with paused state");
+  assert.match(sends[0].text.split("\n")[0], /nightly freeze/, "T6h: first line names the pause reason");
+  assert.ok(sends[0].text.includes("\n\n" + normalStatus), "T6h: normal status content follows after pause lead");
+  assert.equal(trace.filter((e) => e.fn === "httpPost").length, 0, "T6h: paused /status creates no issue");
+  assert.equal(spawnHeartbeatCalls.length, 0, "T6h: paused /status does not spawn heartbeat");
+  ok("T6h: paused /status sends the pause lead before the normal status content");
+}
+
+// =====================================================================
+// T6i: unpaused text ingress still creates DIRECTIVE issue and wakes heartbeat
+// =====================================================================
+async function t6i_unpausedTextIngressStillWorks() {
+  spawnHeartbeatCalls.length = 0;
+  const trace = [];
+
+  const result = await processUpdateForCallback(makeOwnerTextUpdate(208, "Run the weekly receivables sweep"), makeProcessCtx(trace, {
+    _checkPause: async () => ({ paused: false, reason: "", atIso: null, by: null }),
+    _httpPost: async (url, body) => {
+      trace.push({ fn: "httpPost", url, body, title: body.title, t: trace.length });
+      return { status: 201, body: { id: "iss-directive", identifier: "KOL-DIRECTIVE" }, networkError: false };
+    },
+  }));
+
+  assert.equal(result.outcome, "text-ingressed", "T6i: unpaused text ingress still succeeds");
+  assert.equal(result.issueId, "iss-directive", "T6i: created issue id returned");
+  assert.equal(result.identifier, "KOL-DIRECTIVE", "T6i: created issue identifier returned");
+  const createCalls = trace.filter((e) => e.fn === "httpPost" && e.url.endsWith(`/companies/${COMPANY_ID}/issues`));
+  assert.equal(createCalls.length, 1, "T6i: exactly one issue create POST");
+  assert.match(createCalls[0].title, /^OWNER DIRECTIVE:/, "T6i: issue title is OWNER DIRECTIVE");
+  const patches = trace.filter((e) => e.fn === "patchIssue");
+  assert.equal(patches.length, 1, "T6i: exactly one patchIssue after creation");
+  assert.equal(patches[0].issueId, "iss-directive", "T6i: patch targets created issue");
+  assert.equal(patches[0].patch.status, "todo", "T6i: patch sets status todo");
+  assert.equal(patches[0].patch.assigneeAgentId, AHMAD_AGENT_ID, "T6i: patch auto-assigns Ahmad");
+  assert.deepEqual(patches[0].patch.labelIds, ["lbl-DIRECTIVE"], "T6i: patch applies DIRECTIVE and not OWNER_REQUIRED");
+  const sends = trace.filter((e) => e.fn === "sendMessage");
+  assert.equal(sends.length, 1, "T6i: exactly one ACK sent");
+  assert.match(sends[0].text, /Received:/, "T6i: ACK confirms receipt");
+  assert.match(sends[0].text, /Created KOL-DIRECTIVE/, "T6i: ACK names created issue");
+  assert.equal(spawnHeartbeatCalls.length, 1, "T6i: heartbeat spawned exactly once on normal ingress");
+  assert.deepEqual(spawnHeartbeatCalls[0].argv, ["ops-watcher/heartbeat.mjs", "--once"], "T6i: spawn argv is heartbeat --once");
+  ok("T6i: unpaused text ingress still creates DIRECTIVE issue, auto-assigns, ACKs, and wakes heartbeat");
+}
+
+// =====================================================================
+// T6j: real default pause check is imported and resolves
+// =====================================================================
+async function t6j_realDefaultPauseCheckResolves() {
+  assert.equal(typeof checkPauseReal, "function", "T6j: checkPauseReal is imported from telegram-listener.mjs");
+  const state = await checkPauseReal();
+  assert.equal(typeof state, "object", "T6j: real default pause check returns an object");
+  assert.equal(typeof state.paused, "boolean", "T6j: real default pause check returns paused boolean");
+  assert.ok("reason" in state, "T6j: real default pause state includes reason");
+  assert.ok("atIso" in state, "T6j: real default pause state includes atIso");
+  assert.ok("by" in state, "T6j: real default pause state includes by");
+  assert.equal(state.paused, false, "T6j: offline regression environment should not have ops-watcher/PAUSED set");
+  ok("T6j: real default checkPauseReal is imported and resolves against the actual PAUSED default path");
+}
+// =====================================================================
 // T7: APPROVE removes all buttons (edit called with removeKeyboard)
 // =====================================================================
 async function t7_approveRemovesButtons() {
@@ -1054,6 +1332,14 @@ const tests = [
   ["T5", t5_offsetAdvanceBatch],
   ["T6", t6_textIngress],
   ["T6b", t6b_nonOwnerTextSkipped],
+  ["T6c", t6c_statusCommandRoutedToHandleCommand],
+  ["T6d", t6d_unknownCommandFallsBack],
+  ["T6e", t6e_pausedPlainTextBlocked],
+  ["T6f", t6f_pausedApproveCallbackBlockedAndAnswered],
+  ["T6g", t6g_pausedResumeCommandStillRouted],
+  ["T6h", t6h_pausedStatusReplyLeadsWithPause],
+  ["T6i", t6i_unpausedTextIngressStillWorks],
+  ["T6j", t6j_realDefaultPauseCheckResolves],
   ["T7", t7_approveRemovesButtons],
   ["T8", t8_rejectRemovesButtons],
   ["T9", t9_deferKeepsValidButtons],
