@@ -21,6 +21,7 @@ import {
   laneStringToProbeKey,
   cooldownMsFor,
   isQuotaFailureText,
+  parseRetryAtMs,
   QUOTA_COOLDOWN_MS,
 } from "./routing.mjs";
 
@@ -469,6 +470,102 @@ async function quota_isQuotaFailureTextTruthTable() {
   } catch (err) { bad(name, err); }
 }
 
+function localMs(year, monthIndex, day, hour, minute) {
+  return new Date(year, monthIndex, day, hour, minute, 0, 0).getTime();
+}
+
+async function quota_parseRetryAtMsSameDayAmPm() {
+  const name = "parseRetryAtMs: try again at 9:57 PM -> today's 21:57 local when still ahead";
+  try {
+    const now = localMs(2026, 8, 1, 20, 0);
+    const expected = localMs(2026, 8, 1, 21, 57);
+    assert.equal(parseRetryAtMs("ERROR: You've hit your usage limit. Please upgrade or try again at 9:57 PM.", now), expected);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function quota_parseRetryAtMsNextDayWhenPassed() {
+  const name = "parseRetryAtMs: already-passed 9:57 PM rolls to tomorrow's 21:57 local";
+  try {
+    const now = localMs(2026, 8, 1, 22, 0);
+    const expected = localMs(2026, 8, 1, 21, 57) + 24 * 60 * 60 * 1000;
+    assert.equal(parseRetryAtMs("ERROR: You've hit your usage limit. Please upgrade or try again at 9:57 PM.", now), expected);
+    assert.ok(parseRetryAtMs("try again at 9:57 PM", now) > now, "retry instant must never be in the past");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function quota_parseRetryAtMsTwentyFourHourForm() {
+  const name = "parseRetryAtMs: try again at 21:57 parses like 9:57 PM";
+  try {
+    const now = localMs(2026, 8, 1, 20, 0);
+    const expected = localMs(2026, 8, 1, 21, 57);
+    assert.equal(parseRetryAtMs("ERROR: You've hit your usage limit. Please upgrade or try again at 21:57.", now), expected);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function quota_parseRetryAtMsNoTime() {
+  const name = "parseRetryAtMs: text without retry clock time -> null";
+  try {
+    const now = localMs(2026, 8, 1, 20, 0);
+    assert.equal(parseRetryAtMs("provider.auth_error: 403 You've reached your weekly (7-day) usage limit.", now), null);
+    assert.equal(parseRetryAtMs("rate limit exceeded", now), null);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function quota_recordQuotaExhaustedUsesProviderRetryTime() {
+  const name = "recordQuotaExhausted with retry time ends near provider instant, not six hours later";
+  try {
+    const sf = await tmpStateFile("qretry");
+    const now = localMs(2026, 8, 1, 20, 0);
+    const retryAt = localMs(2026, 8, 1, 21, 57);
+    const reason = "ERROR: You've hit your usage limit. Please upgrade or try again at 9:57 PM.";
+    const rec = await recordQuotaExhausted("codex", reason, { now, stateFile: sf });
+    assert.equal(rec.retryAtMs, retryAt);
+    assert.ok(rec.cooldownUntilMs >= retryAt, "cooldown must not end before the provider-stated instant");
+    assert.ok(rec.cooldownUntilMs <= retryAt + 2 * 60 * 1000, "cooldown may add only a small grace margin");
+    assert.notEqual(rec.cooldownMs, QUOTA_COOLDOWN_MS, "provider retry time should not park the lane for the flat 6h default");
+
+    const skipBefore = await shouldSkipLane("codex", { now: retryAt - 1_000, stateFile: sf });
+    assert.equal(skipBefore.skip, true, "still skip before provider retry time");
+    assert.equal(skipBefore.reason, "quota");
+
+    const skipAfterGrace = await shouldSkipLane("codex", { now: retryAt + 2 * 60 * 1000 + 1, stateFile: sf });
+    assert.equal(skipAfterGrace.skip, false, "no skip once provider retry time plus grace has passed");
+    await cleanup([sf]);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function quota_oldShapeStateStillSkipsCorrectly() {
+  const name = "shouldSkipLane: old state shape with only cooldownMs still computes remaining time";
+  try {
+    const sf = await tmpStateFile("qold");
+    const t0 = 50_000_000;
+    await fs.writeFile(sf, JSON.stringify({
+      lanes: {
+        codex: {
+          lastFailureTs: t0,
+          lastFailureReason: "old quota entry",
+          failureCount: 1,
+          cooldownMs: QUOTA_COOLDOWN_MS,
+          quotaExhausted: true,
+        },
+      },
+    }, null, 2), "utf8");
+
+    const skip = await shouldSkipLane("codex", { now: t0 + 1_000, stateFile: sf });
+    assert.equal(skip.skip, true);
+    assert.equal(skip.reason, "quota");
+    assert.equal(skip.quotaExhausted, true);
+    assert.equal(skip.remainingMs, QUOTA_COOLDOWN_MS - 1_000);
+    await cleanup([sf]);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
 async function quota_recordQuotaExhaustedStoresLongCooldown() {
   const name = "recordQuotaExhausted stores quotaExhausted:true and cooldownMs === QUOTA_COOLDOWN_MS (temp state file)";
   try {
@@ -640,7 +737,13 @@ async function main() {
   await fos22_resolveLaneHonorsProbedChoiceNotFirstLane();
   // Quota exhaustion — a SEPARATE state from transient failure.
   await quota_isQuotaFailureTextTruthTable();
+  await quota_parseRetryAtMsSameDayAmPm();
+  await quota_parseRetryAtMsNextDayWhenPassed();
+  await quota_parseRetryAtMsTwentyFourHourForm();
+  await quota_parseRetryAtMsNoTime();
+  await quota_recordQuotaExhaustedUsesProviderRetryTime();
   await quota_recordQuotaExhaustedStoresLongCooldown();
+  await quota_oldShapeStateStillSkipsCorrectly();
   await quota_isInCooldownRespectsLongWindow();
   await quota_transientEntryUnchangedRegressionGuard();
   await quota_clearFailureRemovesQuotaEntry();

@@ -5,6 +5,8 @@
  */
 import {
   Stethoscope,
+  Inbox,
+  BookOpen,
   Home,
   ListChecks,
   Users,
@@ -19,6 +21,7 @@ export type NavItem = { href: string; label: string; icon: typeof Home };
 
 export const NAV_OPERATE: NavItem[] = [
   { href: '/', label: 'Home', icon: Home },
+  { href: '/inbox', label: 'Inbox', icon: Inbox },
   { href: '/tasks', label: 'Tasks', icon: ListChecks },
   { href: '/decisions', label: 'Decisions', icon: Scale },
 ];
@@ -40,6 +43,7 @@ export const NAV_INTELLIGENCE: NavItem[] = [
 export const NAV_SYSTEM: NavItem[] = [
   { href: '/roadmap', label: 'Roadmap', icon: Map },
   { href: '/reference', label: 'Layers', icon: Layers },
+  { href: '/how', label: 'Cara Pakai', icon: BookOpen },
 ];
 
 /** Visible top-to-bottom order across all groups. */

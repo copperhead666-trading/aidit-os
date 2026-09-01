@@ -40,10 +40,10 @@
 // lanes), probeLaneAvailability returns an explicit { available:false,
 // probe:"none", reason:"no cheap probe implemented" } rather than guessing.
 //
-// === Cooldown policy (OUR OWN clock, never the provider's) ===
-// We NEVER parse/trust a reset time printed in a provider error message — such
-// a message is logged informationally only. We compute our own cooldown from the
-// timestamp WE observed the failure, using exponential backoff:
+// === Cooldown policy (transient failures use OUR OWN clock) ===
+// For ordinary transient failures, provider reset text is logged
+// informationally only. We compute our own cooldown from the timestamp WE
+// observed the failure, using exponential backoff:
 //     cooldownMs = min( BASE * 2^(failureCount-1), CAP )
 //     BASE = 60_000 ms (1 min)   CAP = 1_800_000 ms (30 min)
 // Rationale: 1 min rides out a transient blip; exponential growth bounds
@@ -58,10 +58,12 @@
 // does NOT recover inside a 30-minute cooldown window. Retrying it every 60s-
 // 30min is wasteful and just re-discovers the same wall. So a quota failure is
 // recorded with a LONG, separate cooldown (QUOTA_COOLDOWN_MS = 6h) and flagged
-// with quotaExhausted:true on the stored entry. This is one extra state on top
-// of the existing transient backoff — the existing read path (isInCooldown)
-// surfaces it via the quotaExhausted boolean, and a successful dispatch clears
-// it the same way it clears a normal entry (the quota window reopened).
+// with quotaExhausted:true on the stored entry. If the provider gives a local
+// retry clock time, that explicit instant wins with a small grace margin. This
+// is one extra state on top of the existing transient backoff — the existing
+// read path (isInCooldown) surfaces it via the quotaExhausted boolean, and a
+// successful dispatch clears it the same way it clears a normal entry (the
+// quota window reopened).
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -86,7 +88,8 @@ const COOLDOWN_CAP_MS = 30 * 60_000;
 // already know is capped. Like the transient cooldown, this is OUR clock — we
 // never parse/trust a reset time printed in a provider error.
 export const QUOTA_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6 hours
-
+const QUOTA_RETRY_GRACE_MS = 2 * 60 * 1000;
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 // Probe-key -> how to probe. `kind` selects the probe mechanism.
 export const LANE_PROBES = {
   ollama: { kind: "http", url: OLLAMA_TAGS_URL, label: "Ollama Cloud (L2 technical)" },
@@ -203,6 +206,39 @@ export function isQuotaFailureText(text) {
   return patterns.some((p) => p.test(s));
 }
 
+// parseRetryAtMs(text, nowMs): parse provider-shaped local retry clock times,
+// e.g. "try again at 9:57 PM" or "try again at 21:57". The CLI prints the
+// machine's local time, so Date local setters are intentional here.
+export function parseRetryAtMs(text, nowMs) {
+  if (text == null || !Number.isFinite(nowMs)) return null;
+  const match = /\btry\s+again\s+at\s+([01]?\d|2[0-3]):([0-5]\d)(?:\s*([AP])\.?M\.?)?\b/i.exec(String(text));
+  if (!match) return null;
+
+  let hour = Number(match[1]);
+  const minute = Number(match[2]);
+  const meridiem = match[3] ? match[3].toUpperCase() : null;
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
+
+  if (meridiem) {
+    if (hour < 1 || hour > 12) return null;
+    if (meridiem === "P" && hour !== 12) hour += 12;
+    if (meridiem === "A" && hour === 12) hour = 0;
+  } else if (hour > 23) {
+    return null;
+  }
+
+  const now = new Date(nowMs);
+  if (Number.isNaN(now.getTime())) return null;
+  const candidate = new Date(nowMs);
+  candidate.setHours(hour, minute, 0, 0);
+  let retryAtMs = candidate.getTime();
+  if (retryAtMs < nowMs) retryAtMs += ONE_DAY_MS;
+
+  const aheadMs = retryAtMs - nowMs;
+  if (aheadMs < 0 || aheadMs > ONE_DAY_MS) return null;
+  return retryAtMs;
+}
+
 // recordFailure(lane, reason): persist an observed failure with a real
 // timestamp. lane may be a probe key or a full lane string (normalized).
 // deps: { now, stateFile }
@@ -236,6 +272,9 @@ export async function recordQuotaExhausted(lane, reason, deps = {}) {
   const file = deps.stateFile || STATE_FILE;
   const key = LANE_PROBES[lane] ? lane : (laneStringToProbeKey(lane) || lane);
   let failureCount = 0;
+  const retryAtMs = parseRetryAtMs(reason, now);
+  const cooldownUntilMs = retryAtMs == null ? now + QUOTA_COOLDOWN_MS : retryAtMs + QUOTA_RETRY_GRACE_MS;
+  const cooldownMs = cooldownUntilMs - now;
   try {
     const st = await loadRoutingState(file);
     st.lanes = st.lanes || {};
@@ -245,12 +284,17 @@ export async function recordQuotaExhausted(lane, reason, deps = {}) {
       lastFailureTs: now,
       lastFailureReason: String(reason || "unknown"),
       failureCount,
-      cooldownMs: QUOTA_COOLDOWN_MS,
+      cooldownMs,
       quotaExhausted: true,
     };
+    if (retryAtMs != null) {
+      st.lanes[key].retryAtMs = retryAtMs;
+      st.lanes[key].cooldownUntilMs = cooldownUntilMs;
+      st.lanes[key].retryGraceMs = QUOTA_RETRY_GRACE_MS;
+    }
     await saveRoutingState(st, file);
   } catch { /* best-effort: never throws */ }
-  return { lane: key, failureCount, cooldownMs: QUOTA_COOLDOWN_MS, lastFailureTs: now, quotaExhausted: true };
+  return { lane: key, failureCount, cooldownMs, lastFailureTs: now, quotaExhausted: true, retryAtMs, cooldownUntilMs };
 }
 
 // Clear a lane's failure state (call after a successful probe/dispatch to reset
@@ -283,7 +327,7 @@ export async function isInCooldown(lane, deps = {}) {
   const entry = (st.lanes || {})[key];
   if (!entry || !entry.lastFailureTs) return { inCooldown: false, lane: key, remainingMs: 0, failureCount: 0, quotaExhausted: false };
   const cooldown = entry.cooldownMs != null ? entry.cooldownMs : cooldownMsFor(entry.failureCount || 1);
-  const expiresAt = entry.lastFailureTs + cooldown;
+  const expiresAt = Number.isFinite(entry.cooldownUntilMs) ? entry.cooldownUntilMs : entry.lastFailureTs + cooldown;
   const remainingMs = expiresAt - now;
   return {
     inCooldown: remainingMs > 0,
