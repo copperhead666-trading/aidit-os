@@ -33,6 +33,8 @@ import {
   httpPost,
   listIssues,
   CANONICAL_COMPANY_ID,
+  ensureLabel,
+  patchIssue,
 } from "./paperclip-write-client.mjs";
 import { retrieveDispatchContext } from "./ahmad-context-retrieval.mjs";
 import { sendMessage as telegramSendMessage } from "./telegram-client.mjs";
@@ -54,6 +56,39 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
 const STATE_FILE = path.join(__dirname, "directive-runner-state.json");
+
+
+// Adds a label the way ahmad-escalate.mjs does — ensureLabel then PATCH labelIds.
+// The previous default POSTed /api/issues/:id/labels, which Paperclip answers 404,
+// so the escalation silently never fired. Verified live before replacing.
+async function addIssueLabelReal(base, companyId, issue, labelName, color) {
+  const labelResult = await ensureLabel(base, companyId, labelName, color);
+  if (labelResult.id == null) {
+    return {
+      ok: false,
+      networkError: !!labelResult.networkError,
+      reason: labelResult.networkErrorMessage || `status ${labelResult.status}`,
+    };
+  }
+
+  const existingIds = issue.labelIds || (issue.labels || []).map((l) => l.id);
+  if (existingIds.includes(labelResult.id)) {
+    return { ok: true };
+  }
+
+  // Keep existing label ids: patching with only the new id would strip DIRECTIVE (and any other label) off the issue.
+  const labelIds = [...existingIds, labelResult.id];
+  const patchResult = await patchIssue(base, issue.id, { labelIds });
+  if (patchResult.issue == null) {
+    return {
+      ok: false,
+      networkError: !!patchResult.networkError,
+      reason: patchResult.networkErrorMessage || `status ${patchResult.status}`,
+    };
+  }
+
+  return { ok: true };
+}
 
 export const PLAN_MARKER = "DIRECTIVE PLAN";
 export const APPROVED_MARKER = "DIRECTIVE PLAN APPROVED";
@@ -611,7 +646,7 @@ export async function runDirectiveSweepOnce(deps = {}) {
     }
     const issues = Array.isArray(issuesRes.issues) ? issuesRes.issues : [];
     const state = dryRun ? { attempts: {}, lastPlanFailures: {} } : await loadState(stateFile, _fs);
-    const addOwnerRequiredLabelFn = addIssueLabel || (async (iss, label) => _post(`${base}/api/issues/${iss.id}/labels`, { label }));
+    const addOwnerRequiredLabelFn = addIssueLabel || (async (iss, label) => addIssueLabelReal(base, companyId, iss, label, "#b91c1c"));
     let plannedThisSweep = 0;
     // Approved directives captured here (issue + parsed plan) for the stage 3b
     // execution pass that runs AFTER the planning loop. Only directives whose
@@ -787,7 +822,7 @@ export async function runDirectiveSweepOnce(deps = {}) {
       const execFn = executeDirective || executeApprovedDirective;
       const sendOwnerMsg = sendOwnerMessage || (async () => ({ sent: false }));
       const patchIssueFn = patchIssue || (async (iss, patch) => _post(`${base}/api/issues/${iss.id}`, patch));
-      const addLabelFn = addIssueLabel || (async (iss, label) => _post(`${base}/api/issues/${iss.id}/labels`, { label }));
+      const addLabelFn = addIssueLabel || (async (iss, label) => addIssueLabelReal(base, companyId, iss, label, "#b91c1c"));
       const nowMs = asMs(now);
       const toExecute = approvedForExecution.slice(0, MAX_EXECUTIONS_PER_SWEEP);
       for (const item of toExecute) {
