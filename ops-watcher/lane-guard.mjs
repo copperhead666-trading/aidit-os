@@ -81,7 +81,21 @@ export async function recordLaneOutcome(laneName, result = {}, deps = {}) {
     const text = `${stdout}\n${stderr}`;
     const textForClassification = stripPromptText(text, result && result.promptText);
     const isQuotaFailureText = deps.isQuotaFailureText || defaultIsQuotaFailureText;
-    if (isQuotaFailureText(textForClassification)) {
+
+    // A run that hit the wrapper TIMEOUT (result.timedOut === true) must NEVER
+    // be classified as quota-exhausted, even when its captured output happens to
+    // contain a quota-shaped phrase. The reasoning is structural: a genuine
+    // quota rejection returns immediately — a provider that is out of quota does
+    // not think for eight minutes first. So a timed-out run is, by construction,
+    // not evidence of exhausted quota. The quota phrase in the transcript is
+    // usually the CLI echoing the prompt back (which may itself mention
+    // quota-handling code or its test fixtures); stripPromptText only removes
+    // the prompt we know about, not the CLI's echoed copy. Treating a timeout as
+    // a quota event would park a perfectly good lane for the full quota cooldown
+    // — six hours lost per false flag. Instead record it as an ordinary failure
+    // (short exponential backoff) so the lane retries quickly.
+    const timedOut = result && result.timedOut === true;
+    if (!timedOut && isQuotaFailureText(textForClassification)) {
       const recordQuotaExhausted = deps.recordQuotaExhausted || defaultRecordQuotaExhausted;
       await recordQuotaExhausted(laneKey, first200(text), deps);
       return { recorded: true, kind: "quota", laneKey };

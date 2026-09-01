@@ -231,6 +231,122 @@ async function testIsUnusableModelOutputTruthTable() {
   } catch (err) { bad(name, err); }
 }
 
+// =====================================================================
+// G11: a timed-out run is never classified as quota-exhausted, even when the
+// captured output contains a quota-shaped phrase. The injected
+// recordQuotaExhausted spy must never be called; the run is recorded as an
+// ordinary failure instead.
+// =====================================================================
+async function testRecordOutcomeTimedOutNeverClassifiesQuota() {
+  const name = "G11 recordLaneOutcome timedOut=true with quota-shaped stderr records failure, never quota";
+  try {
+    const quotaCalls = [];
+    const failureCalls = [];
+    const result = await recordLaneOutcome("corleone", {
+      ok: false,
+      timedOut: true,
+      stderr: "You've hit your usage limit",
+    }, {
+      recordQuotaExhausted: async (laneKey, reason) => { quotaCalls.push({ laneKey, reason }); },
+      recordFailure: async (laneKey, reason) => { failureCalls.push({ laneKey, reason }); },
+    });
+    assert.equal(result.recorded, true);
+    assert.equal(result.kind, "failure");
+    assert.equal(result.laneKey, "codex");
+    assert.deepEqual(quotaCalls, []);
+    assert.equal(failureCalls.length, 1);
+    assert.equal(failureCalls[0].laneKey, "codex");
+    assert.match(failureCalls[0].reason, /You've hit your usage limit/);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// G12: the same quota-shaped failure with timedOut: false still records quota
+// (proves the existing quota path is intact and the timedOut guard is precise).
+// =====================================================================
+async function testRecordOutcomeTimedOutFalseStillClassifiesQuota() {
+  const name = "G12 recordLaneOutcome timedOut=false with quota-shaped stderr records quota";
+  try {
+    const quotaCalls = [];
+    const failureCalls = [];
+    const result = await recordLaneOutcome("corleone", {
+      ok: false,
+      timedOut: false,
+      stderr: "You've hit your usage limit",
+    }, {
+      recordQuotaExhausted: async (laneKey, reason) => { quotaCalls.push({ laneKey, reason }); },
+      recordFailure: async (laneKey, reason) => { failureCalls.push({ laneKey, reason }); },
+    });
+    assert.equal(result.recorded, true);
+    assert.equal(result.kind, "quota");
+    assert.equal(result.laneKey, "codex");
+    assert.equal(quotaCalls.length, 1);
+    assert.equal(quotaCalls[0].laneKey, "codex");
+    assert.deepEqual(failureCalls, []);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// G13: the same quota-shaped failure with timedOut absent still records quota
+// (proves backward compatibility — the flag is not yet passed by dispatch
+// wrappers and behaviour must be unchanged when it is missing).
+// =====================================================================
+async function testRecordOutcomeTimedOutAbsentStillClassifiesQuota() {
+  const name = "G13 recordLaneOutcome timedOut absent with quota-shaped stderr records quota";
+  try {
+    const quotaCalls = [];
+    const failureCalls = [];
+    const result = await recordLaneOutcome("corleone", {
+      ok: false,
+      stderr: "You've hit your usage limit",
+    }, {
+      recordQuotaExhausted: async (laneKey, reason) => { quotaCalls.push({ laneKey, reason }); },
+      recordFailure: async (laneKey, reason) => { failureCalls.push({ laneKey, reason }); },
+    });
+    assert.equal(result.recorded, true);
+    assert.equal(result.kind, "quota");
+    assert.equal(result.laneKey, "codex");
+    assert.equal(quotaCalls.length, 1);
+    assert.equal(quotaCalls[0].laneKey, "codex");
+    assert.deepEqual(failureCalls, []);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// G14: a successful run that also reports timedOut=true still clears the lane
+// and records success. A timeout flag on an ok run is contradictory, but the
+// success branch must win — success is the strongest signal and must never be
+// downgraded by a stale timeout flag.
+// =====================================================================
+async function testRecordOutcomeTimedOutSuccessStillClears() {
+  const name = "G14 recordLaneOutcome ok=true timedOut=true still clears the lane";
+  try {
+    const clearCalls = [];
+    const quotaCalls = [];
+    const failureCalls = [];
+    const result = await recordLaneOutcome("corleone", {
+      ok: true,
+      timedOut: true,
+      stdout: "You've hit your usage limit",
+      stderr: "",
+    }, {
+      clearFailure: async (laneKey) => { clearCalls.push(laneKey); },
+      recordQuotaExhausted: async (laneKey, reason) => { quotaCalls.push({ laneKey, reason }); },
+      recordFailure: async (laneKey, reason) => { failureCalls.push({ laneKey, reason }); },
+    });
+    assert.equal(result.recorded, true);
+    assert.equal(result.kind, "success");
+    assert.equal(result.laneKey, "codex");
+    assert.deepEqual(clearCalls, ["codex"]);
+    assert.deepEqual(quotaCalls, []);
+    assert.deepEqual(failureCalls, []);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
 async function main() {
   console.log("# ops-watcher lane-guard regression tests");
   await testLaneKeysMapping();
@@ -243,6 +359,10 @@ async function main() {
   await testIsUnusableModelOutputTruthTable();
   await testRecordOutcomeSuccessNeverClassifiesQuota();
   await testRecordOutcomePromptTextScrubbedBeforeQuotaClassification();
+  await testRecordOutcomeTimedOutNeverClassifiesQuota();
+  await testRecordOutcomeTimedOutFalseStillClassifiesQuota();
+  await testRecordOutcomeTimedOutAbsentStillClassifiesQuota();
+  await testRecordOutcomeTimedOutSuccessStillClears();
   console.log("");
   console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
   if (failed > 0) { for (const f of failures) console.log(`  FAILED: ${f}`); process.exit(1); }
