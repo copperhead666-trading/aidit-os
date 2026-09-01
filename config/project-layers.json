@@ -4,7 +4,7 @@
     "label": "Frontend Layer",
     "ownerQuestion": "Can the owner and operators understand and use the product without reading code?",
     "status": "partial",
-    "evidence": "No Next.js/TS/build frontend was found in this repo; repo frontend-glob scan only matched ops-watcher/cockpit-snapshot.html. The real owner-facing surface is Telegram: docs/standards/design-quality-standard.md:30, ops-watcher/telegram-notify.mjs:12-15, ops-watcher/telegram-notify.mjs:95-98, ops-watcher/telegram-listener.mjs:20-55."
+    "evidence": "A read-only Next.js 14 cockpit now exists at cockpit/ and is served under PM2 on :4200: cockpit/app/page.tsx plus eight views, with cockpit/lib/founderos.ts and cockpit/lib/sources.ts as the only modules that touch disk. It is read-only by design — every approval still happens in Telegram (ops-watcher/telegram-notify.mjs, ops-watcher/telegram-listener.mjs), so the owner-facing WRITE surface remains Telegram alone. Still partial, not implemented: the cockpit cannot act, only show."
   },
   {
     "id": "api-backend",
@@ -32,7 +32,7 @@
     "label": "Hosting And Deployment",
     "ownerQuestion": "How does the app run, restart, and get promoted?",
     "status": "partial",
-    "evidence": "Local PM2 hosting/supervision exists, but production/cloud promotion is deferred: ops-watcher/ecosystem.config.cjs:73-75, ops-watcher/ecosystem.config.cjs:146-220, ops-watcher/pm2-supervisor.mjs:1-18, scripts/pm2-supervisor-run.cmd:4, handoffs/ahmad/NEXT-SESSION-PROMPT-2026-08-31.md:17."
+    "evidence": "Local PM2 hosting/supervision exists and now also serves the cockpit (ops-watcher/ecosystem.config.cjs, ops-watcher/pm2-supervisor.mjs, scripts/pm2-supervisor-run.cmd). Reachability beyond this machine is a tailnet-only Tailscale serve route to https://asus-gray.tailc7b60e.ts.net, verified 2026-09-01 from a second tailnet device — free, nothing exposed publicly, and dependent on this laptop being on. Production/cloud promotion remains deferred by owner decision until FounderOS proves stable, and must stay free-tier."
   },
   {
     "id": "cloud-compute",
