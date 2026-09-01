@@ -25,6 +25,7 @@
 //   answerCallbackQuery(callbackQueryId, text, { timeoutMs, baseUrl })
 //   editMessageText(messageId, newText, { buttons, timeoutMs, baseUrl })
 //   getUpdates(offset, { timeoutMs, baseUrl })
+//   setMyCommands(commands, { timeoutMs, baseUrl })
 //   tokenStatus()
 //
 // `baseUrl` is a TEST SEAM only: it defaults to the real Telegram API base
@@ -158,6 +159,16 @@ export async function getUpdates(offset, { timeoutMs = 25000, baseUrl } = {}) {
   const r = await tgFetch("getUpdates", payload, { timeoutMs: timeoutMs + 8000, baseUrl });
   if (r.sent) return { ok: true, updates: Array.isArray(r.result) ? r.result : [] };
   return { ok: false, updates: [], ...r };
+}
+
+// Register the bot's command menu (the slash menu Telegram shows the OWNER).
+// `commands` is an array of BotCommand objects { command, description } as
+// documented for setMyCommands. Same never-throw contract as every other
+// wrapper: a network/parse failure is reported as { sent:false, ... }, never
+// thrown. No real call is made by this module on its own — a caller must invoke
+// this explicitly (wiring comes separately).
+export async function setMyCommands(commands, { timeoutMs, baseUrl } = {}) {
+  return tgFetch("setMyCommands", { commands }, { timeoutMs, baseUrl });
 }
 
 // Introspection for logs/reports — NEVER the token value.
