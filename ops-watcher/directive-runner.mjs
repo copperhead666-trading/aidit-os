@@ -719,10 +719,18 @@ export async function runDirectiveSweepOnce(deps = {}) {
           let labelOk = false;
           try {
             const labelRes = await addOwnerRequiredLabelFn(issue, OWNER_REQUIRED_LABEL);
-            if (labelRes && labelRes.networkError) {
-              summary.errors.push(`${ident}: owner-required label network error: ${labelRes.networkErrorMessage}`);
-            } else {
+            // Success must be explicit. The previous form treated anything that
+            // was not a *network* error as success, so the 404 from the old
+            // label endpoint counted as OK: the escalation comment was posted
+            // while the label never landed, which both hid the failure and made
+            // the issue look already-escalated forever after. Verified on KOL-68.
+            if (labelRes && labelRes.ok === true) {
               labelOk = true;
+            } else {
+              const why = labelRes && (labelRes.reason || labelRes.networkErrorMessage)
+                ? (labelRes.reason || labelRes.networkErrorMessage)
+                : "unknown";
+              summary.errors.push(`${ident}: owner-required label FAILED (${why}) — no escalation comment posted`);
             }
           } catch (err) {
             summary.errors.push(`${ident}: owner-required label error: ${err && err.message ? err.message : err}`);

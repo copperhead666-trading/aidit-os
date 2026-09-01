@@ -96,7 +96,11 @@ function makeSweepDeps({ issues, comments, plan = goodPlan, stateFile = TMP_STAT
     executeDirective: async () => { executeCalls++; spies.execute++; return { outcome: "skipped", reason: "default-test-skip" }; },
     sendOwnerMessage: async (text) => { messages.push(text); spies.telegram++; return { sent: true }; },
     patchIssue: async (iss, patch) => { patches.push({ issue: iss, patch }); return { status: 200, body: { ...iss, ...patch }, networkError: false }; },
-    addIssueLabel: async (iss, label) => { labels.push({ issue: iss, label }); return { status: 201, body: { label }, networkError: false }; },
+    // Mirrors addIssueLabelReal's real contract: success is the explicit `ok: true`.
+    // The old fake returned only { status, body, networkError:false }, which let a
+    // 404 from the real label endpoint count as success in production — the bug
+    // that left KOL-68 with an escalation comment and no OWNER_REQUIRED label.
+    addIssueLabel: async (iss, label) => { labels.push({ issue: iss, label }); return { ok: true, status: 201, body: { label }, networkError: false }; },
     stateFile,
     now: NOW,
     log: () => {},
