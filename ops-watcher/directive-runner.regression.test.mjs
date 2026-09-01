@@ -24,6 +24,7 @@ import {
   RESULT_MARKER,
   DISPATCH_MARKER,
   DEFAULT_STALLED_AFTER_MS,
+  DEFAULT_MAX_PLAN_ATTEMPTS,
   MAX_EXECUTIONS_PER_SWEEP,
   SWEEP_MIN_INTERVAL_MS,
 } from "./directive-runner.mjs";
@@ -60,6 +61,9 @@ const goodPlan = [
 // that file). Reused verbatim here so the test exercises the real wording.
 const TG_APPROVE = "OWNER MENYETUJUI via Telegram (2026-09-01T09:30:00.000Z) — ketukan tombol oleh owner via @ahmadsuperbot. Label OWNER_REQUIRED dihapus sehingga alur otomatis dapat dilanjutkan.";
 const TG_REJECT = "OWNER MENOLAK via Telegram (2026-09-01T09:30:00.000Z) — ketukan tombol oleh owner via @ahmadsuperbot. Status diubah menjadi cancelled; label OWNER_REJECTED ditambahkan.";
+function ownerRequiredBody(at = "2026-09-01T09:00:00.000Z") {
+  return `DIRECTIVE OWNER REQUIRED (${at}): directive perlu keputusan owner.`;
+}
 
 function makeSweepDeps({ issues, comments, plan = goodPlan, stateFile = TMP_STATE, extra = {} }) {
   const posts = [];
@@ -298,6 +302,149 @@ await t("plan attempt cap escalation is idempotent on the next sweep", async () 
   assert.equal(second.labels.length, 0);
   assert.equal(second.posts.length, 0);
   assert.equal(comments.i1.filter((x) => /^DIRECTIVE OWNER REQUIRED/.test(x.body)).length, 1);
+});
+await t("owner approval after attempt-cap escalation resets attempts and plans using the real default cap", async () => {
+  await resetTmp();
+  await fs.writeFile(TMP_STATE, JSON.stringify({
+    attempts: { i1: DEFAULT_MAX_PLAN_ATTEMPTS },
+    lastPlanFailures: { i1: { reason: "verify-out-of-scope", attempt: DEFAULT_MAX_PLAN_ATTEMPTS } },
+    lastSweepMs: 0,
+  }), "utf8");
+  const comments = {
+    i1: [
+      c(ownerRequiredBody("2026-09-01T09:00:00.000Z"), "2026-09-01T09:00:00.000Z"),
+      c(TG_APPROVE, "2026-09-01T09:30:00.000Z"),
+    ],
+  };
+  const { deps, posts, cards, labels } = makeSweepDeps({
+    issues: [issue({ id: "i1", identifier: "KOL-68" })],
+    comments,
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.scanned, 1);
+  assert.equal(res.planned, 1);
+  assert.equal(posts.length, 1);
+  assert.match(posts[0].body.body, /^DIRECTIVE PLAN \(/);
+  assert.equal(cards.length, 1);
+  assert.equal(labels.length, 0);
+  const st = JSON.parse(await fs.readFile(TMP_STATE, "utf8"));
+  assert.equal(st.attempts.i1, 0);
+  assert.equal(st.attemptCapDecisionResets.i1.decision, "approved");
+  assert.equal(st.attemptCapDecisionResets.i1.at, "2026-09-01T09:30:00.000Z");
+});
+
+await t("owner rejection after attempt-cap escalation resets attempts", async () => {
+  await resetTmp();
+  await fs.writeFile(TMP_STATE, JSON.stringify({
+    attempts: { i1: 2 },
+    lastPlanFailures: { i1: { reason: "parse-failed", attempt: 2 } },
+    lastSweepMs: 0,
+  }), "utf8");
+  const comments = {
+    i1: [
+      c(ownerRequiredBody("2026-09-01T09:00:00.000Z"), "2026-09-01T09:00:00.000Z"),
+      c(TG_REJECT, "2026-09-01T09:30:00.000Z"),
+    ],
+  };
+  const { deps, posts, cards, labels } = makeSweepDeps({
+    issues: [issue({ id: "i1", identifier: "KOL-68" })],
+    comments,
+    extra: { maxPlanAttempts: 2, maxPlansPerSweep: 0 },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.scanned, 1);
+  assert.equal(res.planned, 0);
+  assert.equal(posts.length, 0);
+  assert.equal(cards.length, 0);
+  assert.equal(labels.length, 0);
+  const st = JSON.parse(await fs.readFile(TMP_STATE, "utf8"));
+  assert.equal(st.attempts.i1, 0);
+  assert.equal(st.attemptCapDecisionResets.i1.decision, "rejected");
+});
+
+await t("owner decision older than attempt-cap escalation does not reset attempts", async () => {
+  await resetTmp();
+  await fs.writeFile(TMP_STATE, JSON.stringify({
+    attempts: { i1: 2 },
+    lastPlanFailures: { i1: { reason: "parse-failed", attempt: 2 } },
+    lastSweepMs: 0,
+  }), "utf8");
+  const comments = {
+    i1: [
+      c(TG_APPROVE, "2026-09-01T08:55:00.000Z"),
+      c(ownerRequiredBody("2026-09-01T09:00:00.000Z"), "2026-09-01T09:00:00.000Z"),
+    ],
+  };
+  const { deps, posts, cards, labels } = makeSweepDeps({
+    issues: [issue({ id: "i1", identifier: "KOL-68" })],
+    comments,
+    extra: { maxPlanAttempts: 2 },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.planned, 0);
+  assert.equal(posts.length, 0);
+  assert.equal(cards.length, 0);
+  assert.equal(labels.length, 0);
+  const st = JSON.parse(await fs.readFile(TMP_STATE, "utf8"));
+  assert.equal(st.attempts.i1, 2);
+  assert.equal(st.attemptCapDecisionResets, undefined);
+});
+
+await t("the same post-escalation decision is consumed once and does not reset again", async () => {
+  await resetTmp();
+  await fs.writeFile(TMP_STATE, JSON.stringify({
+    attempts: { i1: 1 },
+    lastPlanFailures: { i1: { reason: "parse-failed", attempt: 1 } },
+    lastSweepMs: 0,
+  }), "utf8");
+  const comments = {
+    i1: [
+      c(ownerRequiredBody("2026-09-01T09:00:00.000Z"), "2026-09-01T09:00:00.000Z"),
+      c(TG_APPROVE, "2026-09-01T09:30:00.000Z"),
+    ],
+  };
+  let planCalls = 0;
+  const extra = {
+    maxPlanAttempts: 1,
+    dispatchPlan: async () => { planCalls++; return { ok: true, stdout: "not a plan", stderr: "", timedOut: false }; },
+  };
+  const first = makeSweepDeps({ issues: [issue({ id: "i1", identifier: "KOL-68" })], comments, extra });
+  await runDirectiveSweepOnce(first.deps);
+  let st = JSON.parse(await fs.readFile(TMP_STATE, "utf8"));
+  assert.equal(planCalls, 1);
+  assert.equal(st.attempts.i1, 1);
+  assert.equal(st.attemptCapDecisionResets.i1.decision, "approved");
+
+  const second = makeSweepDeps({ issues: [issue({ id: "i1", identifier: "KOL-68" })], comments, extra });
+  await runDirectiveSweepOnce(second.deps);
+  st = JSON.parse(await fs.readFile(TMP_STATE, "utf8"));
+  assert.equal(planCalls, 1);
+  assert.equal(st.attempts.i1, 1);
+  assert.equal(second.posts.length, 0);
+  assert.equal(comments.i1.filter((x) => /DIRECTIVE DRAFT FAILED/.test(x.body)).length, 1);
+});
+
+await t("issue at attempt cap with no owner decision stays skipped without duplicate escalation", async () => {
+  await resetTmp();
+  await fs.writeFile(TMP_STATE, JSON.stringify({
+    attempts: { i1: 2 },
+    lastPlanFailures: { i1: { reason: "verify-out-of-scope", attempt: 2 } },
+    lastSweepMs: 0,
+  }), "utf8");
+  const comments = { i1: [c(ownerRequiredBody("2026-09-01T09:00:00.000Z"), "2026-09-01T09:00:00.000Z")] };
+  const { deps, posts, cards, labels } = makeSweepDeps({
+    issues: [issue({ id: "i1", identifier: "KOL-68" })],
+    comments,
+    extra: { maxPlanAttempts: 2 },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.planned, 0);
+  assert.equal(posts.length, 0);
+  assert.equal(cards.length, 0);
+  assert.equal(labels.length, 0);
+  const st = JSON.parse(await fs.readFile(TMP_STATE, "utf8"));
+  assert.equal(st.attempts.i1, 2);
+  assert.equal(st.attemptCapDecisionResets, undefined);
 });
 
 await t("attempt cap escalation still fires after the plan budget is spent", async () => {

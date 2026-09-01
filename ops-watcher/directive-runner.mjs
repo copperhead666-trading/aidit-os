@@ -184,6 +184,70 @@ function findLastIndex(comments, pred) {
   for (let i = (comments || []).length - 1; i >= 0; i--) if (pred(comments[i])) return i;
   return -1;
 }
+function decisionFromComment(c) {
+  const body = bodyOf(c);
+  if (body.startsWith(DECISION_APPROVE_PREFIX) || body.includes(APPROVED_MARKER)) {
+    return { decision: "approved", raw: body };
+  }
+  if (body.startsWith(DECISION_REJECT_PREFIX) || body.includes(REJECTED_MARKER) || /\bREJECT(?:ED)?\b/i.test(body)) {
+    return { decision: "rejected", raw: body };
+  }
+  return null;
+}
+function newestAttemptCapEscalation(comments) {
+  let best = null;
+  for (const c of Array.isArray(comments) ? comments : []) {
+    if (!isAttemptCapEscalationComment(c)) continue;
+    const t = commentTime(c);
+    if (t != null && (!best || t > best.t)) best = { c, t };
+  }
+  return best;
+}
+function findAttemptCapDecision(comments) {
+  const escalation = newestAttemptCapEscalation(comments);
+  if (!escalation) return { decision: null, at: null, raw: null, commentId: null, escalationAt: null };
+  let best = null;
+  for (const c of Array.isArray(comments) ? comments : []) {
+    const t = commentTime(c);
+    if (t == null || t <= escalation.t) continue;
+    const found = decisionFromComment(c);
+    if (!found) continue;
+    if (!best || t >= best.t) {
+      best = { ...found, t, commentId: c?.id || null };
+    }
+  }
+  if (!best) {
+    return { decision: null, at: null, raw: null, commentId: null, escalationAt: new Date(escalation.t).toISOString() };
+  }
+  return {
+    decision: best.decision,
+    at: new Date(best.t).toISOString(),
+    raw: best.raw,
+    commentId: best.commentId,
+    escalationAt: new Date(escalation.t).toISOString(),
+  };
+}
+function attemptCapDecisionIdentity(d) {
+  if (!d || !d.decision || !d.at) return null;
+  if (d.commentId) return `id:${d.commentId}`;
+  return `at:${d.at}|decision:${d.decision}|raw:${String(d.raw || "")}`;
+}
+function consumedAttemptCapDecision(state, key, decision) {
+  const prior = state?.attemptCapDecisionResets?.[key];
+  return !!prior && attemptCapDecisionIdentity(prior) === attemptCapDecisionIdentity(decision);
+}
+function recordAttemptCapDecisionReset(state, key, decision) {
+  state.attemptCapDecisionResets = state.attemptCapDecisionResets && typeof state.attemptCapDecisionResets === "object"
+    ? state.attemptCapDecisionResets
+    : {};
+  state.attemptCapDecisionResets[key] = {
+    decision: decision.decision,
+    at: decision.at,
+    commentId: decision.commentId || null,
+    raw: decision.raw || "",
+    escalationAt: decision.escalationAt || null,
+  };
+}
 
 // ---- Stage 2: eligibility -------------------------------------------------
 // PURE. A directive is eligible for (re-)planning when its classification state
@@ -213,13 +277,8 @@ export function findPlanDecision(comments, planCommentAt) {
     const t = commentTime(c);
     if (t == null) continue;
     if (planMs != null && t < planMs) continue; // ignore comments that predate the plan
-    const body = bodyOf(c);
-    if (body.startsWith(DECISION_APPROVE_PREFIX) || body.includes(APPROVED_MARKER)) {
-      return { decision: "approved", at: new Date(t).toISOString(), raw: body };
-    }
-    if (body.startsWith(DECISION_REJECT_PREFIX) || body.includes(REJECTED_MARKER) || /\bREJECT(?:ED)?\b/i.test(body)) {
-      return { decision: "rejected", at: new Date(t).toISOString(), raw: body };
-    }
+    const found = decisionFromComment(c);
+    if (found) return { ...found, at: new Date(t).toISOString(), commentId: c?.id || null };
   }
   return { decision: null, at: null, raw: null };
 }
@@ -367,10 +426,11 @@ async function loadState(file, _fs) {
       ? {
         attempts: st.attempts || {},
         lastPlanFailures: st.lastPlanFailures && typeof st.lastPlanFailures === "object" ? st.lastPlanFailures : {},
+        attemptCapDecisionResets: st.attemptCapDecisionResets && typeof st.attemptCapDecisionResets === "object" ? st.attemptCapDecisionResets : {},
         lastSweepMs: Number(st.lastSweepMs) || 0,
       }
-      : { attempts: {}, lastPlanFailures: {}, lastSweepMs: 0 };
-  } catch { return { attempts: {}, lastPlanFailures: {}, lastSweepMs: 0 }; }
+      : { attempts: {}, lastPlanFailures: {}, attemptCapDecisionResets: {}, lastSweepMs: 0 };
+  } catch { return { attempts: {}, lastPlanFailures: {}, attemptCapDecisionResets: {}, lastSweepMs: 0 }; }
 }
 async function saveState(file, st, _fs) {
   try { await _fs.writeFile(file, JSON.stringify(st, null, 2), "utf8"); } catch { /* best-effort */ }
@@ -656,6 +716,7 @@ export async function runDirectiveSweepOnce(deps = {}) {
     for (const issue of issues) {
       if (!hasLabel(issue, "DIRECTIVE")) continue;
       const ident = issue.identifier || issue.id;
+      const key = attemptsKey(issue);
       summary.scanned += 1;
       let comments = [];
       try {
@@ -669,6 +730,16 @@ export async function runDirectiveSweepOnce(deps = {}) {
         summary.errors.push(`${ident}: comments fetch threw: ${err && err.message ? err.message : err}`);
         continue;
       }
+      if (!dryRun && Number(state.attempts[key] || 0) >= maxPlanAttempts) {
+        const capDecision = findAttemptCapDecision(comments);
+        if (capDecision.decision && !consumedAttemptCapDecision(state, key, capDecision)) {
+          state.attempts[key] = 0;
+          recordAttemptCapDecisionReset(state, key, capDecision);
+          await saveState(stateFile, state, _fs);
+          log(`directive-runner: ${ident} owner ${capDecision.decision} after attempt-cap escalation; reset plan attempts`);
+        }
+      }
+
       const cls = classifyDirective(issue, comments, { now, stalledAfterMs });
       log(`directive-runner: ${ident} -> ${cls.state} (${cls.reason})`);
 
@@ -710,7 +781,6 @@ export async function runDirectiveSweepOnce(deps = {}) {
       }
 
       // Plannable: cls.state is "new" or a plannable "stalled".
-      const key = attemptsKey(issue);
       const prior = Number(state.attempts[key] || 0);
       if (prior >= maxPlanAttempts) {
         log(`directive-runner: ${ident} reached plan attempt cap (${prior}/${maxPlanAttempts})`);
