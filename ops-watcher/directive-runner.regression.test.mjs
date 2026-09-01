@@ -14,6 +14,7 @@ import {
   buildPlanPrompt,
   parsePlan,
   validatePlanScope,
+  validateVerifyCommand,
   runDirectiveSweepOnce,
   buildExecutionPrompt,
   executeApprovedDirective,
@@ -26,6 +27,7 @@ import {
   MAX_EXECUTIONS_PER_SWEEP,
   SWEEP_MIN_INTERVAL_MS,
 } from "./directive-runner.mjs";
+import { verifyFile } from "./verify-file.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TMP_STATE = path.join(__dirname, "directive-runner.regression.state.tmp");
@@ -137,6 +139,13 @@ await t("buildPlanPrompt demands exact plan shape and hard boundaries", () => {
   assert.match(p, /no network; no message to anyone but the owner; no package installs/);
 });
 
+await t("buildPlanPrompt teaches the two allowed VERIFY command shapes", () => {
+  const p = buildPlanPrompt(issue(), { status: "ok" });
+  assert.match(p, /node ops-watcher\//);
+  assert.match(p, /node ops-watcher\/run-all-tests\.mjs --only <suite-file>/);
+  assert.match(p, /node ops-watcher\/verify-file\.mjs --path <file> --matches <regex>/);
+});
+
 await t("parsePlan parses well-formed plan and rejects missing VERIFY", () => {
   const parsed = parsePlan(goodPlan);
   assert.equal(parsed.ok, true);
@@ -151,6 +160,19 @@ await t("validatePlanScope rejects denied paths and accepts normal repo-relative
   assert.equal(res.ok, false);
   assert.equal(res.violations.length >= 5, true);
   assert.equal(validatePlanScope({ files: ["ops-watcher/foo.mjs", "docs/bar.md"] }).ok, true);
+});
+
+await t("validateVerifyCommand accepts node ops-watcher verifier shapes", () => {
+  assert.equal(validateVerifyCommand("node ops-watcher/run-all-tests.mjs --only x.test.mjs").ok, true);
+  assert.equal(validateVerifyCommand("node ops-watcher/verify-file.mjs --path a/b.txt --matches ^OK$").ok, true);
+});
+
+await t("validateVerifyCommand rejects non-contract and chained VERIFY commands", () => {
+  assert.equal(validateVerifyCommand("$c = Get-Content ops-watcher/canary-step.mjs; if ($c -match 'canaryAdd') { exit 0 } else { exit 1 }").ok, false);
+  assert.equal(validateVerifyCommand("bash -c ls").ok, false);
+  assert.equal(validateVerifyCommand("node ops-watcher/run-all-tests.mjs --only x.test.mjs && node ops-watcher/verify-file.mjs --path a --contains b").ok, false);
+  assert.equal(validateVerifyCommand("node ops-watcher/run-all-tests.mjs --only x.test.mjs; node ops-watcher/verify-file.mjs --path a --contains b").ok, false);
+  assert.equal(validateVerifyCommand("node ops-watcher/run-all-tests.mjs --only x.test.mjs\nnode ops-watcher/verify-file.mjs --path a --contains b").ok, false);
 });
 
 await t("sweep with one new directive posts exactly one plan comment and no execution/Telegram spy", async () => {
@@ -176,6 +198,29 @@ await t("scope-violating plan posts refusal comment and no plan comment", async 
   assert.equal(posts.length, 1);
   assert.match(posts[0].body.body, /^PLAN_REFUSED/);
   assert.doesNotMatch(posts[0].body.body, /^DIRECTIVE PLAN \(/);
+});
+
+await t("bad VERIFY plan posts refusal comment and sends no decision card", async () => {
+  await resetTmp();
+  const badVerify = goodPlan.replace("VERIFY: node ops-watcher/foo.mjs --check", "VERIFY: $c = Get-Content ops-watcher/canary-step.mjs; if ($c -match 'canaryAdd') { exit 0 } else { exit 1 }");
+  const comments = { i1: [] };
+  const { deps, posts, cards } = makeSweepDeps({ issues: [issue({ id: "i1", identifier: "KOL-73" })], comments, plan: badVerify });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.refused, 1);
+  assert.equal(posts.length, 1);
+  assert.match(posts[0].body.body, /^PLAN_REFUSED/);
+  assert.match(posts[0].body.body, /VERIFY:/);
+  assert.equal(cards.length, 0);
+});
+
+await t("good VERIFY plan posts the plan and sends exactly one decision card", async () => {
+  await resetTmp();
+  const comments = { i1: [] };
+  const { deps, posts, cards } = makeSweepDeps({ issues: [issue({ id: "i1", identifier: "KOL-74" })], comments });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.planned, 1);
+  assert.equal(posts.filter((p) => /^DIRECTIVE PLAN \(/.test(p.body.body)).length, 1);
+  assert.equal(cards.length, 1);
 });
 
 await t("unparseable plan increments attempt counter and stops after MAX_PLAN_ATTEMPTS", async () => {
@@ -680,6 +725,33 @@ await t("sweep throttle: past SWEEP_MIN_INTERVAL_MS -> a normal sweep runs and l
   assert.match(posts[0].body.body, /^DIRECTIVE PLAN \(/);
   const st = JSON.parse(await fs.readFile(TMP_STATE, "utf8"));
   assert.equal(st.lastSweepMs, NOW);
+});
+
+await t("verifyFile with injected fs reports match, no match, missing file, and denied ventures path", async () => {
+  const reads = [];
+  const readFile = async (file) => {
+    reads.push(file);
+    if (String(file).includes("missing.txt")) {
+      const err = new Error("not found");
+      err.code = "ENOENT";
+      throw err;
+    }
+    return "OK\ncanaryAdd\n";
+  };
+  const match = await verifyFile({ path: "ops-watcher/canary-step.mjs", matches: "canaryAdd" }, { repoRoot: __dirname, readFile });
+  assert.equal(match.ok, true);
+  assert.equal(match.bytes > 0, true);
+  const noMatch = await verifyFile({ path: "ops-watcher/canary-step.mjs", contains: "not-here" }, { repoRoot: __dirname, readFile });
+  assert.equal(noMatch.ok, false);
+  assert.match(noMatch.reason, /substring not found/);
+  const missing = await verifyFile({ path: "missing.txt", contains: "x" }, { repoRoot: __dirname, readFile });
+  assert.equal(missing.ok, false);
+  assert.match(missing.reason, /missing or unreadable file/);
+  const beforeDenied = reads.length;
+  const denied = await verifyFile({ path: "ventures/x.txt", contains: "x" }, { repoRoot: __dirname, readFile });
+  assert.equal(denied.ok, false);
+  assert.match(denied.reason, /denied directory/);
+  assert.equal(reads.length, beforeDenied);
 });
 
 await resetTmp();

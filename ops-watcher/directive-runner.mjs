@@ -244,6 +244,10 @@ export function buildPlanPrompt(issue, contextBundle) {
     "RISK: low | medium | high",
     "",
     "Hard boundary: repo-relative paths only; nothing under ventures/, .git/, .paperclip/; no .env* files; no network; no message to anyone but the owner; no package installs.",
+    "VERIFY contract: the VERIFY line MUST be a single command starting with node ops-watcher/.",
+    "Allowed VERIFY for code changes: node ops-watcher/run-all-tests.mjs --only <suite-file>",
+    "Allowed VERIFY for file-content directives: node ops-watcher/verify-file.mjs --path <file> --matches <regex>",
+    "PowerShell, cmd, bash, git, or any other command will be rejected before the owner sees the plan.",
     "Scope is only this repository: D:\\AI\\Active FounderOS-Aidit.",
     "Write OBJECTIVE, STEPS, VERIFY, and OUT OF SCOPE in professional Bahasa Indonesia. Keep file paths and commands verbatim.",
     "",
@@ -304,6 +308,16 @@ export function validatePlanScope(plan) {
     if (HARD_DENY.has(low)) add("hard-deny operational file");
   }
   return { ok: violations.length === 0, violations };
+}
+
+export function validateVerifyCommand(verify) {
+  const raw = String(verify || "");
+  const cmd = raw.trim();
+  if (!cmd) return { ok: false, reason: "VERIFY is empty" };
+  if (/[\r\n]/.test(raw)) return { ok: false, reason: "VERIFY must be a single line" };
+  if (!cmd.startsWith("node ops-watcher/")) return { ok: false, reason: "VERIFY must start with node ops-watcher/" };
+  if (/[;&|]/.test(cmd)) return { ok: false, reason: "VERIFY must not contain command chaining characters" };
+  return { ok: true };
 }
 
 async function loadState(file, _fs) {
@@ -367,7 +381,7 @@ export function dispatchPlanReal(prompt, { timeoutMs = PLAN_TIMEOUT_MS } = {}) {
 function refusalComment(violations) {
   return [
     `${REFUSED_MARKER} (${iso()}): rencana ditolak otomatis sebelum dikirim ke owner.`,
-    "Alasan: rencana menyentuh path yang berada di luar batas aman directive-runner tahap 1.",
+    "Alasan: rencana gagal validasi aman directive-runner tahap 1.",
     "Pelanggaran:",
     ...violations.map((v) => `- ${v}`),
   ].join("\n");
@@ -644,6 +658,14 @@ export async function runDirectiveSweepOnce(deps = {}) {
       const scope = validatePlanScope(parsed);
       if (!scope.ok) {
         const post = await _post(`${base}/api/issues/${issue.id}/comments`, { body: refusalComment(scope.violations), authorType: "user" });
+        if (post.networkError) summary.errors.push(`${ident}: refusal comment network error: ${post.networkErrorMessage}`);
+        else summary.refused += 1;
+        plannedThisSweep += 1;
+        continue;
+      }
+      const verifyScope = validateVerifyCommand(parsed.verify);
+      if (!verifyScope.ok) {
+        const post = await _post(`${base}/api/issues/${issue.id}/comments`, { body: refusalComment([`VERIFY: ${verifyScope.reason}`]), authorType: "user" });
         if (post.networkError) summary.errors.push(`${ident}: refusal comment network error: ${post.networkErrorMessage}`);
         else summary.refused += 1;
         plannedThisSweep += 1;
