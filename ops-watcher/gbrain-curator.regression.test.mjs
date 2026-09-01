@@ -5,6 +5,7 @@
 //   node ops-watcher/gbrain-curator.regression.test.mjs
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { EventEmitter } from "node:events";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,6 +18,7 @@ import {
   PROJECTION_MAX_BYTES,
   SOURCE_PROJECTIONS,
   projectAgentRegistry,
+  projectDecisionLedger,
   readGbrainLockHolder,
   defaultReadState,
   defaultWriteState,
@@ -941,6 +943,105 @@ async function t27_invalidJsonProjectionFailsWithoutCrash() {
     ok(name);
   } catch (err) { bad(name, err); }
 }
+
+// ---- T28: projectDecisionLedger on the real ledger -> valid JSON, all 39 ids, materially smaller ----
+async function t28_projectDecisionLedgerRealFile() {
+  const name = "T28 projectDecisionLedger on real decision-ledger.json -> valid JSON, all 39 ids, materially smaller";
+  try {
+    const ledgerPath = repoPath("config/decision-ledger.json");
+    const rawText = readFileSync(ledgerPath, "utf8");
+    const rawBytes = Buffer.byteLength(rawText, "utf8");
+    const source = JSON.parse(rawText);
+    const projectedText = projectDecisionLedger(rawText);
+    const projectedBytes = Buffer.byteLength(projectedText, "utf8");
+    // Must be valid JSON.
+    const projected = JSON.parse(projectedText);
+    // Keep top-level scope and merged_legacy_ledger_at verbatim.
+    assert.equal(projected.scope, source.scope, "top-level scope preserved verbatim");
+    assert.equal(projected.merged_legacy_ledger_at, source.merged_legacy_ledger_at, "merged_legacy_ledger_at preserved verbatim");
+    // Drop the migration bookkeeping at the top level.
+    assert.equal(Object.prototype.hasOwnProperty.call(projected, "imported_from"), false, "top-level imported_from migration bookkeeping dropped");
+    // All 39 record ids kept, no extras, no duplicates lost.
+    const rawIds = source.records.map((r) => r.id).sort();
+    const projectedIds = projected.records.map((r) => r.id).sort();
+    assert.equal(projected.records.length, 39, "exactly 39 records in projection");
+    assert.deepEqual(projectedIds, rawIds, "all record ids preserved and matched");
+    // Per-record keep list is exactly id/type/status/domain/statement/canonical.
+    for (const rec of projected.records) {
+      assert.deepEqual(
+        Object.keys(rec).sort(),
+        ["canonical", "domain", "id", "statement", "status", "type"],
+        `record ${rec.id} keeps only the six allowed fields`,
+      );
+    }
+    // Materially smaller — assert a real byte reduction, and under the cap.
+    assert.ok(projectedBytes < rawBytes, `projection must be smaller than raw (raw=${rawBytes}, projected=${projectedBytes})`);
+    assert.ok(projectedBytes <= PROJECTION_MAX_BYTES, `projection must fit under PROJECTION_MAX_BYTES (projected=${projectedBytes}, cap=${PROJECTION_MAX_BYTES})`);
+    // A material reduction, not a rounding artifact: at least 25% smaller.
+    assert.ok(projectedBytes <= rawBytes * 0.75, `projection must be materially smaller — at least 25% reduction (raw=${rawBytes}, projected=${projectedBytes})`);
+    console.log(`       [byte sizes] decision-ledger.json before=${rawBytes} after=${projectedBytes} (reduction=${rawBytes - projectedBytes} bytes, ${Math.round((1 - projectedBytes / rawBytes) * 100)}%)`);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// ---- T29: every statement in the projection is byte-identical to its input ----
+async function t29_projectDecisionLedgerStatementsVerbatim() {
+  const name = "T29 projectDecisionLedger -> every statement is byte-identical to its input";
+  try {
+    const ledgerPath = repoPath("config/decision-ledger.json");
+    const rawText = readFileSync(ledgerPath, "utf8");
+    const source = JSON.parse(rawText);
+    const projected = JSON.parse(projectDecisionLedger(rawText));
+    const byId = new Map(projected.records.map((r) => [r.id, r]));
+    assert.equal(byId.size, source.records.length, "one projected record per source record");
+    for (const rec of source.records) {
+      const out = byId.get(rec.id);
+      assert.ok(out, `projected record present for ${rec.id}`);
+      // The statement string value must be exactly equal — never reworded, summarised, or trimmed.
+      assert.equal(out.statement, rec.statement, `statement for ${rec.id} must be byte-identical (verbatim)`);
+      assert.equal(typeof out.statement, typeof rec.statement, `statement type for ${rec.id} preserved`);
+    }
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// ---- T30: malformed input comes back unchanged and nothing throws ----
+async function t30_projectDecisionLedgerMalformedUnchanged() {
+  const name = "T30 projectDecisionLedger -> malformed input returned unchanged, nothing throws";
+  try {
+    const malformed = "{not valid json,,,";
+    let result;
+    assert.doesNotThrow(() => { result = projectDecisionLedger(malformed); }, "projection must not throw on malformed input");
+    assert.equal(result, malformed, "malformed input returned unchanged (same string, same identity)");
+    // Also confirm a non-JSON string that happens to be valid text is returned as-is.
+    const text = "definitely not json at all";
+    let result2;
+    assert.doesNotThrow(() => { result2 = projectDecisionLedger(text); }, "projection must not throw on plain text");
+    assert.equal(result2, text, "plain text returned unchanged");
+    // And a truncated/empty-ish payload.
+    let result3;
+    assert.doesNotThrow(() => { result3 = projectDecisionLedger(""); }, "projection must not throw on empty string");
+    assert.equal(result3, "", "empty string returned unchanged");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// ---- T31: SOURCE_PROJECTIONS has an entry for canonical-decision-ledger ----
+async function t31_sourceProjectionsHasDecisionLedger() {
+  const name = "T31 SOURCE_PROJECTIONS -> has canonical-decision-ledger entry pointing at the projection fn";
+  try {
+    assert.ok(SOURCE_PROJECTIONS instanceof Map, "SOURCE_PROJECTIONS is a Map");
+    assert.ok(SOURCE_PROJECTIONS.has("canonical-decision-ledger"), "canonical-decision-ledger is registered");
+    const fn = SOURCE_PROJECTIONS.get("canonical-decision-ledger");
+    assert.equal(typeof fn, "function", "registered value is a function");
+    assert.equal(fn, projectDecisionLedger, "registered function is projectDecisionLedger itself");
+    // agent-registry projection must still be present and unchanged.
+    assert.ok(SOURCE_PROJECTIONS.has("agent-registry"), "agent-registry projection still registered");
+    assert.equal(SOURCE_PROJECTIONS.get("agent-registry"), projectAgentRegistry, "agent-registry projection unchanged");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
 async function main() {
   console.log("# ops-watcher gbrain-curator regression tests");
   await t1_newerMtimeGetsCaptured();
@@ -970,6 +1071,10 @@ async function main() {
   await t25_projectionTooLargeFailsBeforeCapture();
   await t26_readSourceThrowStillProcessesRemainingSources();
   await t27_invalidJsonProjectionFailsWithoutCrash();
+  await t28_projectDecisionLedgerRealFile();
+  await t29_projectDecisionLedgerStatementsVerbatim();
+  await t30_projectDecisionLedgerMalformedUnchanged();
+  await t31_sourceProjectionsHasDecisionLedger();
   console.log("");
   console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
   if (failed > 0) { for (const f of failures) console.log(`  FAILED: ${f}`); process.exit(1); }

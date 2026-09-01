@@ -64,7 +64,58 @@ export function projectAgentRegistry(rawText) {
   return JSON.stringify(projection, null, 2);
 }
 
-export const SOURCE_PROJECTIONS = new Map([["agent-registry", projectAgentRegistry]]);
+// Distilling projection for config/decision-ledger.json. The canonical ledger grew
+// past the raw-file capture path (47KB after 24 legacy records were merged) and every
+// capture since has failed. Like projectAgentRegistry, this keeps only the fields that
+// GBrain needs to reason about owner decisions and drops the heavy provenance/notes/
+// monetary/temporal/dependency/migration-bookkeeping payload.
+//
+// Two rules (mirrored from the agent-registry projection and enforced below):
+//   1. A projection must never be the reason a capture fails — if the input does not
+//      parse, return it unchanged instead of throwing.
+//   2. Never summarise or reword a `statement`. The statement is copied verbatim; it is
+//      the owner's own words and a paraphrase in the knowledge graph would be worse than
+//      an absent record.
+export function projectDecisionLedger(rawText) {
+  let source;
+  try {
+    source = JSON.parse(rawText);
+  } catch {
+    // Rule 1: never be the reason a capture fails. Return the raw text unchanged so the
+    // caller can decide what to do with it (it will simply be sent on as-is).
+    return rawText;
+  }
+  const projection = {
+    projection_note: "Proyeksi ringkas dari config/decision-ledger.json (sumber asli ~47KB setelah penggabungan legacy ledger). Field berat — provenance, notes, source, monetary_values, temporal, dependencies, serta bookkeeping migrasi (imported_from / migrated_from / migrated_at) — dihilangkan. Per record hanya id, type, status, domain, statement (verbatim, tidak dparafrasekan), dan canonical yang disertakan; di tingkat atas hanya scope dan merged_legacy_ledger_at. Pernyataan (statement) adalah kata-kata owner sendiri dan disalin apa adanya.",
+    source_path: "config/decision-ledger.json",
+  };
+  for (const key of ["scope", "merged_legacy_ledger_at"]) {
+    if (Object.prototype.hasOwnProperty.call(source, key)) {
+      projection[key] = source[key];
+    }
+  }
+  // Per-record keep list. The statement field is copied by reference, never reworded.
+  const RECORD_KEYS = ["id", "type", "status", "domain", "statement", "canonical"];
+  if (Array.isArray(source.records)) {
+    projection.records = source.records.map((rec) => {
+      const out = {};
+      if (rec && typeof rec === "object") {
+        for (const key of RECORD_KEYS) {
+          if (Object.prototype.hasOwnProperty.call(rec, key)) {
+            out[key] = rec[key];
+          }
+        }
+      }
+      return out;
+    });
+  }
+  return JSON.stringify(projection, null, 2);
+}
+
+export const SOURCE_PROJECTIONS = new Map([
+  ["agent-registry", projectAgentRegistry],
+  ["canonical-decision-ledger", projectDecisionLedger],
+]);
 
 async function defaultReadSource(file) {
   return fs.readFile(file, "utf8");
