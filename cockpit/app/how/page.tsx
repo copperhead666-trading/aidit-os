@@ -16,8 +16,10 @@ export default function HowPage() {
             <span className="text-os-accent">1.</span> Menyetujui
           </h2>
           <p className="mt-2 text-os-text">
-            Ketuk tombol <span className="text-os-warn">APPROVE</span> atau{' '}
-            <span className="text-os-err">REJECT</span> di kartu keputusan yang masuk ke Telegram.
+            Ketuk tombol <span className="text-os-warn">SETUJUI</span> atau{' '}
+            <span className="text-os-err">TOLAK</span> di kartu keputusan yang masuk ke Telegram.
+            Tombol <span className="text-os-text">DETAIL</span> menampilkan info lebih lanjut
+            tentang item itu, dan <span className="text-os-text">TUNDA</span> menunda keputusannya.
           </p>
           <p className="mt-2 text-os-muted">
             Yang terjadi: label <code>OWNER_REQUIRED</code> dilepas, keputusan tercatat sebagai

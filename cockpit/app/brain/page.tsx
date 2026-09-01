@@ -5,17 +5,16 @@ import { Dot, Badge, SectionHead } from '@/components/terminal';
 export const dynamic = 'force-dynamic';
 
 function relTimeMs(ms: number | null): string {
-  if (ms === null) return 'never';
-  const diff = Date.now() - ms;
-  if (diff < 0) return 'just now';
+  if (ms === null) return 'tanpa timestamp';
+  const diff = Math.max(0, Date.now() - ms);
   const s = Math.floor(diff / 1000);
-  if (s < 60) return `${s}s ago`;
+  if (s < 60) return `sejak ${s} detik lalu`;
   const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
+  if (m < 60) return `sejak ${m} menit lalu`;
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
+  if (h < 24) return `sejak ${h} jam lalu`;
   const d = Math.floor(h / 24);
-  return `${d}d ago`;
+  return `sejak ${d} hari lalu`;
 }
 
 export default async function BrainPage() {
@@ -24,7 +23,7 @@ export default async function BrainPage() {
   if (sources === null) {
     return (
       <div>
-        <PageHeader eyebrow="G-Brain" title="G-Brain" />
+        <PageHeader title="G-Brain" />
         <div className="mt-6 border border-os-border bg-os-surface p-4">
           <div className="flex items-center gap-2">
             <Dot state="err" />
@@ -41,7 +40,7 @@ export default async function BrainPage() {
   if (sources.length === 0) {
     return (
       <div>
-        <PageHeader eyebrow="G-Brain" title="G-Brain" />
+        <PageHeader title="G-Brain" />
         <div className="mt-6 border border-os-border bg-os-surface p-4">
           <div className="flex items-center gap-2">
             <Dot state="off" />
@@ -54,7 +53,7 @@ export default async function BrainPage() {
 
   return (
     <div>
-      <PageHeader eyebrow="G-Brain" title="G-Brain" />
+      <PageHeader title="G-Brain" />
 
       <section className="mt-6">
         <SectionHead label="Sources" count={sources.length} />

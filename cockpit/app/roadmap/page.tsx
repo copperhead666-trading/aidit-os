@@ -26,7 +26,7 @@ export default async function RoadmapPage() {
   if (backlog === null) {
     return (
       <div>
-        <PageHeader eyebrow="Roadmap" title="Roadmap" />
+        <PageHeader title="Roadmap" />
         <div className="mt-6 border border-os-border bg-os-surface p-4">
           <div className="flex items-center gap-2">
             <Dot state="err" />
@@ -43,7 +43,7 @@ export default async function RoadmapPage() {
   if (backlog.length === 0) {
     return (
       <div>
-        <PageHeader eyebrow="Roadmap" title="Roadmap" />
+        <PageHeader title="Roadmap" />
         <div className="mt-6 border border-os-border bg-os-surface p-4">
           <div className="flex items-center gap-2">
             <Dot state="ok" />
@@ -71,7 +71,7 @@ export default async function RoadmapPage() {
 
   return (
     <div>
-      <PageHeader eyebrow="Roadmap" title="Roadmap" />
+      <PageHeader title="Roadmap" />
 
       <section className="mt-6">
         <SectionHead label="Summary" count={backlog.length} />

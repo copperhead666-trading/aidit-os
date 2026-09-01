@@ -10,13 +10,13 @@ function formatRelativeTime(value: string | number): string {
   const now = Date.now();
   const diffMs = Math.max(0, now - then);
   const sec = Math.floor(diffMs / 1000);
-  if (sec < 60) return `${sec}s ago`;
+  if (sec < 60) return `sejak ${sec} detik lalu`;
   const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m ago`;
+  if (min < 60) return `sejak ${min} menit lalu`;
   const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
+  if (hr < 24) return `sejak ${hr} jam lalu`;
   const day = Math.floor(hr / 24);
-  return `${day}d ago`;
+  return `sejak ${day} hari lalu`;
 }
 
 function formatDuration(ms: number): string {

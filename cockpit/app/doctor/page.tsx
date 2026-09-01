@@ -6,15 +6,14 @@ import { Dot, SectionHead } from '@/components/terminal';
 export const dynamic = 'force-dynamic';
 
 function formatRelative(ts: number): string {
-  const diffSec = Math.floor((Date.now() - ts) / 1000);
-  if (diffSec < 5) return 'just now';
-  if (diffSec < 60) return `${diffSec}s ago`;
+  const diffSec = Math.floor(Math.max(0, Date.now() - ts) / 1000);
+  if (diffSec < 60) return `sejak ${diffSec} detik lalu`;
   const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffMin < 60) return `sejak ${diffMin} menit lalu`;
   const diffHour = Math.floor(diffMin / 60);
-  if (diffHour < 24) return `${diffHour}h ago`;
+  if (diffHour < 24) return `sejak ${diffHour} jam lalu`;
   const diffDay = Math.floor(diffHour / 24);
-  return `${diffDay}d ago`;
+  return `sejak ${diffDay} hari lalu`;
 }
 
 function formatDuration(ms: number): string {

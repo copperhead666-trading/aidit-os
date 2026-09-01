@@ -139,17 +139,47 @@ async function fetchComments(baseUrl: string, identifier: string): Promise<Issue
 }
 
 function translateFailureReason(raw: string): string {
-  const trimmed = raw.trim();
+  const trimmed = raw.trim().toLowerCase();
   if (trimmed === 'verify-out-of-scope') {
     return 'perintah verifikasi di rencana ini di luar batas aman, jadi sistem menolak menjalankannya';
+  }
+  if (trimmed === 'file-scope-out-of-scope') {
+    return 'rencana ini menyentuh berkas di luar batas yang diizinkan, jadi sistem menolak menjalankannya';
+  }
+  if (trimmed === 'parse-failed') {
+    return 'AHMAD gagal menyusun rencana dalam bentuk yang bisa dibaca sistem, jadi tidak ada yang dijalankan';
   }
   if (trimmed === 'plan is too short') {
     return 'AHMAD tidak berhasil menyusun rencana yang cukup lengkap untuk dijalankan';
   }
-  if (/scope/i.test(trimmed)) {
-    return 'rencana ini menyentuh berkas di luar batas yang diizinkan';
+  if (trimmed === 'snapshot-failed') {
+    return 'salinan aman berkas gagal dibuat, jadi tidak ada yang diubah dan tidak ada yang hilang';
   }
-  return `Upaya gagal: ${trimmed}`;
+  if (trimmed === 'verify-red') {
+    return 'perubahan sempat dijalankan tapi verifikasinya sendiri gagal, jadi semua dikembalikan seperti semula';
+  }
+  if (trimmed === 'scoped-suite-red') {
+    return 'uji coba yang lebih sempit gagal, jadi semua dikembalikan seperti semula';
+  }
+  if (trimmed === 'full-suite-red') {
+    return 'uji cobanya sendiri lolos tapi uji coba yang lebih luas gagal, jadi semua dikembalikan seperti semula';
+  }
+  if (trimmed === 'cooldown') {
+    return 'semua jalur kerja sedang penuh sesaat, ini akan pulih sendiri tanpa perlu tindakan apa pun';
+  }
+  if (trimmed === 'lane-quota') {
+    return 'jatah jalur kerja sedang habis sesaat, ini akan pulih sendiri tanpa perlu tindakan apa pun';
+  }
+  if (trimmed === 'envelope') {
+    return 'perubahan ini di luar batas aman sistem, jadi tidak pernah dicoba dan tidak ada yang berubah';
+  }
+  if (trimmed === 'unknown-lane') {
+    return 'jalur kerja yang dituju tidak ditemukan, jadi tidak ada yang dijalankan';
+  }
+  if (trimmed === 'unknown') {
+    return 'sistem sendiri tidak bisa memastikan sebabnya';
+  }
+  return `Ini alasan internal yang halaman ini belum bisa terjemahkan (bukan tindakan yang perlu lo lakukan): ${raw.trim()}`;
 }
 
 function normalizeReason(raw: string): string {
@@ -200,8 +230,8 @@ function classifyIssue(issue: IssueSummary, comments: IssueComment[]): InboxItem
       identifier: issue.identifier,
       title: issue.title,
       state: 'needs-you',
-      reason: 'Ada keputusan yang menunggu persetujuan Anda.',
-      action: 'Ketuk APPROVE atau REJECT pada kartu di Telegram.',
+      reason: 'Ada keputusan yang nunggu persetujuan lo.',
+      action: 'Ketuk SETUJUI atau TOLAK pada kartu di Telegram.',
       sinceIso: issue.updatedAt,
       attempts: 0,
     };
@@ -253,8 +283,8 @@ function classifyIssue(issue: IssueSummary, comments: IssueComment[]): InboxItem
         identifier: issue.identifier,
         title: issue.title,
         state: 'awaiting-your-approval',
-        reason: 'Ada rencana (DIRECTIVE PLAN) yang menunggu keputusan Anda.',
-        action: 'Ketuk APPROVE atau REJECT.',
+        reason: 'Ada rencana (DIRECTIVE PLAN) yang nunggu keputusan lo.',
+        action: 'Ketuk SETUJUI atau TOLAK.',
         sinceIso: latestPlan.createdAt,
         attempts: 0,
       };

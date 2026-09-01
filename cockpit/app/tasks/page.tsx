@@ -5,17 +5,17 @@ import { Dot, Badge, SectionHead } from '@/components/terminal';
 export const dynamic = 'force-dynamic';
 
 function relTime(iso: string | null): string {
-  if (!iso) return 'no timestamp';
+  if (!iso) return 'tanpa timestamp';
   const ms = Date.now() - new Date(iso).getTime();
-  if (Number.isNaN(ms)) return 'no timestamp';
+  if (Number.isNaN(ms)) return 'tanpa timestamp';
   const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s ago`;
+  if (s < 60) return `sejak ${s} detik lalu`;
   const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
+  if (m < 60) return `sejak ${m} menit lalu`;
   const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
+  if (h < 24) return `sejak ${h} jam lalu`;
   const d = Math.floor(h / 24);
-  return `${d}d ago`;
+  return `sejak ${d} hari lalu`;
 }
 
 function priorityTone(priority: string): 'default' | 'accent' | 'ok' | 'warn' | 'err' {
@@ -31,14 +31,14 @@ export default async function TasksPage() {
   if (issues === null) {
     return (
       <div>
-        <PageHeader eyebrow="Tasks" title="Tasks" />
+        <PageHeader title="Tasks" />
         <div className="mt-6 border border-os-border bg-os-surface p-4">
           <div className="flex items-center gap-2">
             <Dot state="err" />
-            <span className="text-os-text">readIssues() unavailable</span>
+            <span className="text-os-text">readIssues() tidak tersedia</span>
           </div>
           <p className="mt-2 text-os-muted">
-            Issue source could not be read. No task data to show.
+            Sumber issue tidak bisa dibaca. Tidak ada data task untuk ditampilkan.
           </p>
         </div>
       </div>
@@ -48,11 +48,11 @@ export default async function TasksPage() {
   if (issues.length === 0) {
     return (
       <div>
-        <PageHeader eyebrow="Tasks" title="Tasks" />
+        <PageHeader title="Tasks" />
         <div className="mt-6 border border-os-border bg-os-surface p-4">
           <div className="flex items-center gap-2">
             <Dot state="ok" />
-            <span className="text-os-text">No open issues</span>
+            <span className="text-os-text">Tidak ada issue terbuka</span>
           </div>
         </div>
       </div>
@@ -72,18 +72,17 @@ export default async function TasksPage() {
   return (
     <div>
       <PageHeader
-        eyebrow="Tasks"
         title="Tasks"
         right={
           <Badge tone={ownerRequired.length > 0 ? 'warn' : 'default'}>
-            {ownerRequired.length} need owner
+            {ownerRequired.length} butuh lo
           </Badge>
         }
       />
 
       {ownerRequired.length > 0 && (
         <section className="mt-6">
-          <SectionHead label="Needs owner" count={ownerRequired.length} />
+          <SectionHead label="Butuh lo" count={ownerRequired.length} />
           <div className="mt-2 divide-y divide-os-border border border-os-border-strong bg-os-surface2">
             {ownerRequired.map((issue) => (
               <div
@@ -91,9 +90,6 @@ export default async function TasksPage() {
                 className="flex flex-col gap-1 p-3 sm:flex-row sm:items-center sm:justify-between"
               >
                 <div className="flex min-w-0 items-center gap-2">
-                  <Badge tone="warn" ghost>
-                    owner
-                  </Badge>
                   <span className="shrink-0 text-os-dim">{issue.identifier}</span>
                   <span className="truncate text-os-text">{issue.title}</span>
                 </div>
