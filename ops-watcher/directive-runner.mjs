@@ -29,6 +29,20 @@ import {
 } from "./paperclip-write-client.mjs";
 import { retrieveDispatchContext } from "./ahmad-context-retrieval.mjs";
 import { sendMessage as telegramSendMessage } from "./telegram-client.mjs";
+// Stage 3 reuse — import, do not rewrite. The snapshot/rollback helpers and the
+// lane registry already implement the same shape for the self-repair path; a
+// directive execution is the same shape with a different trigger. The lane
+// guard and lane-outcome recorder are reused verbatim.
+import {
+  snapshotFiles,
+  restoreFiles,
+  REPAIR_LANES,
+  appendEvidence as defaultAppendEvidence,
+} from "./self-repair-actuator.mjs";
+import {
+  guardLaneStart as defaultGuardLaneStart,
+  recordLaneOutcome as defaultRecordLaneOutcome,
+} from "./lane-guard.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -46,6 +60,11 @@ export const DEFAULT_MAX_PLAN_ATTEMPTS = 2;
 const PLAN_TIMEOUT_MS = 12 * 60 * 1000;
 const CONTEXT_TIMEOUT_MS = 6000;
 const OUTPUT_CAP = 8000;
+// Stage 3a: the execution dispatch + verification timeout. A directive lane
+// call is the same cost shape as a self-repair drill (one real lane dispatch
+// with a 12-minute timeout), so the constant matches REPAIR's
+// DISPATCH_TIMEOUT_MS exactly.
+const EXECUTION_TIMEOUT_MS = 12 * 60 * 1000;
 
 // The EXACT decision-comment prefixes telegram-listener.mjs writes when the
 // owner taps APPROVE / REJECT on a decision card (DECISION_COMMENT_PREFIX in
@@ -561,6 +580,253 @@ export async function runDirectiveSweepOnce(deps = {}) {
   } catch (err) {
     summary.errors.push(err && err.stack ? err.stack : String(err));
     return summary;
+  }
+}
+
+// ===========================================================================
+// Stage 3a — the approved-directive executor.
+//
+// buildExecutionPrompt is the PURE implementation prompt for the lane.
+// executeApprovedDirective is the ordered, never-throwing executor. It reuses
+// snapshotFiles / restoreFiles / REPAIR_LANES from the self-repair actuator and
+// guardLaneStart / recordLaneOutcome from lane-guard — a directive execution is
+// the same snapshot/rollback + two-stage-verify shape as a repair drill, just
+// triggered by an owner-approved plan instead of a fault detector.
+//
+// This module posts NO comments and sends NO Telegram in stage 3a — part 3b
+// owns all outbound messaging. The only side effect here is one evidence line
+// per outcome (injectable appendEvidence) and the snapshot/rollback/verify
+// mechanics. runDirectiveSweepOnce is NOT touched.
+// ===========================================================================
+
+// PURE. Returns the implementation prompt for the lane. Contains, in order: the
+// issue identifier and title; the plan's OBJECTIVE; the EXACT file list (the
+// only files that may change, one per line); the STEPS; the VERIFY command that
+// must pass; and a hard-stop block. Deterministic: same inputs -> same string.
+export function buildExecutionPrompt(issue, plan) {
+  const ident = issue?.identifier || issue?.id || "unknown";
+  const title = String(issue?.title || "");
+  const objective = String(plan?.objective || "");
+  const files = Array.isArray(plan?.files) ? plan.files : [];
+  const steps = Array.isArray(plan?.steps) ? plan.steps : [];
+  const verify = String(plan?.verify || "");
+  const fileLines = files.length
+    ? files.map((f) => `- ${f}`).join("\n")
+    : "- (no files declared)";
+  const stepLines = steps.length
+    ? steps.map((s) => `- ${s}`).join("\n")
+    : "- (no steps declared)";
+  return [
+    `ISSUE: ${ident}`,
+    `TITLE: ${title}`,
+    "",
+    `OBJECTIVE: ${objective}`,
+    "",
+    "THE EXACT FILES YOU MAY CHANGE (nothing else, listed one per line):",
+    fileLines,
+    "",
+    "STEPS:",
+    stepLines,
+    "",
+    `VERIFY (must pass): ${verify}`,
+    "",
+    "HARD STOPS — violating any aborts the directive and reverts all changes:",
+    "  - No other file may be created, edited, renamed, or deleted besides those listed above.",
+    "  - Nothing under ventures/ may be touched.",
+    "  - No network, no HTTP, no Telegram, no Paperclip.",
+    "  - No pm2, no git, no shell, no child processes.",
+    "  - No package installs; only Node built-ins and existing local modules.",
+    "  - Do NOT weaken, skip, comment out, or delete assertions to make the verification pass.",
+  ].join("\n");
+}
+
+// Splits a "node ops-watcher/..." command string into argv, replacing the
+// leading "node" with the real executable path for a shell:false spawn.
+function nodeCommandToArgv(cmd) {
+  const parts = String(cmd || "").trim().split(/\s+/).filter(Boolean);
+  if (parts[0] === "node") parts.shift();
+  return parts;
+}
+
+// Shared spawn-with-capture helper used by the default runVerify / runFullSuite
+// / dispatchExecution bindings. shell:false, windowsHide:true, a timeout, and
+// never throws. Returns { ok, stdout, stderr }.
+function spawnCapture(argv, { timeoutMs = EXECUTION_TIMEOUT_MS } = {}) {
+  return new Promise((resolve) => {
+    let stdout = "", stderr = "", timedOut = false, settled = false, child;
+    const finish = (r) => { if (settled) return; settled = true; resolve(r); };
+    try {
+      child = spawn(process.execPath, argv, {
+        cwd: REPO_ROOT,
+        stdio: ["ignore", "pipe", "pipe"],
+        shell: false,
+        windowsHide: true,
+      });
+    } catch (err) {
+      finish({ ok: false, stdout: "", stderr: String((err && err.message) || err) });
+      return;
+    }
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill("SIGTERM"); } catch { /* best-effort */ }
+    }, timeoutMs);
+    child.stdout.on("data", (d) => { stdout += d.toString(); });
+    child.stderr.on("data", (d) => { stderr += d.toString(); });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      finish({ ok: false, stdout, stderr: stderr + String((err && err.message) || err) });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      finish({ ok: code === 0 && !timedOut, stdout, stderr });
+    });
+  });
+}
+
+// Default execution dispatcher factory: spawns process.execPath on the chosen
+// lane's wrapper from REPAIR_LANES (repo-relative), shell:false,
+// windowsHide:true, 12-minute timeout, never throws. The free-form prompt is
+// one argv element.
+function makeDefaultDispatchExecution(wrapperRel) {
+  return function defaultDispatchExecution(prompt) {
+    return spawnCapture([wrapperRel, prompt]);
+  };
+}
+
+// Default statFile: returns { size, mtimeMs } for a path. Never throws — a
+// throw is surfaced as a null entry so the no-op comparison still works.
+async function defaultStatFile(file) {
+  const st = await fs.stat(file);
+  return { size: st.size, mtimeMs: st.mtimeMs };
+}
+
+// Ordered. Returns one of the documented outcomes and NEVER throws. Every
+// outcome appends exactly one evidence line via the injectable appendEvidence.
+// This function posts NO comments and sends NO Telegram.
+export async function executeApprovedDirective(issue, plan, deps = {}) {
+  const ident = issue?.identifier || issue?.id || "unknown";
+  const nowFn = deps.now || Date.now;
+  const evidenceDeps = { appendFile: deps.appendFile, now: nowFn };
+  if (deps.evidenceLogFile) evidenceDeps.file = deps.evidenceLogFile;
+  const appendEvidenceFn = deps.appendEvidence || defaultAppendEvidence;
+  const snapshotFn = deps.snapshotFiles || snapshotFiles;
+  const restoreFn = deps.restoreFiles || restoreFiles;
+  const guardLaneFn = deps.guardLane || defaultGuardLaneStart;
+  const recordOutcomeFn = deps.recordOutcome || defaultRecordLaneOutcome;
+  const statFileFn = deps.statFile || defaultStatFile;
+
+  let chosenLane = null;
+
+  async function emit(result) {
+    try {
+      await appendEvidenceFn({
+        type: "directive-execution",
+        identifier: ident,
+        ...result,
+        lane: chosenLane,
+      }, evidenceDeps);
+    } catch { /* evidence is best-effort; never let it surface */ }
+    return result;
+  }
+
+  async function statEntry(file) {
+    try {
+      const st = await statFileFn(file);
+      return { file, size: st && st.size, mtimeMs: st && st.mtimeMs };
+    } catch {
+      return { file, size: null, mtimeMs: null };
+    }
+  }
+
+  try {
+    // 1. Re-validate scope. The plan was written by a model and approved by a
+    //    human, and neither is a security boundary.
+    const scope = validatePlanScope(plan);
+    if (!scope.ok) {
+      return emit({ outcome: "refused", violations: scope.violations });
+    }
+
+    // 2. Verify-command guard: VERIFY must start with "node ops-watcher/".
+    const verify = String(plan?.verify || "");
+    if (!verify.startsWith("node ops-watcher/")) {
+      return emit({ outcome: "refused", reason: "verify-out-of-scope" });
+    }
+
+    // 3. Lane guard with fallback. Try deps.lane || "corleone"; if it is
+    //    skipped, fall back to "hatta". Both unavailable -> skipped.
+    const lanePref = deps.lane || "corleone";
+    const guardDeps = deps.guardLaneDeps || {};
+    chosenLane = lanePref;
+    let guard = await guardLaneFn(REPAIR_LANES[lanePref]?.guardName || lanePref, guardDeps);
+    if (guard && guard.skip) {
+      const fallback = "hatta";
+      chosenLane = fallback;
+      guard = await guardLaneFn(REPAIR_LANES[fallback]?.guardName || fallback, guardDeps);
+      if (guard && guard.skip) {
+        return emit({ outcome: "skipped", reason: "lane-" + (guard.reason || "unknown") });
+      }
+    }
+    const lane = REPAIR_LANES[chosenLane];
+
+    // 4. Snapshot the listed files before any dispatch.
+    const files = Array.isArray(plan?.files) ? plan.files : [];
+    const snapshot = await snapshotFn(files, { now: nowFn, _fs: deps._fs, dir: deps.snapshotDir });
+    if (!snapshot || snapshot.ok === false) {
+      return emit({ outcome: "aborted", reason: "snapshot-failed" });
+    }
+
+    // 5. Capture each listed file's size+mtime BEFORE dispatch.
+    const before = [];
+    for (const f of files) before.push(await statEntry(f));
+
+    // 6. Dispatch the execution prompt, then record the lane outcome.
+    const prompt = buildExecutionPrompt(issue, plan);
+    const dispatchFn = deps.dispatchExecution || makeDefaultDispatchExecution(lane && lane.wrapper);
+    const dispatch = await dispatchFn(prompt);
+    await recordOutcomeFn(lane && lane.guardName, {
+      ok: !!(dispatch && dispatch.ok),
+      stdout: dispatch && dispatch.stdout,
+      stderr: dispatch && dispatch.stderr,
+    }, deps.recordOutcomeDeps || {});
+
+    // 7. Verify stage A: the plan's VERIFY command.
+    const runVerifyFn = deps.runVerify || (async (cmd) => spawnCapture(nodeCommandToArgv(cmd)));
+    const verifyResult = await runVerifyFn(verify);
+    if (!verifyResult || verifyResult.ok !== true) {
+      await restoreFn(snapshot, { _fs: deps._fs });
+      return emit({ outcome: "reverted", reason: "verify-red" });
+    }
+
+    // Verify stage B: the FULL suite.
+    const runFullSuiteFn = deps.runFullSuite || (async () => spawnCapture(["ops-watcher/run-all-tests.mjs"]));
+    const fullResult = await runFullSuiteFn();
+    if (!fullResult || fullResult.ok !== true) {
+      await restoreFn(snapshot, { _fs: deps._fs });
+      return emit({ outcome: "reverted", reason: "full-suite-red" });
+    }
+
+    // 8. Both green but no listed file changed -> no-op. Do not claim work
+    //    that did not happen.
+    const after = [];
+    for (const f of files) after.push(await statEntry(f));
+    const filesChanged = [];
+    for (let i = 0; i < files.length; i++) {
+      const b = before[i], a = after[i];
+      if (!b || !a) continue;
+      if (b.size !== a.size || b.mtimeMs !== a.mtimeMs) filesChanged.push(files[i]);
+    }
+    if (filesChanged.length === 0) {
+      return emit({ outcome: "no-op" });
+    }
+
+    // 9. Done. Report the changed files and the verify tail.
+    const verifyOut = String((verifyResult && verifyResult.stdout || "") + (verifyResult && verifyResult.stderr || ""));
+    const verifyTail = verifyOut.slice(-400);
+    return emit({ outcome: "done", filesChanged, verifyTail });
+  } catch (err) {
+    // NEVER throws. An unexpected failure is reported as an error outcome with
+    // one evidence line; the normal branches above cover the documented shapes.
+    return emit({ outcome: "error", reason: String((err && err.message) || err) });
   }
 }
 

@@ -15,6 +15,8 @@ import {
   parsePlan,
   validatePlanScope,
   runDirectiveSweepOnce,
+  buildExecutionPrompt,
+  executeApprovedDirective,
   PLAN_MARKER,
   APPROVED_MARKER,
   REJECTED_MARKER,
@@ -345,6 +347,185 @@ await t("an approved directive is reported and NOT executed (execute spy never c
   assert.equal(cards.length, 0);
   // Stage 2: no execution. The executor seam is never invoked.
   assert.equal(getExecuteCalls(), 0);
+});
+
+// ===========================================================================
+// Stage 3a — buildExecutionPrompt + executeApprovedDirective
+// ===========================================================================
+
+// Builds a fully-injected deps bundle for executeApprovedDirective. Every
+// outbound seam is a spy. `mutated` flips on dispatch so the before/after stat
+// comparison can tell a real change from a no-op. Overrides select branches.
+function makeExecDeps(overrides = {}) {
+  const calls = {
+    snapshot: 0, restore: 0, dispatch: 0, runVerify: 0, runFullSuite: 0,
+    stat: 0, appendEvidence: 0, guardLane: 0, recordOutcome: 0, git: 0, pm2: 0,
+  };
+  let mutated = false;
+  const statFile = async (file) => {
+    calls.stat++;
+    return { size: 100, mtimeMs: mutated ? 2000 : 1000 };
+  };
+  const deps = {
+    lane: "corleone",
+    now: NOW,
+    statFile,
+    snapshotFiles: async (files /*, opts */) => {
+      calls.snapshot++;
+      return {
+        ok: true,
+        dir: "/tmp/snap",
+        entries: (files || []).map((f) => ({ file: f, backup: "/tmp/snap/" + String(f).split("/").pop(), bytes: 100 })),
+      };
+    },
+    restoreFiles: async (snap /*, opts */) => {
+      calls.restore++;
+      return { ok: true, restored: (snap && snap.entries ? snap.entries.length : 0) };
+    },
+    dispatchExecution: async (/* prompt */) => {
+      calls.dispatch++;
+      if (overrides.mutateOnDispatch !== false) mutated = true;
+      return { ok: true, stdout: "implementation done", stderr: "" };
+    },
+    runVerify: async (/* cmd */) => {
+      calls.runVerify++;
+      return overrides.verifyResult !== undefined ? overrides.verifyResult : { ok: true, stdout: "ok\nall good", stderr: "" };
+    },
+    runFullSuite: async () => {
+      calls.runFullSuite++;
+      return overrides.fullResult !== undefined ? overrides.fullResult : { ok: true, stdout: "all green", stderr: "" };
+    },
+    guardLane: async (laneName /*, d */) => {
+      calls.guardLane++;
+      return overrides.guardResult !== undefined ? overrides.guardResult : { skip: false, reason: null, laneKey: laneName };
+    },
+    recordOutcome: async (/* laneName, result, d */) => {
+      calls.recordOutcome++;
+      return { recorded: true };
+    },
+    appendEvidence: async (/* entry, d */) => {
+      calls.appendEvidence++;
+      return undefined;
+    },
+  };
+  return { deps, calls, isMutated: () => mutated, setMutated: (v) => { mutated = v; } };
+}
+
+await t("buildExecutionPrompt contains identifier, every file, VERIFY, and the no-weaken-assertions hard stop; deterministic across two calls", () => {
+  const plan = parsePlan(goodPlan);
+  const p = buildExecutionPrompt(issue({ identifier: "KOL-1", title: "Directive" }), plan);
+  assert.match(p, /KOL-1/);
+  assert.match(p, /Directive/);
+  assert.match(p, /ops-watcher\/foo\.mjs/);
+  assert.match(p, /docs\/bar\.md/);
+  assert.match(p, /node ops-watcher\/foo\.mjs --check/);
+  assert.match(p, /Menyiapkan perubahan kecil yang diminta owner/);
+  assert.match(p, /Do NOT weaken.*assertions/i);
+  // Deterministic: same inputs -> same string.
+  assert.equal(p, buildExecutionPrompt(issue({ identifier: "KOL-1", title: "Directive" }), plan));
+});
+
+await t("executeApprovedDirective: scope violation -> refused, no snapshot spy call, no dispatch spy call", async () => {
+  const { deps, calls } = makeExecDeps();
+  const plan = parsePlan(goodPlan.replace("ops-watcher/foo.mjs, docs/bar.md", "ventures/x.mjs"));
+  const res = await executeApprovedDirective(issue(), plan, deps);
+  assert.equal(res.outcome, "refused");
+  assert.ok(Array.isArray(res.violations) && res.violations.length > 0);
+  assert.equal(calls.snapshot, 0);
+  assert.equal(calls.dispatch, 0);
+  assert.equal(calls.appendEvidence, 1);
+});
+
+await t("executeApprovedDirective: non-node-ops-watcher VERIFY (rm -rf /) -> refused verify-out-of-scope", async () => {
+  const { deps, calls } = makeExecDeps();
+  const plan = parsePlan(goodPlan.replace("VERIFY: node ops-watcher/foo.mjs --check", "VERIFY: rm -rf /"));
+  const res = await executeApprovedDirective(issue(), plan, deps);
+  assert.equal(res.outcome, "refused");
+  assert.equal(res.reason, "verify-out-of-scope");
+  assert.equal(calls.snapshot, 0);
+  assert.equal(calls.dispatch, 0);
+});
+
+await t("executeApprovedDirective: both lanes in cooldown -> skipped, no snapshot", async () => {
+  const { deps, calls } = makeExecDeps({ guardResult: { skip: true, reason: "cooldown" } });
+  const plan = parsePlan(goodPlan);
+  const res = await executeApprovedDirective(issue(), plan, deps);
+  assert.equal(res.outcome, "skipped");
+  assert.match(res.reason, /^lane-/);
+  assert.equal(calls.snapshot, 0);
+  assert.equal(calls.dispatch, 0);
+  // guardLane is called twice: corleone then hatta fallback.
+  assert.equal(calls.guardLane, 2);
+});
+
+await t("executeApprovedDirective: snapshot failure -> aborted, no dispatch", async () => {
+  const { deps, calls } = makeExecDeps();
+  deps.snapshotFiles = async () => { calls.snapshot++; return { ok: false, error: "boom" }; };
+  const plan = parsePlan(goodPlan);
+  const res = await executeApprovedDirective(issue(), plan, deps);
+  assert.equal(res.outcome, "aborted");
+  assert.equal(res.reason, "snapshot-failed");
+  assert.equal(calls.dispatch, 0);
+});
+
+await t("executeApprovedDirective: happy path -> done, restore NOT called, one evidence line, filesChanged non-empty", async () => {
+  const { deps, calls } = makeExecDeps();
+  const plan = parsePlan(goodPlan);
+  const res = await executeApprovedDirective(issue(), plan, deps);
+  assert.equal(res.outcome, "done");
+  assert.ok(Array.isArray(res.filesChanged) && res.filesChanged.length > 0);
+  assert.equal(calls.restore, 0);
+  assert.equal(calls.appendEvidence, 1);
+  assert.ok(typeof res.verifyTail === "string");
+});
+
+await t("executeApprovedDirective: verify red -> reverted verify-red, restoreFiles called with the snapshot", async () => {
+  const { deps, calls } = makeExecDeps({ verifyResult: { ok: false, stdout: "", stderr: "AssertionError" } });
+  const plan = parsePlan(goodPlan);
+  const res = await executeApprovedDirective(issue(), plan, deps);
+  assert.equal(res.outcome, "reverted");
+  assert.equal(res.reason, "verify-red");
+  assert.equal(calls.restore, 1);
+  assert.equal(calls.appendEvidence, 1);
+});
+
+await t("executeApprovedDirective: verify green but full suite red -> reverted full-suite-red, restoreFiles called", async () => {
+  const { deps, calls } = makeExecDeps({ fullResult: { ok: false, stdout: "", stderr: "some suite red" } });
+  const plan = parsePlan(goodPlan);
+  const res = await executeApprovedDirective(issue(), plan, deps);
+  assert.equal(res.outcome, "reverted");
+  assert.equal(res.reason, "full-suite-red");
+  assert.equal(calls.restore, 1);
+  assert.equal(calls.runFullSuite, 1);
+});
+
+await t("executeApprovedDirective: both green but files untouched -> no-op", async () => {
+  const { deps, calls } = makeExecDeps({ mutateOnDispatch: false });
+  const plan = parsePlan(goodPlan);
+  const res = await executeApprovedDirective(issue(), plan, deps);
+  assert.equal(res.outcome, "no-op");
+  assert.equal(calls.restore, 0);
+  assert.equal(calls.appendEvidence, 1);
+});
+
+await t("executeApprovedDirective: injected git/pm2 spies are never called across all branches", async () => {
+  const gitSpy = { calls: 0, fn: () => { gitSpy.calls++; } };
+  const pm2Spy = { calls: 0, fn: () => { pm2Spy.calls++; } };
+  const plan = parsePlan(goodPlan);
+  const branches = [
+    makeExecDeps(),                                                                    // done
+    makeExecDeps({ guardResult: { skip: true, reason: "cooldown" } }),                 // skipped
+    makeExecDeps({ verifyResult: { ok: false } }),                                     // reverted verify-red
+    makeExecDeps({ fullResult: { ok: false } }),                                       // reverted full-suite-red
+    makeExecDeps({ mutateOnDispatch: false }),                                         // no-op
+  ];
+  for (const b of branches) {
+    b.deps.git = gitSpy.fn;
+    b.deps.pm2 = pm2Spy.fn;
+    await executeApprovedDirective(issue(), plan, b.deps);
+  }
+  assert.equal(gitSpy.calls, 0);
+  assert.equal(pm2Spy.calls, 0);
 });
 
 await resetTmp();
