@@ -675,7 +675,6 @@ export async function runDirectiveSweepOnce(deps = {}) {
       }
 
       // Plannable: cls.state is "new" or a plannable "stalled".
-      if (plannedThisSweep >= maxPlansPerSweep) continue;
       const key = attemptsKey(issue);
       const prior = Number(state.attempts[key] || 0);
       if (prior >= maxPlanAttempts) {
@@ -704,6 +703,10 @@ export async function runDirectiveSweepOnce(deps = {}) {
         }
         continue;
       }
+      // Attempt-cap escalation is cheap owner notification, not a planning
+      // dispatch. Keep this budget below the cap check so capped directives
+      // cannot be starved forever by earlier issues consuming the plan slot.
+      if (plannedThisSweep >= maxPlansPerSweep) continue;
       const stalledRePlan = cls.state === "stalled";
 
       if (dryRun) {

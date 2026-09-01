@@ -296,6 +296,101 @@ await t("plan attempt cap escalation is idempotent on the next sweep", async () 
   assert.equal(comments.i1.filter((x) => /^DIRECTIVE OWNER REQUIRED/.test(x.body)).length, 1);
 });
 
+await t("attempt cap escalation still fires after the plan budget is spent", async () => {
+  await resetTmp();
+  await fs.writeFile(TMP_STATE, JSON.stringify({
+    attempts: { i2: 2 },
+    lastPlanFailures: { i2: { reason: "verify-out-of-scope", attempt: 2 } },
+    lastSweepMs: 0,
+  }), "utf8");
+  const issues = [
+    issue({ id: "i1", identifier: "KOL-71" }),
+    issue({ id: "i2", identifier: "KOL-72" }),
+  ];
+  const comments = { i1: [], i2: [] };
+  let planCalls = 0;
+  const { deps, posts, labels, cards } = makeSweepDeps({
+    issues,
+    comments,
+    extra: {
+      maxPlansPerSweep: 1,
+      maxPlanAttempts: 2,
+      dispatchPlan: async () => { planCalls++; return { ok: true, stdout: goodPlan, stderr: "", timedOut: false }; },
+    },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.planned, 1);
+  assert.equal(planCalls, 1);
+  assert.equal(posts.filter((p) => /^DIRECTIVE PLAN \(/.test(p.body.body)).length, 1);
+  assert.deepEqual(labels.map((x) => `${x.issue.identifier}:${x.label}`), ["KOL-72:OWNER_REQUIRED"]);
+  assert.equal(comments.i2.filter((x) => /^DIRECTIVE OWNER REQUIRED/.test(x.body)).length, 1);
+  assert.equal(cards.length, 1);
+});
+
+await t("below-cap directive after spent plan budget is still not planned", async () => {
+  await resetTmp();
+  await fs.writeFile(TMP_STATE, JSON.stringify({
+    attempts: { i2: 1 },
+    lastPlanFailures: { i2: { reason: "parse-failed", attempt: 1 } },
+    lastSweepMs: 0,
+  }), "utf8");
+  const issues = [
+    issue({ id: "i1", identifier: "KOL-73" }),
+    issue({ id: "i2", identifier: "KOL-74" }),
+  ];
+  const comments = { i1: [], i2: [] };
+  let planCalls = 0;
+  const { deps, posts, labels, cards } = makeSweepDeps({
+    issues,
+    comments,
+    extra: {
+      maxPlansPerSweep: 1,
+      maxPlanAttempts: 2,
+      dispatchPlan: async () => { planCalls++; return { ok: true, stdout: goodPlan, stderr: "", timedOut: false }; },
+    },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.planned, 1);
+  assert.equal(planCalls, 1);
+  assert.equal(posts.filter((p) => /^DIRECTIVE PLAN \(/.test(p.body.body)).length, 1);
+  assert.equal(comments.i2.length, 0);
+  assert.equal(labels.length, 0);
+  assert.equal(cards.length, 1);
+});
+
+await t("two directives at the attempt cap both escalate in one sweep", async () => {
+  await resetTmp();
+  await fs.writeFile(TMP_STATE, JSON.stringify({
+    attempts: { i1: 2, i2: 2 },
+    lastPlanFailures: {
+      i1: { reason: "parse-failed", attempt: 2 },
+      i2: { reason: "file-scope-out-of-scope", attempt: 2 },
+    },
+    lastSweepMs: 0,
+  }), "utf8");
+  const issues = [
+    issue({ id: "i1", identifier: "KOL-75" }),
+    issue({ id: "i2", identifier: "KOL-76" }),
+  ];
+  const comments = { i1: [], i2: [] };
+  let planCalls = 0;
+  const { deps, posts, labels, cards } = makeSweepDeps({
+    issues,
+    comments,
+    extra: {
+      maxPlansPerSweep: 1,
+      maxPlanAttempts: 2,
+      dispatchPlan: async () => { planCalls++; return { ok: true, stdout: goodPlan, stderr: "", timedOut: false }; },
+    },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.planned, 0);
+  assert.equal(planCalls, 0);
+  assert.deepEqual(labels.map((x) => `${x.issue.identifier}:${x.label}`), ["KOL-75:OWNER_REQUIRED", "KOL-76:OWNER_REQUIRED"]);
+  assert.equal(posts.filter((p) => /^DIRECTIVE OWNER REQUIRED/.test(p.body.body)).length, 2);
+  assert.equal(cards.length, 0);
+});
+
 await t("plan attempt cap translates parse, file-scope, and verify reasons", async () => {
   const cases = [
     ["parse-failed", /format directive yang valid/i, /parse-failed/],
