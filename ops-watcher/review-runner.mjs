@@ -245,6 +245,23 @@ export function verdictCategory(verdict) {
   return "ambiguous";
 }
 
+export function isUnusableReviewerReply(stdout) {
+  const trimmed = String(stdout ?? "").trim();
+  if (!trimmed) return { unusable: true, reason: "empty reviewer output" };
+  if (/response truncated due to output length limit/i.test(trimmed)) {
+    return { unusable: true, reason: "reviewer output truncated" };
+  }
+  if (trimmed.length < 20 && !/VERDICT/i.test(trimmed)) {
+    return { unusable: true, reason: "reviewer output too short to be a verdict" };
+  }
+  return { unusable: false };
+}
+
+export function isReviewerQuotaFailure(h) {
+  const combined = `${h && h.stdout != null ? h.stdout : ""}\n${h && h.stderr != null ? h.stderr : ""}`;
+  return /usage limit|quota|auth_error|insufficient_quota|rate limit exceeded/i.test(combined);
+}
+
 // Single internal classifier built on the two exported helpers above so there
 // is exactly one verdict-extraction implementation in this file.
 function classifyVerdict(text) {
@@ -779,6 +796,16 @@ async function processReviewSweepIssue(it, base, companyId, gibranAgentId, label
   const prompt = buildPrompt(it);
   const h = await dispatch(prompt);
   if (!h.ok) {
+    if (isReviewerQuotaFailure(h)) {
+      log(`review-runner sweep: ${ident} executor lane quota exhausted -> holding review (retry budget not consumed)`);
+      const body =
+        `REVIEW DISPATCH HELD (ops-watcher/review-runner sweep — ${iso()}): executor lane quota is exhausted; review is being held.\n` +
+        `Issue remains REVIEW_REQUIRED. Retry budget was not consumed.\n` +
+        `--- hermes stderr ---\n${cap(h.stderr)}\n` +
+        `--- hermes stdout ---\n${cap(h.stdout)}\n`;
+      await _post(`${base}/api/issues/${id}/comments`, { body, authorType: "user", authorAgentId: null });
+      return "dispatch-failed";
+    }
     const attempt = failCount + 1;
     const reason = h.timedOut ? "timeout" : (h.error || "hermes-failed");
     log(`review-runner sweep: ${ident} hermes dispatch failed (${reason}), attempt ${attempt}/${MAX_HERMES_ATTEMPTS}`);
@@ -796,6 +823,30 @@ async function processReviewSweepIssue(it, base, companyId, gibranAgentId, label
       next.add(labelMap.NEEDS_REWORK);
       await _patch(`${base}/api/issues/${id}`, { labelIds: [...next], status: "todo", assigneeAgentId: null });
       log(`review-runner sweep: ${ident} -> NEEDS_REWORK (hermes attempt cap reached)`);
+    }
+    return "dispatch-failed";
+  }
+
+  const unusable = isUnusableReviewerReply(h.stdout);
+  if (unusable.unusable) {
+    const attempt = failCount + 1;
+    const reason = unusable.reason;
+    log(`review-runner sweep: ${ident} hermes lane failure (${reason}), attempt ${attempt}/${MAX_HERMES_ATTEMPTS}`);
+    const body =
+      `REVIEW DISPATCH FAILED (ops-watcher/review-runner sweep — ${iso()}): hermes lane failure: ${reason}\n` +
+      `Attempt ${attempt} of ${MAX_HERMES_ATTEMPTS}. Issue remains REVIEW_REQUIRED.\n` +
+      (attempt >= MAX_HERMES_ATTEMPTS
+        ? `Attempt cap reached -> moving to NEEDS_REWORK so this does not silently loop.\n`
+        : `Will retry on the next sweep.\n`) +
+      `--- hermes stderr ---\n${cap(h.stderr)}\n` +
+      `--- hermes stdout ---\n${cap(h.stdout)}\n`;
+    await _post(`${base}/api/issues/${id}/comments`, { body, authorType: "user", authorAgentId: null });
+    if (attempt >= MAX_HERMES_ATTEMPTS) {
+      const next = new Set(Array.isArray(it.labelIds) ? it.labelIds : []);
+      next.delete(labelMap.REVIEW_REQUIRED);
+      next.add(labelMap.NEEDS_REWORK);
+      await _patch(`${base}/api/issues/${id}`, { labelIds: [...next], status: "todo", assigneeAgentId: null });
+      log(`review-runner sweep: ${ident} -> NEEDS_REWORK (hermes lane failure attempt cap reached)`);
     }
     return "dispatch-failed";
   }
@@ -893,6 +944,31 @@ async function processReviewSweepIssue(it, base, companyId, gibranAgentId, label
   }
 }
 
+async function deferProcessOneIssueLaneFailure({ it, id, ident, base, labelMap, _post, _patch, log, state, reason, stderr = "", stdout = null, laneFailure = false }) {
+  const attempts = (state.attempts[id] || 0) + 1;
+  state.attempts[id] = attempts;
+  const summary = laneFailure ? `hermes lane failure: ${reason}` : `hermes ${reason}`;
+  log(`review-runner: ${ident} ${summary}, attempt ${attempts}/${MAX_HERMES_ATTEMPTS}`);
+  const body =
+    `REVIEW DISPATCH FAILED (ops-watcher/review-runner — ${iso()}): ${summary}\n` +
+    `Attempt ${attempts} of ${MAX_HERMES_ATTEMPTS}. Issue remains REVIEW_REQUIRED.\n` +
+    (attempts >= MAX_HERMES_ATTEMPTS
+      ? `Attempt cap reached -> moving to NEEDS_REWORK so this does not silently loop.\n`
+      : `Will retry on the next --once sweep.\n`) +
+    `--- hermes stderr ---\n${cap(stderr)}\n` +
+    (stdout == null ? "" : `--- hermes stdout ---\n${cap(stdout)}\n`);
+  await _post(`${base}/api/issues/${id}/comments`, { body, authorType: "user" });
+  if (attempts >= MAX_HERMES_ATTEMPTS) {
+    const next = new Set(Array.isArray(it.labelIds) ? it.labelIds : []);
+    next.delete(labelMap.REVIEW_REQUIRED);
+    next.add(labelMap.NEEDS_REWORK);
+    await _patch(`${base}/api/issues/${id}`, { labelIds: [...next], status: "todo", assigneeAgentId: null });
+    delete state.attempts[id];
+    log(`review-runner: ${ident} -> NEEDS_REWORK (hermes attempt cap reached)`);
+    return { outcome: "needs-rework", reason };
+  }
+  return { outcome: "deferred", reason };
+}
 async function processOneIssue(it, base, companyId, gibranAgentId, labelMap, _get, _post, _patch, dispatchReviewer, resolveToken, log, state, staleVerdictId = null) {
   const id = it.id;
   const ident = it.identifier || id;
@@ -901,28 +977,24 @@ async function processOneIssue(it, base, companyId, gibranAgentId, labelMap, _ge
   // 1. Dispatch hermes.
   const h = await dispatchReviewer(prompt);
   if (!h.ok) {
-    const attempts = (state.attempts[id] || 0) + 1;
-    state.attempts[id] = attempts;
-    const reason = h.timedOut ? "timeout" : (h.error || "hermes-failed");
-    log(`review-runner: ${ident} hermes dispatch failed (${reason}), attempt ${attempts}/${MAX_HERMES_ATTEMPTS}`);
-    const body =
-      `REVIEW DISPATCH FAILED (ops-watcher/review-runner — ${iso()}): hermes ${reason}\n` +
-      `Attempt ${attempts} of ${MAX_HERMES_ATTEMPTS}. Issue remains REVIEW_REQUIRED.\n` +
-      (attempts >= MAX_HERMES_ATTEMPTS
-        ? `Attempt cap reached -> moving to NEEDS_REWORK so this does not silently loop.\n`
-        : `Will retry on the next --once sweep.\n`) +
-      `--- hermes stderr ---\n${cap(h.stderr)}\n`;
-    await _post(`${base}/api/issues/${id}/comments`, { body, authorType: "user" });
-    if (attempts >= MAX_HERMES_ATTEMPTS) {
-      const next = new Set(Array.isArray(it.labelIds) ? it.labelIds : []);
-      next.delete(labelMap.REVIEW_REQUIRED);
-      next.add(labelMap.NEEDS_REWORK);
-      await _patch(`${base}/api/issues/${id}`, { labelIds: [...next], status: "todo", assigneeAgentId: null });
-      delete state.attempts[id];
-      log(`review-runner: ${ident} -> NEEDS_REWORK (hermes attempt cap reached)`);
-      return { outcome: "needs-rework", reason };
+    if (isReviewerQuotaFailure(h)) {
+      const reason = "quota";
+      log(`review-runner: ${ident} executor lane quota exhausted -> holding review (retry budget not consumed)`);
+      const body =
+        `REVIEW DISPATCH HELD (ops-watcher/review-runner — ${iso()}): executor lane quota is exhausted; review is being held.\n` +
+        `Issue remains REVIEW_REQUIRED. Retry budget was not consumed.\n` +
+        `--- hermes stderr ---\n${cap(h.stderr)}\n` +
+        `--- hermes stdout ---\n${cap(h.stdout)}\n`;
+      await _post(`${base}/api/issues/${id}/comments`, { body, authorType: "user" });
+      return { outcome: "deferred", reason };
     }
-    return { outcome: "deferred", reason };
+    const reason = h.timedOut ? "timeout" : (h.error || "hermes-failed");
+    return deferProcessOneIssueLaneFailure({ it, id, ident, base, labelMap, _post, _patch, log, state, reason, stderr: h.stderr });
+  }
+
+  const unusable = isUnusableReviewerReply(h.stdout);
+  if (unusable.unusable) {
+    return deferProcessOneIssueLaneFailure({ it, id, ident, base, labelMap, _post, _patch, log, state, reason: unusable.reason, stderr: h.stderr, stdout: h.stdout, laneFailure: true });
   }
 
   // hermes succeeded.
@@ -964,6 +1036,23 @@ async function processOneIssue(it, base, companyId, gibranAgentId, labelMap, _ge
       return { outcome: "needs-rework", reason: "workspace-error" };
     }
     return { outcome: "deferred", reason: "workspace-error" };
+  }
+
+  if (cls.kind !== "pass" && cls.kind !== "reject") {
+    delete state.attempts[id];
+    const body =
+      `VERDICT review (GIBRAN via hermes — ${iso()}):\n` +
+      `VERDICT: PARSE_FAILED\n\n` +
+      `GIBRAN replied without a parseable VERDICT: line. Routed to NEEDS_REWORK for human review.\n\n` +
+      `Reasoning (hermes stdout):\n${cap(h.stdout)}\n`;
+    await _post(`${base}/api/issues/${id}/comments`, { body, authorType: "user" });
+    const curLabelIds = Array.isArray(it.labelIds) ? it.labelIds.slice() : [];
+    const next = new Set(curLabelIds);
+    next.delete(labelMap.REVIEW_REQUIRED);
+    next.add(labelMap.NEEDS_REWORK);
+    const p = await _patch(`${base}/api/issues/${id}`, { status: "todo", labelIds: [...next], assigneeAgentId: null });
+    log(`review-runner: ${ident} PARSE_FAILED -> status=todo + NEEDS_REWORK (PATCH ${p.status})`);
+    return { outcome: "needs-rework", kind: "reject", reason: "parse-failed", posted: true };
   }
 
   // Clear the bounded-retry counter once a real verdict is reached.

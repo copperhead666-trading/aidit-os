@@ -3,6 +3,7 @@
   "generated_at": "2026-08-28",
   "source": "BENNETT-ROSTER-REDESIGN-PROPOSAL.md v2",
   "status": "CURRENT - owner macro mission 2026-08-28 preserves SJAHRIR as strong implementation lane",
+  "dispositions_verified_against_heartbeat_at": "2026-09-01",
   "roles": [
     {
       "role_id": "AHMAD",
@@ -22,7 +23,7 @@
       "fallback_lane": "L2 glm-5.2:cloud",
       "trigger": "owner-blocker state write",
       "review_requirement": "none (clerical)",
-      "disposition": "KEEP (paused)"
+      "disposition": "KEEP (running) - heartbeat step 11, every 5 minutes"
     },
     {
       "role_id": "AUDIT-CLERK",
@@ -32,7 +33,7 @@
       "fallback_lane": "L3 Kimi K3",
       "trigger": "weekly cron / ledger write",
       "review_requirement": "posts findings; AHMAD triages",
-      "disposition": "KEEP (paused)"
+      "disposition": "KEEP (running) - heartbeat step 13, every 5 minutes"
     },
     {
       "role_id": "HATTA",
@@ -62,7 +63,7 @@
       "fallback_lane": "L4 Nous free",
       "trigger": "TEST_REQUIRED label",
       "review_requirement": "evidence consumed by GIBRAN",
-      "disposition": "KEEP (paused) - wire trigger (gap 2)"
+      "disposition": "KEEP (running) - heartbeat step 2, TEST_REQUIRED sweep every cycle"
     },
     {
       "role_id": "MIGRATION-SURVEYOR",
@@ -82,7 +83,7 @@
       "fallback_lane": "L2 glm-5.1:cloud (not maker)",
       "trigger": "REVIEW_REQUIRED label w/o verdict (ops-watcher detector exists)",
       "review_requirement": "n/a (is the reviewer)",
-      "disposition": "KEEP - wire runner (gap 1)"
+      "disposition": "KEEP (running) - review-runner.mjs is heartbeat step 3 and dispatches GIBRAN"
     },
     {
       "role_id": "GBRAIN-CURATOR",
@@ -92,7 +93,7 @@
       "fallback_lane": "L3 Kimi K3",
       "trigger": "canonical write / daily cron",
       "review_requirement": "none (ingestion)",
-      "disposition": "KEEP (paused) - wire cron"
+      "disposition": "KEEP (running) - heartbeat step 12, every 5 minutes"
     },
     {
       "role_id": "RETRIEVAL-ASSISTANT",
@@ -102,7 +103,7 @@
       "fallback_lane": "L3 Kimi K3",
       "trigger": "every AHMAD dispatch prep",
       "review_requirement": "none",
-      "disposition": "KEEP - APPROVED by owner (gap 3)"
+      "disposition": "KEEP (running) - imported by ahmad-dispatch.mjs (heartbeat step 7) on every dispatch prep"
     },
     {
       "role_id": "GRAPHIFY-ANALYST",
@@ -112,7 +113,7 @@
       "fallback_lane": "L4 Nous free",
       "trigger": "structural question dispatch",
       "review_requirement": "AHMAD spot-check",
-      "disposition": "KEEP (paused)"
+      "disposition": "KEEP (on-demand) - wired into ahmad-mcp-server ALLOWED_SCRIPTS and the ahmad-dispatch lane menu"
     },
     {
       "role_id": "OPS-WATCHER",
@@ -152,7 +153,7 @@
       "fallback_lane": "L3 Kimi K3",
       "trigger": "SJS canonicalization authorized",
       "review_requirement": "none",
-      "disposition": "KEEP (paused)"
+      "disposition": "KEEP (running) - heartbeat step 9, every 5 minutes"
     },
     {
       "role_id": "STEWARD-CAVEMAN",
@@ -162,7 +163,7 @@
       "fallback_lane": "L3 Kimi K3",
       "trigger": "remediation queue state change",
       "review_requirement": "none",
-      "disposition": "KEEP (paused); absorbs TRADING_DASHBOARD intent"
+      "disposition": "KEEP (running) - heartbeat step 10, every 5 minutes; absorbs TRADING_DASHBOARD intent"
     },
     {
       "role_id": "TRADING-QUANT",

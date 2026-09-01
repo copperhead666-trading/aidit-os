@@ -12,12 +12,16 @@ import { promises as fs } from "node:fs";
 import {
   probeLaneAvailability,
   recordFailure,
+  recordQuotaExhausted,
   clearFailure,
   isInCooldown,
+  shouldSkipLane,
   resolveLane,
   resolveSjahrirModel,
   laneStringToProbeKey,
   cooldownMsFor,
+  isQuotaFailureText,
+  QUOTA_COOLDOWN_MS,
 } from "./routing.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -411,6 +415,199 @@ async function fos22_resolveLaneHonorsProbedChoiceNotFirstLane() {
   } catch (err) { bad(name, err); }
 }
 
+// =====================================================================
+// Quota exhaustion — a SEPARATE state from transient failure.
+//
+// Real event: SJAHRIR's lane returned
+//   "provider.auth_error: 403 You've reached your weekly (7-day) usage limit."
+// The existing recordFailure treated ALL failures as transient and would have
+// retried every 60s-30min forever, because a weekly quota does NOT recover inside
+// a 30-minute cooldown. This block proves the new quota state is distinct:
+//   - isQuotaFailureText recognizes the real weekly-limit string + 429 variants,
+//     and rejects empty/null/non-quota errors.
+//   - recordQuotaExhausted stores quotaExhausted:true + the long QUOTA_COOLDOWN_MS.
+//   - isInCooldown surfaces quotaExhausted and respects the long window.
+//   - an ordinary transient entry still reports quotaExhausted:false and the old
+//     exponential timing (regression guard — quota state must not leak into the
+//     transient path).
+//   - clearFailure removes a quota entry (a successful dispatch reopens the quota).
+//   - shouldSkipLane surfaces skip:true + reason "quota" vs "cooldown" vs null.
+// All tests inject stateFile into a TEMP path; the real routing-state.json is
+// never touched.
+// =====================================================================
+
+async function quota_isQuotaFailureTextTruthTable() {
+  const name = "isQuotaFailureText: real 403 weekly-limit string + insufficient_quota + HTTP 429 -> true; ENOENT + '' + null -> false";
+  try {
+    // The exact real-world string observed today.
+    const real = "provider.auth_error: 403 You've reached your weekly (7-day) usage limit.";
+    assert.equal(isQuotaFailureText(real), true, "real weekly-limit string must be detected");
+    assert.equal(isQuotaFailureText("insufficient_quota"), true);
+    assert.equal(isQuotaFailureText("HTTP 429 Too Many Requests"), true);
+    assert.equal(isQuotaFailureText("rate limit exceeded"), true);
+    assert.equal(isQuotaFailureText("AUTH_ERROR something"), true, "case-insensitive auth_error");
+    assert.equal(isQuotaFailureText("QUOTA Exhausted"), true, "case-insensitive quota");
+    assert.equal(isQuotaFailureText("usage limit reached"), true, "case-insensitive usage limit");
+
+    // negatives
+    assert.equal(isQuotaFailureText("ENOENT: no such file"), false, "spawn error is NOT quota");
+    assert.equal(isQuotaFailureText(""), false, "empty string -> false");
+    assert.equal(isQuotaFailureText(null), false, "null -> false");
+    assert.equal(isQuotaFailureText(undefined), false, "undefined -> false");
+    assert.equal(isQuotaFailureText("ETIMEDOUT"), false, "timeout is transient, not quota");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function quota_recordQuotaExhaustedStoresLongCooldown() {
+  const name = "recordQuotaExhausted stores quotaExhausted:true and cooldownMs === QUOTA_COOLDOWN_MS (temp state file)";
+  try {
+    const sf = await tmpStateFile("qrec");
+    const t0 = 9_000_000;
+    const reason = "provider.auth_error: 403 You've reached your weekly (7-day) usage limit.";
+    const rec = await recordQuotaExhausted("kimi", reason, { now: t0, stateFile: sf });
+    assert.equal(rec.lane, "kimi");
+    assert.equal(rec.failureCount, 1, "first quota failure -> count 1");
+    assert.equal(rec.cooldownMs, QUOTA_COOLDOWN_MS, "cooldown is the long 6h window, NOT transient backoff");
+    assert.equal(rec.lastFailureTs, t0);
+    assert.equal(rec.quotaExhausted, true);
+
+    // verify the stored entry shape directly
+    const raw = JSON.parse(await fs.readFile(sf, "utf8"));
+    const entry = raw.lanes.kimi;
+    assert.equal(entry.quotaExhausted, true);
+    assert.equal(entry.cooldownMs, QUOTA_COOLDOWN_MS);
+    assert.equal(entry.lastFailureReason, reason);
+    assert.equal(entry.failureCount, 1);
+
+    // second quota failure increments count, keeps the long cooldown
+    const rec2 = await recordQuotaExhausted("kimi", reason, { now: t0 + 10_000, stateFile: sf });
+    assert.equal(rec2.failureCount, 2);
+    assert.equal(rec2.cooldownMs, QUOTA_COOLDOWN_MS, "quota cooldown does NOT exponential-grow");
+    assert.equal(rec2.quotaExhausted, true);
+    await cleanup([sf]);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function quota_isInCooldownRespectsLongWindow() {
+  const name = "isInCooldown on a quota entry: inCooldown true right after, quotaExhausted true, inCooldown false past lastFailureTs+QUOTA_COOLDOWN_MS";
+  try {
+    const sf = await tmpStateFile("qcd");
+    const t0 = 12_000_000;
+    const reason = "provider.auth_error: 403 You've reached your weekly (7-day) usage limit.";
+    await recordQuotaExhausted("kimi", reason, { now: t0, stateFile: sf });
+
+    // right after recording -> in cooldown, quota-flagged, long remaining
+    const cd1 = await isInCooldown("kimi", { now: t0 + 1_000, stateFile: sf });
+    assert.equal(cd1.inCooldown, true, "right after quota failure -> in cooldown");
+    assert.equal(cd1.quotaExhausted, true, "quotaExhausted surfaces through read path");
+    assert.equal(cd1.remainingMs, QUOTA_COOLDOWN_MS - 1_000, "remaining is the long 6h window");
+    assert.equal(cd1.lastFailureReason, reason);
+
+    // still inside the 6h window (e.g. 3h in)
+    const cd2 = await isInCooldown("kimi", { now: t0 + 3 * 60 * 60 * 1000, stateFile: sf });
+    assert.equal(cd2.inCooldown, true, "3h into a 6h quota window -> still in cooldown (transient 30min cap would have expired)");
+
+    // one ms past the window -> inCooldown goes false again (the requirement's
+    // "false again once now is past lastFailureTs + QUOTA_COOLDOWN_MS").
+    // quotaExhausted reflects the STORED entry (spec: "from the stored entry,
+    // default false"); the entry is not auto-deleted on window expiry — only
+    // clearFailure removes it. shouldSkipLane reports skip:false regardless,
+    // because it keys off inCooldown.
+    const cd3 = await isInCooldown("kimi", { now: t0 + QUOTA_COOLDOWN_MS + 1, stateFile: sf });
+    assert.equal(cd3.inCooldown, false, "past lastFailureTs+QUOTA_COOLDOWN_MS -> inCooldown false (\"false again\")");
+    assert.equal(cd3.remainingMs, 0, "remainingMs clamps to 0 once past the window");
+    await cleanup([sf]);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function quota_transientEntryUnchangedRegressionGuard() {
+  const name = "isInCooldown on an ordinary failure entry: quotaExhausted:false + old exponential timing (regression guard)";
+  try {
+    const sf = await tmpStateFile("qreg");
+    const t0 = 20_000_000;
+    // ordinary transient failure, NOT a quota one
+    await recordFailure("nous", "ETIMEDOUT", { now: t0, stateFile: sf });
+    const cd1 = await isInCooldown("nous", { now: t0 + 10_000, stateFile: sf });
+    assert.equal(cd1.inCooldown, true);
+    assert.equal(cd1.quotaExhausted, false, "transient entry must NOT be quota-flagged");
+    assert.equal(cd1.failureCount, 1);
+    assert.equal(cd1.remainingMs, 60_000 - 10_000, "transient 60s exponential window intact (NOT the 6h quota window)");
+
+    // second transient failure -> 120s window (exponential growth still works)
+    await recordFailure("nous", "ETIMEDOUT", { now: t0 + 20_000, stateFile: sf });
+    const cd2 = await isInCooldown("nous", { now: t0 + 20_000 + 30_000, stateFile: sf });
+    assert.equal(cd2.inCooldown, true);
+    assert.equal(cd2.quotaExhausted, false);
+    assert.equal(cd2.failureCount, 2);
+    assert.equal(cd2.remainingMs, 120_000 - 30_000, "transient exponential 120s window intact");
+    await cleanup([sf]);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function quota_clearFailureRemovesQuotaEntry() {
+  const name = "clearFailure removes a quota entry (successful dispatch reopens the quota window)";
+  try {
+    const sf = await tmpStateFile("qclear");
+    const t0 = 30_000_000;
+    await recordQuotaExhausted("kimi", "weekly usage limit", { now: t0, stateFile: sf });
+    const cdBefore = await isInCooldown("kimi", { now: t0 + 5_000, stateFile: sf });
+    assert.equal(cdBefore.inCooldown, true);
+    assert.equal(cdBefore.quotaExhausted, true);
+
+    await clearFailure("kimi", { stateFile: sf });
+    const cdAfter = await isInCooldown("kimi", { now: t0 + 5_000, stateFile: sf });
+    assert.equal(cdAfter.inCooldown, false, "clearFailure removes the quota cooldown");
+    assert.equal(cdAfter.quotaExhausted, false, "no quota flag remains after clear");
+    await cleanup([sf]);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function quota_shouldSkipLaneReasons() {
+  const name = "shouldSkipLane: quota -> {skip:true,reason:'quota'}; transient -> {skip:true,reason:'cooldown'}; clean -> {skip:false,reason:null}";
+  try {
+    const sf = await tmpStateFile("qskip");
+    const t0 = 40_000_000;
+
+    // quota entry
+    await recordQuotaExhausted("kimi", "weekly usage limit", { now: t0, stateFile: sf });
+    const skipQuota = await shouldSkipLane("kimi", { now: t0 + 1_000, stateFile: sf });
+    assert.equal(skipQuota.skip, true);
+    assert.equal(skipQuota.reason, "quota", "quota entry -> reason 'quota'");
+    assert.equal(skipQuota.quotaExhausted, true);
+    assert.ok(skipQuota.remainingMs > 0);
+
+    // transient entry
+    await recordFailure("nous", "ETIMEDOUT", { now: t0, stateFile: sf });
+    const skipCd = await shouldSkipLane("nous", { now: t0 + 1_000, stateFile: sf });
+    assert.equal(skipCd.skip, true);
+    assert.equal(skipCd.reason, "cooldown", "transient entry -> reason 'cooldown' (NOT 'quota')");
+    assert.equal(skipCd.quotaExhausted, false);
+    assert.ok(skipCd.remainingMs > 0);
+
+    // clean lane (no entry at all)
+    const skipClean = await shouldSkipLane("codex", { now: t0 + 1_000, stateFile: sf });
+    assert.equal(skipClean.skip, false, "clean lane -> skip false");
+    assert.equal(skipClean.reason, null, "clean lane -> reason null");
+    assert.equal(skipClean.quotaExhausted, false);
+    assert.equal(skipClean.remainingMs, 0);
+
+    // a lane whose window has EXPIRED should report skip:false, reason:null
+    // (quota window elapsed). skip keys off inCooldown, which is false once past
+    // the window even though the stored entry still carries quotaExhausted:true.
+    const skipExpiredQuota = await shouldSkipLane("kimi", { now: t0 + QUOTA_COOLDOWN_MS + 1, stateFile: sf });
+    assert.equal(skipExpiredQuota.skip, false, "past quota window -> not skipping");
+    assert.equal(skipExpiredQuota.reason, null, "past quota window -> reason null");
+
+    await cleanup([sf]);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
 async function main() {
   console.log("# ops-watcher PHASE-4 routing regression tests");
   await testLaneMapping();
@@ -431,6 +628,13 @@ async function main() {
   // FOS-22: "staff[0] hardcoding" bug-class regression.
   await fos22_findRoleSelectsByRoleIdNotArrayIndex();
   await fos22_resolveLaneHonorsProbedChoiceNotFirstLane();
+  // Quota exhaustion — a SEPARATE state from transient failure.
+  await quota_isQuotaFailureTextTruthTable();
+  await quota_recordQuotaExhaustedStoresLongCooldown();
+  await quota_isInCooldownRespectsLongWindow();
+  await quota_transientEntryUnchangedRegressionGuard();
+  await quota_clearFailureRemovesQuotaEntry();
+  await quota_shouldSkipLaneReasons();
   console.log("");
   console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
   if (failed > 0) { for (const f of failures) console.log(`  FAILED: ${f}`); process.exit(1); }

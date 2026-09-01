@@ -51,6 +51,17 @@
 // bad streak from permanently blacklisting a lane (the owner's fixed-subscription
 // lanes are scarce and must not be locked out indefinitely by a bad hour).
 // failureCount is per-lane and resets to 0 on a successful probe.
+//
+// === Quota exhaustion (a SEPARATE state, not transient) ===
+// Some failures are NOT transient blips: a provider returning "403 You've
+// reached your weekly (7-day) usage limit." is an EXHAUSTED-QUOTA condition that
+// does NOT recover inside a 30-minute cooldown window. Retrying it every 60s-
+// 30min is wasteful and just re-discovers the same wall. So a quota failure is
+// recorded with a LONG, separate cooldown (QUOTA_COOLDOWN_MS = 6h) and flagged
+// with quotaExhausted:true on the stored entry. This is one extra state on top
+// of the existing transient backoff — the existing read path (isInCooldown)
+// surfaces it via the quotaExhausted boolean, and a successful dispatch clears
+// it the same way it clears a normal entry (the quota window reopened).
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -66,6 +77,15 @@ const STATE_FILE = path.join(__dirname, "routing-state.json");
 const OLLAMA_TAGS_URL = "http://localhost:11434/api/tags";
 const COOLDOWN_BASE_MS = 60_000;
 const COOLDOWN_CAP_MS = 30 * 60_000;
+
+// Quota exhaustion gets its OWN, LONG cooldown. A weekly (7-day) usage limit
+// does not recover inside a 30-minute transient window; retrying it on the
+// transient backoff schedule just re-discovers the wall. 6h is a deliberately
+// conservative retry interval: short enough that we will resume promptly once a
+// quota window genuinely reopens, long enough that we stop hammering a lane we
+// already know is capped. Like the transient cooldown, this is OUR clock — we
+// never parse/trust a reset time printed in a provider error.
+export const QUOTA_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6 hours
 
 // Probe-key -> how to probe. `kind` selects the probe mechanism.
 export const LANE_PROBES = {
@@ -159,6 +179,22 @@ export function cooldownMsFor(count) {
   return Math.min(raw, COOLDOWN_CAP_MS);
 }
 
+// ---- quota failure detection ----
+// isQuotaFailureText(text): true when the text indicates an EXHAUSTED-QUOTA /
+// usage-cap condition (NOT a transient blip). Matches any of, case-insensitive:
+//   "usage limit", "quota", "auth_error", "insufficient_quota",
+//   "rate limit exceeded", "429"
+// Returns false for null/undefined/empty. This is the decision boundary between
+// recordQuotaExhausted (long cooldown) and recordFailure (transient backoff).
+export function isQuotaFailureText(text) {
+  if (text == null) return false;
+  const s = String(text);
+  if (s === "") return false;
+  const lower = s.toLowerCase();
+  const patterns = ["usage limit", "quota", "auth_error", "insufficient_quota", "rate limit exceeded", "429"];
+  return patterns.some((p) => lower.includes(p));
+}
+
 // recordFailure(lane, reason): persist an observed failure with a real
 // timestamp. lane may be a probe key or a full lane string (normalized).
 // deps: { now, stateFile }
@@ -180,8 +216,38 @@ export async function recordFailure(lane, reason, deps = {}) {
   return { lane: key, failureCount, cooldownMs: st.lanes[key].cooldownMs, lastFailureTs: now };
 }
 
+// recordQuotaExhausted(lane, reason): persist an EXHAUSTED-QUOTA condition with
+// the long, separate QUOTA_COOLDOWN_MS cooldown (NOT the transient exponential
+// backoff). Same normalization, persistence and best-effort discipline as
+// recordFailure (never throws). The stored entry is flagged
+// quotaExhausted:true so the read path can distinguish it from a transient
+// failure. deps: { now, stateFile }
+// Returns: { lane, failureCount, cooldownMs, lastFailureTs, quotaExhausted }
+export async function recordQuotaExhausted(lane, reason, deps = {}) {
+  const now = deps.now || Date.now();
+  const file = deps.stateFile || STATE_FILE;
+  const key = LANE_PROBES[lane] ? lane : (laneStringToProbeKey(lane) || lane);
+  let failureCount = 0;
+  try {
+    const st = await loadRoutingState(file);
+    st.lanes = st.lanes || {};
+    const prev = st.lanes[key] || { failureCount: 0 };
+    failureCount = (prev.failureCount || 0) + 1;
+    st.lanes[key] = {
+      lastFailureTs: now,
+      lastFailureReason: String(reason || "unknown"),
+      failureCount,
+      cooldownMs: QUOTA_COOLDOWN_MS,
+      quotaExhausted: true,
+    };
+    await saveRoutingState(st, file);
+  } catch { /* best-effort: never throws */ }
+  return { lane: key, failureCount, cooldownMs: QUOTA_COOLDOWN_MS, lastFailureTs: now, quotaExhausted: true };
+}
+
 // Clear a lane's failure state (call after a successful probe/dispatch to reset
-// the backoff). deps: { now, stateFile }
+// the backoff). Clears a quota entry the same way it clears a normal one — a
+// successful dispatch means the quota window reopened. deps: { now, stateFile }
 export async function clearFailure(lane, deps = {}) {
   const file = deps.stateFile || STATE_FILE;
   const key = LANE_PROBES[lane] ? lane : (laneStringToProbeKey(lane) || lane);
@@ -196,6 +262,9 @@ export async function clearFailure(lane, deps = {}) {
 
 // isInCooldown(lane): true if the lane is still within its self-computed
 // cooldown window. deps: { now, stateFile, loadState }
+// Adds one field over the original shape: quotaExhausted (boolean, from the
+// stored entry, default false). No existing field name or meaning changes, and
+// the transient-failure math is unchanged.
 export async function isInCooldown(lane, deps = {}) {
   const now = deps.now || Date.now();
   const file = deps.stateFile || STATE_FILE;
@@ -204,7 +273,7 @@ export async function isInCooldown(lane, deps = {}) {
   if (deps.loadState) st = deps.loadState;
   else st = await loadRoutingState(file);
   const entry = (st.lanes || {})[key];
-  if (!entry || !entry.lastFailureTs) return { inCooldown: false, lane: key, remainingMs: 0, failureCount: 0 };
+  if (!entry || !entry.lastFailureTs) return { inCooldown: false, lane: key, remainingMs: 0, failureCount: 0, quotaExhausted: false };
   const cooldown = entry.cooldownMs != null ? entry.cooldownMs : cooldownMsFor(entry.failureCount || 1);
   const expiresAt = entry.lastFailureTs + cooldown;
   const remainingMs = expiresAt - now;
@@ -215,7 +284,22 @@ export async function isInCooldown(lane, deps = {}) {
     failureCount: entry.failureCount || 0,
     expiresAt,
     lastFailureReason: entry.lastFailureReason || null,
+    quotaExhausted: entry.quotaExhausted === true,
   };
+}
+
+// shouldSkipLane(lane): convenience wrapper over isInCooldown for callers that
+// only need a skip/answer. Pure wrapper — no new state; same injectable deps
+// (now, stateFile, loadState) forwarded to isInCooldown.
+// Returns: { skip, reason, remainingMs, quotaExhausted }
+//   skip: true when isInCooldown reports inCooldown.
+//   reason: "quota" when the entry is quota-flagged, "cooldown" for a transient
+//           one, null when not skipping.
+export async function shouldSkipLane(lane, deps = {}) {
+  const cd = await isInCooldown(lane, deps);
+  if (!cd.inCooldown) return { skip: false, reason: null, remainingMs: 0, quotaExhausted: cd.quotaExhausted === true };
+  const reason = cd.quotaExhausted === true ? "quota" : "cooldown";
+  return { skip: true, reason, remainingMs: cd.remainingMs, quotaExhausted: cd.quotaExhausted === true };
 }
 
 // ---- role map loading ----

@@ -30,7 +30,7 @@ import http from "node:http";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { runReviewSweep, runReviewOnce, parseVerdict, verdictCategory } from "./review-runner.mjs";
+import { runReviewSweep, runReviewOnce, parseVerdict, verdictCategory, isUnusableReviewerReply, isReviewerQuotaFailure } from "./review-runner.mjs";
 import {
   acquireLock,
   releaseLock,
@@ -286,6 +286,132 @@ async function testParseVerdictPure() {
     assert.equal(verdictCategory(null), null);
     ok(name);
   } catch (e) { bad(name, e); }
+}
+
+async function testUnusableReviewerReplyPure() {
+  const name = "(i2) isUnusableReviewerReply truth table";
+  try {
+    assert.deepEqual(isUnusableReviewerReply(""), { unusable: true, reason: "empty reviewer output" });
+    assert.deepEqual(isUnusableReviewerReply("   "), { unusable: true, reason: "empty reviewer output" });
+    assert.deepEqual(isUnusableReviewerReply("Response truncated due to output length limit"), { unusable: true, reason: "reviewer output truncated" });
+    assert.deepEqual(isUnusableReviewerReply("ok"), { unusable: true, reason: "reviewer output too short to be a verdict" });
+    assert.deepEqual(isUnusableReviewerReply("VERDICT: PASS\n- looks good"), { unusable: false });
+    assert.deepEqual(isUnusableReviewerReply("I reviewed the implementation carefully and found no explicit verdict marker in this longer prose reply."), { unusable: false });
+    assert.equal(isReviewerQuotaFailure({ stdout: "", stderr: "provider.auth_error: usage limit" }), true);
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testRunOnceEmptyReviewerOutputDeferred() {
+  const name = "(i3) runReviewOnce: empty reviewer output is lane failure defer, not PARSE_FAILED/NEEDS_REWORK";
+  await clearTempLock();
+  await fs.unlink(TMP_STATE).catch(() => {});
+  const state = baseState();
+  const s = await startServer(mockServer(state).handler);
+  try {
+    const base = `http://127.0.0.1:${s.port}`;
+    const fakeDispatch = async () => ({ ok: true, stdout: "", stderr: "", timedOut: false, error: null });
+    const r = await runReviewOnce({ base, companyId: "C", dispatchReviewer: fakeDispatch, resolveToken: async () => null, stateFile: TMP_STATE, log, ...LOCK_DEPS });
+    assert.equal(r.results[0].outcome, "deferred");
+    assert.equal(r.results[0].reason, "empty reviewer output");
+    const saved = JSON.parse(await fs.readFile(TMP_STATE, "utf8"));
+    assert.equal(saved.attempts["iss-1"], 1, "attempt counter increments once");
+    const bodies = state.comments["iss-1"].map((x) => x.body).join("\n---\n");
+    assert.match(bodies, /REVIEW DISPATCH FAILED/i, "lane failure comment posted");
+    assert.match(bodies, /empty reviewer output/i, "comment includes helper reason");
+    assert.doesNotMatch(bodies, /PARSE_FAILED/i, "must not post PARSE_FAILED for unusable lane output");
+    assert.equal(state.issues[0].status, "in_review");
+    assert.deepEqual(state.issues[0].labelIds, ["lbl-review"], "REVIEW_REQUIRED remains, no NEEDS_REWORK patch");
+    ok(name);
+  } catch (e) { bad(name, e); } finally { await s.close(); await fs.unlink(TMP_STATE).catch(() => {}); }
+}
+
+async function testRunOnceEmptyReviewerOutputEscalatesAtCap() {
+  const name = "(i4) runReviewOnce: repeated empty reviewer output escalates only at MAX_HERMES_ATTEMPTS";
+  await clearTempLock();
+  await fs.unlink(TMP_STATE).catch(() => {});
+  const state = baseState();
+  const s = await startServer(mockServer(state).handler);
+  try {
+    const base = `http://127.0.0.1:${s.port}`;
+    const fakeDispatch = async () => ({ ok: true, stdout: "", stderr: "", timedOut: false, error: null });
+    const dep = { base, companyId: "C", dispatchReviewer: fakeDispatch, resolveToken: async () => null, stateFile: TMP_STATE, log, ...LOCK_DEPS };
+    const r1 = await runReviewOnce(dep);
+    assert.equal(r1.results[0].outcome, "deferred");
+    assert.deepEqual(state.issues[0].labelIds, ["lbl-review"], "first unusable reply does not rework");
+    const r2 = await runReviewOnce(dep);
+    assert.equal(r2.results[0].outcome, "deferred");
+    assert.deepEqual(state.issues[0].labelIds, ["lbl-review"], "second unusable reply still does not rework");
+    const r3 = await runReviewOnce(dep);
+    assert.equal(r3.results[0].outcome, "needs-rework", "third unusable reply reaches cap");
+    assert.equal(state.issues[0].status, "todo");
+    assert.deepEqual(state.issues[0].labelIds, ["lbl-rework"], "REVIEW_REQUIRED swapped for NEEDS_REWORK at cap");
+    const bodies = state.comments["iss-1"].map((x) => x.body).join("\n---\n");
+    assert.equal((bodies.match(/REVIEW DISPATCH FAILED/gi) || []).length, 3, "three lane-failure comments posted");
+    assert.doesNotMatch(bodies, /PARSE_FAILED/i, "empty output never becomes PARSE_FAILED");
+    ok(name);
+  } catch (e) { bad(name, e); } finally { await s.close(); await fs.unlink(TMP_STATE).catch(() => {}); }
+}
+
+async function testRunOnceQuotaFailureHeldNoAttemptBurn() {
+  const name = "(i5) runReviewOnce: reviewer quota failure is held without burning attempts";
+  await clearTempLock();
+  await fs.unlink(TMP_STATE).catch(() => {});
+  const state = baseState();
+  const s = await startServer(mockServer(state).handler);
+  try {
+    const base = `http://127.0.0.1:${s.port}`;
+    const fakeDispatch = async () => ({ ok: false, stdout: "", stderr: "provider.auth_error: 403 You've reached your weekly (7-day) usage limit.", timedOut: false, error: "auth_error" });
+    const r = await runReviewOnce({ base, companyId: "C", dispatchReviewer: fakeDispatch, resolveToken: async () => null, stateFile: TMP_STATE, log, ...LOCK_DEPS });
+    assert.equal(r.results[0].outcome, "deferred");
+    assert.equal(r.results[0].reason, "quota");
+    const saved = JSON.parse(await fs.readFile(TMP_STATE, "utf8"));
+    assert.equal(saved.attempts["iss-1"] || 0, 0, "quota does not increment attempts");
+    assert.equal(state.issues[0].status, "in_review");
+    assert.deepEqual(state.issues[0].labelIds, ["lbl-review"], "no NEEDS_REWORK on quota outage");
+    const body = state.comments["iss-1"][0].body;
+    assert.match(body, /executor lane quota is exhausted/i);
+    assert.match(body, /review is being held/i);
+    ok(name);
+  } catch (e) { bad(name, e); } finally { await s.close(); await fs.unlink(TMP_STATE).catch(() => {}); }
+}
+
+async function testRunOnceParseFailedStillNeedsRework() {
+  const name = "(i6) runReviewOnce: non-empty no-VERDICT reply remains PARSE_FAILED -> NEEDS_REWORK";
+  await clearTempLock();
+  await fs.unlink(TMP_STATE).catch(() => {});
+  const state = baseState();
+  const s = await startServer(mockServer(state).handler);
+  try {
+    const base = `http://127.0.0.1:${s.port}`;
+    const fakeDispatch = async () => ({ ok: true, stdout: "I reviewed it. Looks fine I guess.", stderr: "", timedOut: false, error: null });
+    const r = await runReviewOnce({ base, companyId: "C", dispatchReviewer: fakeDispatch, resolveToken: async () => null, stateFile: TMP_STATE, log, ...LOCK_DEPS });
+    assert.equal(r.results[0].outcome, "needs-rework");
+    assert.equal(r.results[0].reason, "parse-failed");
+    const c = state.comments["iss-1"].find((x) => /VERDICT:\s*PARSE_FAILED/i.test(x.body));
+    assert.ok(c, "PARSE_FAILED comment posted for usable but unparsable reply");
+    assert.equal(state.issues[0].status, "todo");
+    assert.deepEqual(state.issues[0].labelIds, ["lbl-rework"]);
+    ok(name);
+  } catch (e) { bad(name, e); } finally { await s.close(); await fs.unlink(TMP_STATE).catch(() => {}); }
+}
+
+async function testRunOncePassStillDone() {
+  const name = "(i7) runReviewOnce: VERDICT PASS remains done + DONE_VERIFIED";
+  await clearTempLock();
+  await fs.unlink(TMP_STATE).catch(() => {});
+  const state = baseState();
+  const s = await startServer(mockServer(state).handler);
+  try {
+    const base = `http://127.0.0.1:${s.port}`;
+    const fakeDispatch = async () => ({ ok: true, stdout: "VERDICT: PASS", stderr: "", timedOut: false, error: null });
+    const r = await runReviewOnce({ base, companyId: "C", dispatchReviewer: fakeDispatch, resolveToken: async () => null, stateFile: TMP_STATE, log, ...LOCK_DEPS });
+    assert.equal(r.results[0].outcome, "done");
+    assert.equal(r.results[0].kind, "pass");
+    assert.equal(state.issues[0].status, "done");
+    assert.deepEqual(state.issues[0].labelIds, ["lbl-done"]);
+    ok(name);
+  } catch (e) { bad(name, e); } finally { await s.close(); await fs.unlink(TMP_STATE).catch(() => {}); }
 }
 
 // =====================================================================
@@ -723,6 +849,12 @@ async function main() {
   await testParseFailedHandling();
   await testNetworkErrorNoCrash();
   await testParseVerdictPure();
+  await testUnusableReviewerReplyPure();
+  await testRunOnceEmptyReviewerOutputDeferred();
+  await testRunOnceEmptyReviewerOutputEscalatesAtCap();
+  await testRunOnceQuotaFailureHeldNoAttemptBurn();
+  await testRunOnceParseFailedStillNeedsRework();
+  await testRunOncePassStillDone();
   await testWorkspaceErrorSelfReported();
   await testWorkspaceErrorBoundedRetry();
   await testWorkspaceErrorCapMovesToNeedsRework();
