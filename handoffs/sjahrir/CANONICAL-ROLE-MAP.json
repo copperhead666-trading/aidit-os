@@ -78,9 +78,9 @@
     {
       "role_id": "GIBRAN",
       "department": "D3 Review / Acceptance",
-      "boundary": "verdicts on material changes; records VERDICT: attributed to GIBRAN id; NEVER modifies code, NEVER approves own work",
+      "boundary": "verdicts on material changes; records VERDICT: attributed to the GIBRAN id when its api key resolves, otherwise as a board-fallback comment (authorType user); NEVER modifies code, NEVER approves own work",
       "default_lane": "L4 Nous free",
-      "fallback_lane": "L2 glm-5.1:cloud (not maker)",
+      "fallback_lane": "none - review-runner refuses the sweep when the Nous lane is unavailable; no silent fallback to a weaker reasoner",
       "trigger": "REVIEW_REQUIRED label w/o verdict (ops-watcher detector exists)",
       "review_requirement": "n/a (is the reviewer)",
       "disposition": "KEEP (running) - review-runner.mjs is heartbeat step 3 and dispatches GIBRAN"
