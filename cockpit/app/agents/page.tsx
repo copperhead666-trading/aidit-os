@@ -42,9 +42,7 @@ function asString(v: unknown): string | null {
 }
 
 function formatDuration(ms: number): string {
-  const totalSeconds = Math.max(0, Math.round(ms / 1000));
-  if (totalSeconds < 60) return `${totalSeconds}s`;
-  const totalMinutes = Math.floor(totalSeconds / 60);
+  const totalMinutes = Math.max(0, Math.round(ms / 60000));
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   if (hours > 0) return `${hours}h ${minutes}m`;
@@ -110,9 +108,36 @@ function AgentDescription({ role }: { role: string }) {
   );
 }
 
+// Derives the lane status cell from the same real numbers, thresholds and
+// wording as the Home page's `laneStatus()`. A lane that has run and never
+// succeeded must never read "available"; a lane whose success rate is at or
+// below half is degraded, not healthy. Quota state is reported separately and
+// never reads as "ok" once the flag is set, even when the cooldown window has
+// elapsed. Kept inlined here (not extracted to a shared helper) per task scope.
+function laneStatus(lane: LaneStat): { tone: 'ok' | 'warn' | 'err'; label: string; ghost?: boolean } {
+  if (lane.quotaExhausted) {
+    if (lane.cooldownRemainingMs > 0) {
+      return { tone: 'warn', label: `cooldown ${formatDuration(lane.cooldownRemainingMs)}` };
+    }
+    return { tone: 'warn', label: 'quota exhausted' };
+  }
+  if (lane.runs === 0) {
+    return { tone: 'warn', label: 'no runs', ghost: true };
+  }
+  if (lane.ok === 0) {
+    return { tone: 'err', label: 'no successful runs' };
+  }
+  const successRate = Math.round((lane.ok / lane.runs) * 100);
+  if (successRate <= 50) {
+    return { tone: 'warn', label: `${successRate}% — degraded` };
+  }
+  return { tone: 'ok', label: 'ok', ghost: true };
+}
+
 function LaneLine({ lane }: { lane: LaneStat }) {
   const successRate =
     lane.runs > 0 ? `${Math.round((lane.ok / lane.runs) * 100)}%` : '—';
+  const status = laneStatus(lane);
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-os-muted">
       <span className="inline-flex items-center gap-1.5">
@@ -124,17 +149,9 @@ function LaneLine({ lane }: { lane: LaneStat }) {
         <span className="text-os-text">{successRate}</span>
       </span>
       <span>
-        {lane.quotaExhausted ? (
-          <Badge tone="warn">quota exhausted · {formatDuration(lane.cooldownRemainingMs)}</Badge>
-        ) : lane.runs === 0 ? (
-          <Badge tone="warn" ghost>
-            no runs
-          </Badge>
-        ) : (
-          <Badge tone="ok" ghost>
-            available
-          </Badge>
-        )}
+        <Badge tone={status.tone} ghost={status.ghost}>
+          {status.label}
+        </Badge>
       </span>
     </div>
   );
