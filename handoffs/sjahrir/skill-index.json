@@ -1,0 +1,102 @@
+{
+  "version": "1.0.0",
+  "description": "Minimal role-based skill bootstrap index. Mandatory core skills per role (always loaded) + task-specific skills with trigger keywords (loaded on demand by dispatcher before packet construction). Companion to SKILL-BOOTSTRAP-DESIGN.md.",
+
+  "mandatoryCore": {
+    "AHMAD": [
+      { "name": "orchestration", "description": "Multi-agent dispatch coordination, task lifecycle, state tracking across running workers; knows the org role map and who owns what." },
+      { "name": "delegation", "description": "Writes task packets, selects implementer by boundary/availability, sets acceptance criteria, routes to review; writes the packet as a plain-text prompt handed to the harness/CLI (no formal task-packet-standard.md exists in this workspace)." },
+      { "name": "recovery", "description": "Detects orphaned/zombie tasks and runs, performs P0/P1 reconciliation, wakes stalled dispatches, enforces re-entrancy guards on wake ticks." }
+    ],
+    "HATTA": [
+      { "name": "debugging", "description": "Systematic root-cause debugging; reads errors, traces call paths, isolates defect class before patching; knows the org debug workflow." },
+      { "name": "TDD", "description": "Red-green-refactor discipline; writes failing test first, implements to pass, refactors; tests run as `node <file>.regression.test.mjs` using node:assert/strict + node:http mocks (no npm, no package.json, no :memory: DB in this workspace)." },
+      { "name": "verification", "description": "Runs allowlisted build/test/seed commands, confirms green before claiming done; never modifies code to make a test pass." }
+    ],
+    "GIBRAN": [
+      { "name": "independent-review", "description": "Reads a change against its acceptance criteria and role boundary; issues verdicts (approve/request-changes/block) with cited reasons; never self-approves." },
+      { "name": "acceptance", "description": "Judges whether a delivered artifact meets the stated acceptance criteria; distinguishes works from meets-spec." },
+      { "name": "security", "description": "Spots credential exposure, auth bypasses, destructive production actions, and safety-boundary violations in proposed changes; escalates to OWNER when found." }
+    ],
+    "SJAHRIR": [
+      { "name": "research", "description": "Gathers context from canonical sources, web, and prior session history; distinguishes verified vs stale vs unknown; does not infer from adjacent facts." },
+      { "name": "synthesis", "description": "Compresses heavy context into structured, caveman-friendly summaries; produces role maps, flow docs, and design drafts from raw research." },
+      { "name": "context-compression", "description": "Knows when to use compact summaries vs full detail; prevents context dilution on handoff; produces minimal-sufficient handoff text." }
+    ],
+    "ESCALATION-SEC": [
+      { "name": "owner-queue-steward", "description": "Manages the WAITING_FOR_OWNER queue: triages items, surfaces them to OWNER at the right time; never fabricates owner decisions." }
+    ],
+    "AUDIT-CLERK": [
+      { "name": "consistency-audit", "description": "Reads ledger and registry state, checks internal consistency, reports discrepancies; read-only, never writes." }
+    ],
+    "TEST-RUNNER": [
+      { "name": "test-execution", "description": "Runs specific allowlisted commands (in this workspace: `node <file>.regression.test.mjs`); reports output verbatim; never edits files." }
+    ],
+    "MIGRATION-SURVEYOR": [
+      { "name": "legacy-extraction", "description": "Reads legacy system state and extracts structured snapshots; read-only, never mutates source systems." }
+    ],
+    "GBRAIN-CURATOR": [
+      { "name": "gbrain-ingestion", "description": "Ingests documents/pages into the GBrain store per the ingestion contract; knows canonical source rules and what is source of truth." }
+    ],
+    "RETRIEVAL-ASSISTANT": [
+      { "name": "gbrain-query", "description": "Runs pre-dispatch GBrain queries to surface relevant context before a task packet is built; read-only, never mutates GBrain." }
+    ],
+    "GRAPHIFY-ANALYST": [
+      { "name": "structural-analysis", "description": "Answers structural and multi-hop code questions from current repo state; does not modify code." }
+    ],
+    "OPS-WATCHER": [
+      { "name": "deterministic-watch", "description": "Runs deterministic detectors only; no LLM calls, no inference; reports detector output verbatim." }
+    ],
+    "PAPERCLIP-OPERATOR": [
+      { "name": "paperclip-admin", "description": "Performs Paperclip administrative writes; every write is human-approved (OWNER or GIBRAN verdict) before execution; never auto-writes." }
+    ],
+    "STEWARD-SJS": [
+      { "name": "sj-snapshot", "description": "Produces SJS status snapshots from canonical sources; follows the status answer contract (PROJECT, STATE, CANONICAL SOURCE, LAST VERIFIED, WHAT CHANGED, ACTIVE TASKS, BLOCKERS, SAFETY, OWNER DECISION NEEDED)." }
+    ],
+    "STEWARD-CAVEMAN": [
+      { "name": "caveman-watch", "description": "Reads Caveman trading state (read-only watch); reports state; does not trade, does not enable live trading." }
+    ],
+    "TRADING-QUANT": [
+      { "name": "trading-quant-analysis", "description": "Dormant by default; only loaded when an explicit task packet names TRADING-QUANT; performs quantitative analysis on trading data when invoked." }
+    ]
+  },
+
+  "taskSpecific": [
+    {
+      "name": "paperclip-api-debugging",
+      "description": "Debugs Paperclip server API issues: connectivity, auth, endpoint behavior, error responses. Relevant when a task touches Paperclip server health or API contracts.",
+      "triggers": ["paperclip-api", "paperclip-debug", "paperclip-connectivity", "paperclip-error", "paperclip-server"],
+      "applicableRoles": ["AHMAD", "HATTA", "PAPERCLIP-OPERATOR", "OPS-WATCHER"]
+    },
+    {
+      "name": "telegram-bot-integration",
+      "description": "Integrates or debugs Telegram bot / Gateway connectivity: bot token, webhook, chat endpoint, message delivery. Relevant when a task touches the Telegram gateway or bot surface.",
+      "triggers": ["telegram-bot", "telegram-gateway", "telegram-webhook", "telegram-integration", "gateway-bot"],
+      "applicableRoles": ["AHMAD", "HATTA", "GIBRAN"]
+    },
+    {
+      "name": "regression-test-writing",
+      "description": "Writes regression tests for previously-fixed bugs or newly-covered scenarios. Relevant when a task touches test coverage, bug fixes that need a regression guard, or test gaps.",
+      "triggers": ["regression-test", "test-coverage", "test-gap", "regression-guard", "write-test"],
+      "applicableRoles": ["HATTA", "TEST-RUNNER"]
+    },
+    {
+      "name": "gbrain-ingestion-run",
+      "description": "Runs a GBrain ingestion pass for a specific document set or source. Relevant when a task is explicitly about ingesting new material into GBrain (distinct from the GBRAIN-CURATOR's always-loaded core skill, which covers the ingestion contract itself).",
+      "triggers": ["gbrain-ingest", "ingest-docs", "gbrain-run", "ingestion-pass", "load-into-gbrain"],
+      "applicableRoles": ["GBRAIN-CURATOR", "SJAHRIR", "AHMAD"]
+    },
+    {
+      "name": "legacy-migration-query",
+      "description": "Runs read-only extraction queries against a legacy system as part of a migration survey. Relevant when a task touches legacy data extraction, schema discovery, or migration surveying.",
+      "triggers": ["legacy-extraction", "migration-survey", "legacy-query", "legacy-schema", "extract-legacy"],
+      "applicableRoles": ["MIGRATION-SURVEYOR", "SJAHRIR", "HATTA"]
+    },
+    {
+      "name": "trading-quant-analysis",
+      "description": "Performs quantitative analysis on trading data (XAUUSD signals, strategy metrics, trade logs). Dormant — only loaded when TRADING-QUANT is explicitly named in a task packet. Not loaded for any other role.",
+      "triggers": ["trading-quant", "quant-analysis", "trading-signal", "strategy-metrics", "trade-log-analysis"],
+      "applicableRoles": ["TRADING-QUANT", "AHMAD"]
+    }
+  ]
+}

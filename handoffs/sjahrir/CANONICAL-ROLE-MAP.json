@@ -1,0 +1,262 @@
+{
+  "generated_by": "SJAHRIR",
+  "generated_at": "2026-08-28",
+  "source": "BENNETT-ROSTER-REDESIGN-PROPOSAL.md v2",
+  "status": "CURRENT - owner macro mission 2026-08-28 preserves SJAHRIR as strong implementation lane",
+  "roles": [
+    {
+      "role_id": "AHMAD",
+      "department": "D1 Executive / Governance",
+      "boundary": "orchestrate, delegate, review delegated output, escalate; NEVER bulk-implement, NEVER self-approve",
+      "default_lane": "L1 Claude Pro ASUS",
+      "fallback_lane": "L3 Kimi K3 (runbook exists)",
+      "trigger": "owner session / dispatch events",
+      "review_requirement": "GIBRAN verdict for material config/Paperclip changes",
+      "disposition": "KEEP"
+    },
+    {
+      "role_id": "ESCALATION-SEC",
+      "department": "D1 Executive / Governance",
+      "boundary": "maintain WAITING_FOR_OWNER queue only",
+      "default_lane": "L4 Nous free",
+      "fallback_lane": "L2 glm-5.2:cloud",
+      "trigger": "owner-blocker state write",
+      "review_requirement": "none (clerical)",
+      "disposition": "KEEP (paused)"
+    },
+    {
+      "role_id": "AUDIT-CLERK",
+      "department": "D1 Executive / Governance",
+      "boundary": "ledger/registry consistency checks, drift detection; read-only",
+      "default_lane": "L4 Nous free",
+      "fallback_lane": "L3 Kimi K3",
+      "trigger": "weekly cron / ledger write",
+      "review_requirement": "posts findings; AHMAD triages",
+      "disposition": "KEEP (paused)"
+    },
+    {
+      "role_id": "HATTA",
+      "department": "D2 Engineering",
+      "boundary": "all implementation in Active FounderOS-Aidit; workspace-scoped harness",
+      "default_lane": "L2 glm-5.2:cloud",
+      "fallback_lane": "L2 kimi-k2.7-code:cloud",
+      "trigger": "AHMAD dispatch packet",
+      "review_requirement": "TEST-RUNNER then GIBRAN for material changes",
+      "disposition": "KEEP"
+    },
+    {
+      "role_id": "CORLEONE",
+      "department": "D2 Engineering",
+      "boundary": "strong implementation lane via the Codex CLI for bounded FounderOS work; material changes require tests and GIBRAN verdict",
+      "default_lane": "L6 Codex",
+      "fallback_lane": "L2 glm-5.2:cloud",
+      "trigger": "AHMAD dispatch packet",
+      "review_requirement": "TEST-RUNNER then GIBRAN for material changes",
+      "disposition": "KEEP - new active lane (2026-08-31)"
+    },
+    {
+      "role_id": "TEST-RUNNER",
+      "department": "D2 Engineering",
+      "boundary": "run allowlisted test/build commands on a scoped change; report pass/fail + excerpt; NEVER fixes code",
+      "default_lane": "L2 glm-5.1:cloud (not maker model)",
+      "fallback_lane": "L4 Nous free",
+      "trigger": "TEST_REQUIRED label",
+      "review_requirement": "evidence consumed by GIBRAN",
+      "disposition": "KEEP (paused) - wire trigger (gap 2)"
+    },
+    {
+      "role_id": "MIGRATION-SURVEYOR",
+      "department": "D2 Engineering",
+      "boundary": "read-only extraction from legacy trees into structured notes",
+      "default_lane": "L3 Kimi K3 (256k ctx)",
+      "fallback_lane": "L2 glm-5.2:cloud",
+      "trigger": "migration task packet",
+      "review_requirement": "AHMAD spot-check",
+      "disposition": "KEEP (paused)"
+    },
+    {
+      "role_id": "GIBRAN",
+      "department": "D3 Review / Acceptance",
+      "boundary": "verdicts on material changes; records VERDICT: attributed to GIBRAN id; NEVER modifies code, NEVER approves own work",
+      "default_lane": "L4 Nous free",
+      "fallback_lane": "L2 glm-5.1:cloud (not maker)",
+      "trigger": "REVIEW_REQUIRED label w/o verdict (ops-watcher detector exists)",
+      "review_requirement": "n/a (is the reviewer)",
+      "disposition": "KEEP - wire runner (gap 1)"
+    },
+    {
+      "role_id": "GBRAIN-CURATOR",
+      "department": "D4 Knowledge / Intelligence",
+      "boundary": "ingestion schedule: ledger, packets, role specs, handoffs into GBrain",
+      "default_lane": "L4 Nous free (embeddings local+free)",
+      "fallback_lane": "L3 Kimi K3",
+      "trigger": "canonical write / daily cron",
+      "review_requirement": "none (ingestion)",
+      "disposition": "KEEP (paused) - wire cron"
+    },
+    {
+      "role_id": "RETRIEVAL-ASSISTANT",
+      "department": "D4 Knowledge / Intelligence",
+      "boundary": "pre-dispatch GBrain query into compact context bundle into task packet; read-only",
+      "default_lane": "L4 Nous free",
+      "fallback_lane": "L3 Kimi K3",
+      "trigger": "every AHMAD dispatch prep",
+      "review_requirement": "none",
+      "disposition": "KEEP - APPROVED by owner (gap 3)"
+    },
+    {
+      "role_id": "GRAPHIFY-ANALYST",
+      "department": "D4 Knowledge / Intelligence",
+      "boundary": "structural/multi-hop code questions over existing graphs; refresh only when stale",
+      "default_lane": "L3 Kimi K3",
+      "fallback_lane": "L4 Nous free",
+      "trigger": "structural question dispatch",
+      "review_requirement": "AHMAD spot-check",
+      "disposition": "KEEP (paused)"
+    },
+    {
+      "role_id": "OPS-WATCHER",
+      "department": "D5 Operations",
+      "boundary": "deterministic detectors; no LLM; read-only",
+      "default_lane": "none (node script)",
+      "fallback_lane": "(none)",
+      "trigger": "cron poll",
+      "review_requirement": "none",
+      "disposition": "KEEP (running)"
+    },
+    {
+      "role_id": "PAPERCLIP-OPERATOR",
+      "department": "D5 Operations",
+      "boundary": "Paperclip admin/config writes; proposes, human approves",
+      "default_lane": "human+gated",
+      "fallback_lane": "(none)",
+      "trigger": "migration phases",
+      "review_requirement": "owner approval",
+      "disposition": "KEEP (paused)"
+    },
+    {
+      "role_id": "SJAHRIR",
+      "department": "D2/D6 Implementation + Research / Synthesis",
+      "boundary": "strong implementation and analysis lane for bounded FounderOS work; use K2.7 for normal coding/implementation; use K3-256K only when heavier context/reasoning is genuinely required; material changes require tests and GIBRAN verdict",
+      "default_lane": "L2 kimi-k2.7-code:cloud",
+      "fallback_lane": "L3 Kimi K3-256K only for heavy context/reasoning escalation",
+      "trigger": "AHMAD/owner dispatch",
+      "review_requirement": "tests for implementation; GIBRAN verdict for material changes; AHMAD remains orchestrator",
+      "disposition": "KEEP - active strong implementation lane"
+    },
+    {
+      "role_id": "STEWARD-SJS",
+      "department": "D7 Project Stewards",
+      "boundary": "SJS status/blockers/questions snapshot; no execution",
+      "default_lane": "L4 Nous free",
+      "fallback_lane": "L3 Kimi K3",
+      "trigger": "SJS canonicalization authorized",
+      "review_requirement": "none",
+      "disposition": "KEEP (paused)"
+    },
+    {
+      "role_id": "STEWARD-CAVEMAN",
+      "department": "D7 Project Stewards",
+      "boundary": "trading state watch; hard rule: live/micro-live stay disabled, risk changes owner-gated",
+      "default_lane": "L4 Nous free",
+      "fallback_lane": "L3 Kimi K3",
+      "trigger": "remediation queue state change",
+      "review_requirement": "none",
+      "disposition": "KEEP (paused); absorbs TRADING_DASHBOARD intent"
+    },
+    {
+      "role_id": "TRADING-QUANT",
+      "department": "D7 Project Stewards",
+      "boundary": "future remediation implementation; explicit packet only",
+      "default_lane": "L5 SOEKARNO (67 trading skills) until lapse",
+      "fallback_lane": "L2 glm-5.2:cloud",
+      "trigger": "explicit task packet",
+      "review_requirement": "GIBRAN + risk-path second review",
+      "disposition": "KEEP DORMANT"
+    }
+  ],
+  "legacy_to_canonical": [
+    {
+      "legacy_identity": "SOEHARTO (old-plane builder)",
+      "canonical_disposition": "RETIRED -> HATTA supersedes",
+      "notes": "reference-only entry stays"
+    },
+    {
+      "legacy_identity": "legacy hatta (De Maestros dispatch)",
+      "canonical_disposition": "LEGACY -> HATTA (new plane)",
+      "notes": "same model family, different harness"
+    },
+    {
+      "legacy_identity": "legacy gibran (Hermes staff worker)",
+      "canonical_disposition": "LEGACY - refer to as LEGACY-GIBRAN in all docs",
+      "notes": "canonical GIBRAN = new-plane reviewer (owner decision 3)"
+    },
+    {
+      "legacy_identity": "legacy soedirman (glm-5.1)",
+      "canonical_disposition": "LEGACY -> lane L2 model alternate",
+      "notes": "model survives, identity does not"
+    },
+    {
+      "legacy_identity": "legacy thomas (kimi-k2.7)",
+      "canonical_disposition": "LEGACY -> lane L2 model alternate",
+      "notes": ""
+    },
+    {
+      "legacy_identity": "legacy soekarno worker",
+      "canonical_disposition": "DORMANT -> emergency review binding on L5",
+      "notes": "not a standing roster role"
+    },
+    {
+      "legacy_identity": "legacy corleone worker",
+      "canonical_disposition": "DORMANT -> resting reserve on L6",
+      "notes": "unchanged"
+    },
+    {
+      "legacy_identity": "HERMES (named agent)",
+      "canonical_disposition": "REPURPOSE -> lane name 'L4 hermes/nous-free'",
+      "notes": "lane, not person"
+    },
+    {
+      "legacy_identity": "TRADING_DASHBOARD (OpenClaw)",
+      "canonical_disposition": "DORMANT",
+      "notes": "Telegram wiring = owner decision"
+    },
+    {
+      "legacy_identity": "OPENCLAW-MAIN / gateway",
+      "canonical_disposition": "UNASSIGNED (frozen rollback snapshot)",
+      "notes": "freeze stands"
+    },
+    {
+      "legacy_identity": "KIMI (Lenovo native)",
+      "canonical_disposition": "RETIRED",
+      "notes": "blocked, paid-membership dead end"
+    },
+    {
+      "legacy_identity": "KIMI_FREE (OpenRouter)",
+      "canonical_disposition": "RETIRED",
+      "notes": "superseded by SJAHRIR lane"
+    },
+    {
+      "legacy_identity": "Gemini CLI",
+      "canonical_disposition": "UNASSIGNED (installed, never logged in)",
+      "notes": "no role invented"
+    },
+    {
+      "legacy_identity": "Lenovo Ollama",
+      "canonical_disposition": "UNASSIGNED (installed, 0 models)",
+      "notes": "no role invented"
+    },
+    {
+      "legacy_identity": "Paperclip built-ins (CEO/Summarizer/Reflection Coach)",
+      "canonical_disposition": "platform furniture, not roster",
+      "notes": "no action"
+    }
+  ],
+  "open_collisions": [
+    {
+      "legacy_identity": "gibran (Hermes staff worker, legacy)",
+      "canonical_identity": "GIBRAN (new-plane reviewer, D3 Review/Acceptance)",
+      "resolution_rule": "New-plane GIBRAN is canonical. Legacy Hermes worker is referred to as LEGACY-GIBRAN in all docs. Owner decision 3 resolved this declaratively."
+    }
+  ]
+}

@@ -1,0 +1,98 @@
+# credentials / secrets — never track these
+.env
+.env.*
+!.env.example
+env.local*
+*password*
+*secret*
+*.pem
+*.key
+*credential*
+
+# MCP server config — may carry provider tokens; treated as sensitive
+.mcp.json
+
+# embedded/local DB data + Paperclip instance state — binary, large, may hold live data
+.paperclip/
+.paperclip-data/
+.paperclip-data-test/
+*.db
+*.sqlite
+*.sqlite3
+
+# G-Brain local knowledge store working state (keep source docs, drop generated indexes)
+.gbrain/cache/
+.gbrain/index/
+**/.gbrain/
+
+# logs — may carry incidental secrets or connection strings
+logs/
+*.log
+
+# node
+node_modules/
+dist/
+build/
+.turbo/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+
+# scratch/temp artifacts
+_scratch-*
+*.tmp
+
+# Phase 7 security-audit generated artifact (echoes audit output incl. token
+# matches — never track; regenerate via `node ops-watcher/security-audit.mjs`)
+ops-watcher/security-audit.last-run.json
+
+# Ruflo local secrets and runtime data
+.env.local
+.env.*.local
+.claude-flow/
+.swarm/
+
+# Claude Code local-only settings (machine-specific, may carry local paths/tokens).
+# .claude/settings.json IS tracked on purpose — it is the shared project config.
+.claude/settings.local.json
+.claude/**/*.local.json
+.claude/security-scans/
+
+# Ventures are SEPARATE git repositories with their own history (and their own
+# .venv / caches). Never nest them inside this repo — track them where they live.
+ventures/
+
+# Generated knowledge-graph output — rebuildable, large
+graphify-out/
+
+# ops-watcher RUNTIME state: rewritten every heartbeat cycle by the daemons.
+# Machine state, not source. Tracking it would make every commit noise.
+ops-watcher/*.lock
+ops-watcher/*.jsonl
+ops-watcher/*-state.json
+ops-watcher/*.state.json
+ops-watcher/state.json
+ops-watcher/_debug_state.json
+ops-watcher/cockpit-snapshot.html
+
+# Zero-byte artifacts accidentally created by malformed shell commands.
+# Flagged for deletion during the machine cleanup pass; never track them.
+None
+emergency
+i.identifier
+l.name)
+tmp_get_time.js
+
+# Claude Code runtime lock files (machine state, rewritten by the scheduler)
+.claude/*.lock
+
+# Zero-byte file with a mojibake name, created by a malformed shell command.
+# Matches any single-segment name made only of these mangled bytes.
+/*[ΓÜá∩╕Å]*

@@ -1,0 +1,173 @@
+// hatta/harness.security.test.mjs
+// Adversarial regression suite for hatta/harness.mjs. This suite tests the
+// exported pure guard functions only: no live model dispatch, no destructive
+// commands, no real credentials printed.
+
+import assert from "node:assert/strict";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import {
+  validateCommand,
+  resolveWorkspacePath,
+  protectedWorkspacePathReason,
+} from "./harness.mjs";
+
+const WORKSPACE_ROOT = path.resolve("D:\\AI\\Active FounderOS-Aidit");
+const cases = [];
+let passed = 0;
+let failed = 0;
+let skipped = 0;
+
+function add(label, fn) {
+  cases.push({ label, fn });
+}
+
+function expectBlocked(result, label) {
+  assert.equal(result && result.ok, false, `${label} must be blocked; got ${JSON.stringify(result)}`);
+}
+
+function expectAllowed(result, label) {
+  assert.equal(result && result.ok, true, `${label} must be allowed; got ${JSON.stringify(result)}`);
+}
+
+function mustBlockCommand(label, command, args) {
+  add(label, () => expectBlocked(validateCommand(command, args), label));
+}
+
+function mustAllowCommand(label, command, args) {
+  add(label, () => expectAllowed(validateCommand(command, args), label));
+}
+
+function mustBlockPath(label, requested) {
+  add(label, () => expectBlocked(resolveWorkspacePath(requested), label));
+}
+
+function mustProtectPath(label, requested, opts) {
+  add(label, () => assert.ok(protectedWorkspacePathReason(requested, opts), `${label} must be protected`));
+}
+
+// ---------------------------------------------------------------------------
+// Legitimate HATTA workflows that must keep working.
+// ---------------------------------------------------------------------------
+mustAllowCommand("allow git status --short", "git", ["status", "--short"]);
+mustAllowCommand("allow git diff --stat", "git", ["diff", "--stat"]);
+mustAllowCommand("allow git log -1 --oneline", "git", ["log", "-1", "--oneline"]);
+mustAllowCommand("allow rg normal workspace search", "rg", ["OWNER_REQUIRED", "ops-watcher"]);
+mustAllowCommand("allow node harness security test", "node", ["hatta/harness.security.test.mjs"]);
+mustAllowCommand("allow node --test on workspace test", "node", ["--test", "hatta/harness.security.test.mjs"]);
+mustAllowCommand("allow npm run test policy shape", "npm", ["run", "test"]);
+mustAllowCommand("allow bun test on workspace test only", "bun", ["test", "hatta/harness.security.test.mjs"]);
+mustAllowCommand("allow echo text even if it contains rm as harmless data", "echo", ["please", "rm", "nothing"]);
+
+// ---------------------------------------------------------------------------
+// F1/F4/F5/F7: git must be a read-only subcommand policy, not a git allowlist.
+// ---------------------------------------------------------------------------
+mustBlockCommand("block git alias shell escape via -c", "git", ["-c", "alias.x=!powershell -enc AAAA", "x"]);
+mustBlockCommand("block F1 exact PoC git alias shell escape", "git", ["-c", "alias.pwn=!powershell -enc <b64>", "pwn"]);
+mustBlockCommand("block git compact -c alias escape", "git", ["-calias.x=!sh -c whoami", "x"]);
+mustBlockCommand("block git --config-env escape", "git", ["--config-env=alias.x=EVIL", "x"]);
+mustBlockCommand("block git config --global mutation", "git", ["config", "--global", "user.email", "attacker@example.test"]);
+mustBlockCommand("block git clean -fdx destructive secret deletion", "git", ["clean", "-fdx"]);
+mustBlockCommand("block git reset --hard", "git", ["reset", "--hard", "HEAD~1"]);
+mustBlockCommand("block git push", "git", ["push", "origin", "main"]);
+mustBlockCommand("block git fetch network egress", "git", ["fetch", "origin"]);
+mustBlockCommand("block git diff external diff", "git", ["diff", "--ext-diff"]);
+mustBlockCommand("block git worktree override", "git", ["--work-tree=C:/Windows", "status"]);
+mustBlockCommand("block git -C outside workspace", "git", ["-C", "C:/Windows", "status"]);
+
+// .git is inside the workspace lexically, but it is executable repository
+// control state. HATTA must not arm hooks/config for a later benign git command.
+mustProtectPath("protect .git/config read/write surface", ".git/config", { write: true });
+mustProtectPath("protect .git hooks write surface", ".git/hooks/pre-commit", { write: true });
+mustBlockCommand("block type .git/config", "type", [".git/config"]);
+
+// ---------------------------------------------------------------------------
+// F2: bun package runner and package/network mutation classes.
+// ---------------------------------------------------------------------------
+mustBlockCommand("block bun x malicious package", "bun", ["x", "malicious-registry-package"]);
+mustBlockCommand("block F2 exact PoC bun x rimraf", "bun", ["x", "rimraf", "hatta"]);
+mustBlockCommand("block bunx top-level alias", "bunx", ["rimraf", "hatta"]);
+mustBlockCommand("block bun exec equivalent", "bun", ["exec", "malicious-registry-package"]);
+mustBlockCommand("block bun create", "bun", ["create", "vite"]);
+mustBlockCommand("block bun install", "bun", ["install"]);
+mustBlockCommand("block bun inline eval", "bun", ["--eval", "console.log(1)"]);
+
+// ---------------------------------------------------------------------------
+// F3/F8: rg must not spawn preprocessors or bypass ignore/secret filters.
+// ---------------------------------------------------------------------------
+mustBlockCommand("block rg --pre interpreter", "rg", ["--pre", "wscript", "."]);
+mustBlockCommand("block F3 exact PoC rg preprocessor escape", "rg", ["--pre", "wscript", ".", "x.js"]);
+mustBlockCommand("block rg --pre=interpreter", "rg", ["--pre=wscript", "."]);
+mustBlockCommand("block rg --pre-glob companion", "rg", ["--pre-glob", "*.js", "x"]);
+mustBlockCommand("block rg no-ignore secret bypass", "rg", ["--no-ignore", "pcp_", "."]);
+mustBlockCommand("block rg unrestricted shorthand", "rg", ["-uuu", "pcp_", "."]);
+mustBlockCommand("block rg hidden traversal", "rg", ["--hidden", "token", "."]);
+mustBlockCommand("block rg explicit secret file path", "rg", ["pcp_", "ops-watcher/gibran-api.key"]);
+
+// ---------------------------------------------------------------------------
+// F6 and equivalents: interpreter option escapes.
+// ---------------------------------------------------------------------------
+mustBlockCommand("block node -e fs.rmSync", "node", ["-e", "require('fs').rmSync('hatta',{recursive:true,force:true})"]);
+mustBlockCommand("block node --eval base64 child_process", "node", ["--eval", "require('child_process').execSync(Buffer.from('cm0gLXJmIGhhdHRh','base64').toString())"]);
+mustBlockCommand("block node --import data URL", "node", ["--import", "data:text/javascript,console.log(1)", "hatta/harness.security.test.mjs"]);
+mustBlockCommand("block F6 exact PoC node --import data URL", "node", ["--import", "data:text/javascript,<payload>"]);
+mustBlockCommand("block node --import=data URL", "node", ["--import=data:text/javascript,console.log(1)"]);
+mustBlockCommand("block node --require planted loader", "node", ["--require", "hatta/pwn.cjs", "hatta/harness.security.test.mjs"]);
+mustBlockCommand("block node --loader planted loader", "node", ["--loader", "hatta/pwn.mjs", "hatta/harness.security.test.mjs"]);
+mustBlockCommand("block node script outside approved roots", "node", ["graphify-out/cache/pwn.mjs"]);
+mustBlockCommand("block node absolute outside workspace", "node", ["C:/Windows/System32/cscript.exe"]);
+
+// ---------------------------------------------------------------------------
+// Secret exposure and package-manager control files.
+// ---------------------------------------------------------------------------
+mustProtectPath("protect gibran api key", "ops-watcher/gibran-api.key");
+mustProtectPath("protect env.local..txt", "env.local..txt");
+mustProtectPath("protect .env.production", ".env.production");
+mustProtectPath("protect package.json writes", "package.json", { write: true });
+mustBlockCommand("block type key file", "type", ["ops-watcher/gibran-api.key"]);
+mustBlockCommand("block npm exec", "npm", ["exec", "some-package"]);
+mustBlockCommand("block npm install", "npm", ["install"]);
+
+// Lexical path escapes.
+mustBlockPath("block relative path escape", "../../Windows/System32/drivers/etc/hosts");
+mustBlockPath("block absolute path escape", "C:/Windows/System32");
+
+// Realpath escape: a junction/symlink inside the workspace that points outside
+// must be refused. This creates only a test link and a temp dir, then unlinks
+// the link rather than deleting through it.
+add("block junction/symlink realpath escape", async () => {
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), "hatta-outside-"));
+  const linkRel = `hatta/_security_link_${process.pid}_${Date.now()}`;
+  const linkAbs = path.join(WORKSPACE_ROOT, linkRel);
+  try {
+    await fs.symlink(outside, linkAbs, process.platform === "win32" ? "junction" : "dir");
+  } catch (err) {
+    skipped += 1;
+    console.log(`SKIP  | ${err.code || err.message} while creating symlink/junction`);
+    await fs.rm(outside, { recursive: true, force: true }).catch(() => {});
+    return;
+  }
+  try {
+    expectBlocked(resolveWorkspacePath(`${linkRel}/escape.txt`), "realpath escape through workspace link");
+  } finally {
+    await fs.unlink(linkAbs).catch(() => {});
+    await fs.rm(outside, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+for (const c of cases) {
+  try {
+    await c.fn();
+    console.log(`PASS  | ${c.label}`);
+    passed += 1;
+  } catch (err) {
+    console.log(`FAIL  | ${c.label}`);
+    console.log(`       ${err && err.stack ? err.stack : err}`);
+    failed += 1;
+  }
+}
+
+console.log("");
+console.log(`ADVERSARIAL HARNESS TEST SUMMARY: ${passed} passed, ${failed} failed, ${skipped} skipped.`);
+if (failed > 0) process.exitCode = 1;

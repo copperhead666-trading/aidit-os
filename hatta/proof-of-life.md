@@ -1,0 +1,1 @@
+HATTA harness live end-to-end test passed 2026-08-28.

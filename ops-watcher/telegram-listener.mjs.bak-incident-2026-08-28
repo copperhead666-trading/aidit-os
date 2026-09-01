@@ -1,0 +1,657 @@
+// ops-watcher/telegram-listener.mjs
+// Long-polls Telegram for the OWNER's button taps on decision messages sent by
+// telegram-notify.mjs, and applies each decision to the canonical Paperclip
+// issue. Duplicate-protection: the getUpdates offset is persisted to a local
+// state file, so re-running never reprocesses the same update.
+//
+// This module now exports BOTH:
+//   - runListenerOnce(deps)         : the original single --once sweep (unchanged
+//                                     contract; still the `--once` CLI entrypoint)
+//   - processUpdateForCallback(...) : the per-update processing (parse -> immediate
+//                                     ACK (daemon mode) -> applyAction -> edit), so
+//                                     the new telegram-listener-daemon.mjs can drive
+//                                     a genuine continuous long-poll loop WITHOUT
+//                                     duplicating the applyAction logic.
+// applyAction is also exported. The daemon and --once share the SAME applyAction
+// path (so both get the comment-dedupe fix), differing only in WHEN the
+// callback ACK is sent (--once acks after the work; the daemon acks "Processing…"
+// FIRST so the OWNER's spinner clears immediately).
+//
+// callback_data scheme (set by telegram-notify.mjs):
+//     "<actionLetter>:<shortId>"
+//   a = APPROVE, r = REJECT, d = DETAILS, z = DEFER, k = ASK AHMAD
+//   shortId = the issue's Paperclip identifier (e.g. "KOL-9"). The listener
+//   maps shortId -> real issue id by listing the company's issues and matching
+//   `identifier` (canonical state lives in Paperclip, no local lookup file).
+//
+// Actions:
+//   APPROVE  : remove OWNER_REQUIRED label (so the normal automatic test/review
+//              flow resumes on its next sweep), post "OWNER APPROVED via Telegram",
+//              answer the callback with a toast, edit the original message to drop
+//              buttons and show the resolved state (cannot be tapped twice).
+//   REJECT   : add OWNER_REJECTED label, set status to "cancelled", post a comment,
+//              answer + edit.
+//   DETAILS  : NO state change — fetch comments/state and send a NEW follow-up
+//              Telegram message with more detail, answer the callback with a toast,
+//              leave the original message + buttons untouched.
+//   DEFER    : post a comment noting the owner deferred, answer with a toast
+//              ("deferred, still pending"), leave OWNER_REQUIRED + original message
+//              + buttons exactly as-is (deliberately non-durable, matching legacy
+//              "postpone" semantics).
+//   ASK AHMAD: add ESCALATED_TO_AHMAD label (so it surfaces via ops-watcher
+//              detectors), post a comment, answer + edit.
+//
+// Every state-changing decision is persisted to Paperclip (a label change and/or
+// a comment) — Paperclip is canonical, so a human reading only Paperclip sees it.
+//
+// COMMENT-DEDUPE (production-incident fix):
+//   When the OWNER rapidly taps the same button multiple times, Telegram
+//   delivers multiple callback_query updates for the SAME action on the SAME
+//   issue. The underlying canonical PATCH is already idempotent (removing
+//   OWNER_REQUIRED twice is harmless; adding OWNER_REJECTED twice is harmless),
+//   BUT the confirmation-comment post was NOT idempotent — it produced ~10
+//   duplicate "OWNER APPROVED via Telegram" comments on one issue in the live
+//   incident. Fix: before posting a decision confirmation comment, check the
+//   issue's MOST RECENT comment; if it already starts with the same decision
+//   prefix (e.g. "OWNER APPROVED via Telegram") AND is within DEDUPE_WINDOW_MS,
+//   skip the duplicate comment post. The canonical action is still applied
+//   (idempotent), the callback is still answered every tap (no stuck spinner),
+//   and the message is still edited — only the spam comment is suppressed.
+//   Window = 60s (covers rapid repeat-tap bursts; an approve-then-reopen-then-
+//   approve hours later has a different most-recent comment and is not suppressed).
+//
+// FAIL-SAFE CONTRACT (post-fix):
+//   - The getUpdates offset ALWAYS advances past a returned update (even when
+//     handling failed), so a Telegram/Paperclip hiccup never wedges the queue.
+//   - BUT a state-changing PATCH that fails (networkError or non-2xx) is NEVER
+//     falsely reported as "approved/rejected/escalated". Instead the outcome is
+//     "patch-failed", a Paperclip comment records that the owner's decision was
+//     RECEIVED but the label/status change FAILED (so the intent is not silently
+//     lost), the Telegram message is edited to show "apply failed", and the toast
+//     says so. The update is still consumed (offset advances) — we do not retry
+//     forever — but the failure is now VISIBLE in both Paperclip and the log,
+//     instead of silently swallowed and reported as success.
+//   - State-file read/write failures are LOGGED (not silent). A read failure
+//     (corrupt file) warns that the offset reset to 0 and recent updates may be
+//     reprocessed; a write failure warns that the next run may reprocess these
+//     updates (duplicate actions possible). Both used to be silently swallowed.
+//
+// Messages use parse_mode "Markdown"; free-form content (title, status) is escaped
+// via escMd() so values like "in_review" / "OWNER_REQUIRED" do not break parsing.
+//
+//   node ops-watcher/telegram-listener.mjs --once
+//
+// Crash-proof: a Telegram or Paperclip network failure never throws; the update
+// is skipped (offset still advances so we don't get stuck) and the error logged.
+
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  discoverPaperclipPort,
+  httpGet,
+  listLabels,
+  ensureLabel,
+  postComment,
+  patchIssue,
+} from "./paperclip-write-client.mjs";
+import {
+  getUpdates,
+  answerCallbackQuery,
+  editMessageText,
+  sendMessage,
+} from "./telegram-client.mjs";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+const COMPANY_ID = "a7011f31-8891-4581-b8fb-bbda8ac6a890";
+const STATE_FILE = path.join(__dirname, "telegram-listener.state.json");
+const SENT_MARKER = "[TELEGRAM SENT]";
+
+const ACTION_LETTERS = { a: "APPROVE", r: "REJECT", d: "DETAILS", z: "DEFER", k: "ASK AHMAD" };
+const LABEL_SPECS = {
+  OWNER_REQUIRED: "#b91c1c",
+  OWNER_REJECTED: "#7f1d1d",
+  ESCALATED_TO_AHMAD: "#9333ea",
+};
+
+// Decision confirmation-comment prefixes (the success-path comment for each
+// state-changing action). Used by the comment-dedupe check. NOTE: the failure
+// comments (postFailureComment) intentionally use a DIFFERENT body (they mention
+// "RECEIVED ... FAILED"), so a prior failure comment does NOT suppress a later
+// success comment — only a prior SUCCESS comment does.
+const DECISION_COMMENT_PREFIX = {
+  APPROVE: "OWNER APPROVED via Telegram",
+  REJECT: "OWNER REJECTED via Telegram",
+  DEFER: "OWNER DEFERRED via Telegram",
+  "ASK AHMAD": "OWNER escalated to AHMAD via Telegram",
+};
+// Suppress a duplicate confirmation comment if the issue's MOST RECENT comment
+// already starts with the same decision prefix AND was posted within this window.
+// 60s comfortably covers a rapid repeat-tap burst (the production incident saw
+// 10 taps in a few seconds) while not suppressing a genuinely new decision hours
+// later (whose most-recent comment would be something else by then).
+const DEDUPE_WINDOW_MS = 60_000;
+
+const iso = () => new Date().toISOString();
+
+function hasRecentInProcessDecision(decisionDedupe, key, nowMs, windowMs) {
+  if (!decisionDedupe || !key) return false;
+  for (const [k, seenAt] of decisionDedupe.entries()) {
+    if ((nowMs - seenAt) > windowMs) decisionDedupe.delete(k);
+  }
+  const prev = decisionDedupe.get(key);
+  decisionDedupe.set(key, nowMs);
+  return Number.isFinite(prev) && (nowMs - prev) <= windowMs;
+}
+
+// HTTP status considered a successful state-changing PATCH. 2xx only.
+function okStatus(s) {
+  return Number.isFinite(s) && s >= 200 && s < 300;
+}
+
+// ---- State-file persistence (now non-silent; injectable for tests) ----
+// defaultReadState returns { ok, value?, code?, message? }. ok=false with
+// code "ENOENT" means the file simply does not exist yet (first run) — caller
+// treats that as offset 0 with no warning. Any OTHER read failure (corrupt
+// JSON, permission error) is surfaced so the caller can WARN that the offset
+// is being reset to 0 and recent updates may be reprocessed.
+export async function defaultReadState(file) {
+  try {
+    return { ok: true, value: JSON.parse(await fs.readFile(file, "utf8")) };
+  } catch (err) {
+    return { ok: false, code: err && err.code, message: err && err.message };
+  }
+}
+// defaultWriteState returns { ok, code?, message? }. A failure here means the
+// offset was NOT persisted, so the next run will reprocess the same updates
+// (duplicate actions possible) — caller must WARN so this is never silent.
+export async function defaultWriteState(file, obj) {
+  try {
+    await fs.writeFile(file, JSON.stringify(obj, null, 2), "utf8");
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, code: err && err.code, message: err && err.message };
+  }
+}
+
+// Escape Telegram legacy-Markdown special characters in free-form content that
+// appears OUTSIDE code spans (inside `code spans` Markdown does not parse
+// specials, so shortId in backticks is left alone). Escapes: \ * _ ` [.
+export function escMd(s) {
+  return String(s == null ? "" : s).replace(/([\\*_`\[])/g, "\\$1");
+}
+
+// Parse "a:KOL-9" -> { action: "APPROVE", actionLetter: "a", shortId: "KOL-9" }
+export function parseCallbackData(data) {
+  const s = String(data || "");
+  const idx = s.indexOf(":");
+  if (idx < 0) return null;
+  const letter = s.slice(0, idx);
+  const shortId = s.slice(idx + 1);
+  const action = ACTION_LETTERS[letter];
+  if (!action || !shortId) return null;
+  return { actionLetter: letter, action, shortId };
+}
+
+// Build a map identifier -> issue for the company (fresh each call).
+export async function buildIdentifierMap(base, companyId, _get) {
+  const res = await _get(`${base}/api/companies/${companyId}/issues`);
+  if (res.networkError) return { map: {}, networkError: true, networkErrorMessage: res.networkErrorMessage };
+  const issues = Array.isArray(res.body) ? res.body : [];
+  const map = {};
+  for (const it of issues) if (it.identifier) map[String(it.identifier)] = it;
+  return { map, networkError: false };
+}
+
+// Ensure the labels this listener may add/remove exist. Returns { name -> id }.
+// Exported so the daemon can build the same label map without duplicating logic.
+export async function ensureLabelMap(base, companyId, _ensureLabel) {
+  const labelMap = {};
+  for (const [name, color] of Object.entries(LABEL_SPECS)) {
+    const r = await _ensureLabel(base, companyId, name, color);
+    if (r.id) labelMap[name] = r.id;
+  }
+  return labelMap;
+}
+
+function redactCb(s) { return String(s || "").slice(0, 64); }
+
+// Re-fetch a fresh copy of the issue (so labelIds are current before we mutate).
+async function freshIssue(base, issueId, _get) {
+  const r = await _get(`${base}/api/issues/${issueId}`);
+  if (r.networkError || !r.body) return null;
+  return r.body;
+}
+
+// Post a comment describing a FAILED state change so the owner's received
+// decision is recorded in Paperclip rather than silently lost. Never throws;
+// returns the postComment result so the caller can log if even THIS failed.
+async function postFailureComment(_postComment, base, issueId, shortId, action, failDesc) {
+  const body =
+    `OWNER ${action} via Telegram (${iso()}) — @ahmadsuperbot tap by owner RECEIVED, ` +
+    `but applying the Paperclip state change FAILED (${failDesc}). ` +
+    `Manual fix needed for ${shortId}; the Telegram update has been consumed and will not auto-retry.`;
+  return _postComment(base, issueId, body, { authorType: "user" });
+}
+
+// Comment-dedupe check (production-incident fix). Returns true if the issue's
+// MOST RECENT comment already starts with the given decision prefix (same
+// decision already recorded) AND is within windowMs. Never throws; on any fetch
+// error returns false (safe: the canonical idempotent PATCH still applies; we
+// just don't suppress a possibly-duplicate comment when we can't tell).
+export async function hasRecentDecisionComment(_get, base, issueId, prefix, windowMs, nowFn) {
+  if (!prefix) return false;
+  let r;
+  try {
+    r = await _get(`${base}/api/issues/${issueId}/comments`);
+  } catch {
+    return false;
+  }
+  if (r.networkError || !Array.isArray(r.body) || r.body.length === 0) return false;
+
+  // Do not assume Paperclip returns comments oldest-first. The live repeat-tap
+  // failure showed that a "most recent is last" assumption is too weak: scan all
+  // matching decision comments and apply the time window to each timestamp.
+  // Missing timestamps are treated as duplicate only for a same-prefix comment
+  // adjacent to either edge of the returned list, which preserves the old mock
+  // behavior without letting one ancient undated comment suppress forever.
+  const nowMs = nowFn();
+  for (let i = 0; i < r.body.length; i += 1) {
+    const c = r.body[i];
+    const body = String((c && c.body) || "");
+    if (!body.startsWith(prefix)) continue;
+    const createdRaw = c.createdAt || c.created_at || c.timestamp;
+    const created = createdRaw ? Date.parse(createdRaw) : NaN;
+    if (Number.isFinite(created)) {
+      if ((nowMs - created) <= windowMs) return true;
+      continue;
+    }
+    if (i === 0 || i === r.body.length - 1) return true;
+  }
+  return false;
+}
+
+// Per-update processing, shared by --once (immediateAck=false) and the daemon
+// (immediateAck=true). When immediateAck is true the callback is answered with
+// "Processing…" BEFORE any Paperclip work so the OWNER's spinner clears fast;
+// applyAction then runs with preAcked=true (its internal toasts become no-ops
+// since a callback_query can only be answered once) and editMessageText shows
+// the final outcome. When immediateAck is false, applyAction answers the
+// callback itself after the work (original --once behaviour, preserved exactly).
+//
+// ctx fields:
+//   base, companyId, labelMap, idMap, upOpts, immediateAck,
+//   _get, _listLabels, _ensureLabel, _postComment, _patchIssue,
+//   _answerCallbackQuery, _editMessageText, _sendMessage,
+//   log, now=Date.now, dedupeWindowMs=DEDUPE_WINDOW_MS
+export async function processUpdateForCallback(upd, ctx) {
+  const {
+    base, companyId, labelMap, idMap, upOpts, immediateAck,
+    _get, _listLabels, _ensureLabel, _postComment, _patchIssue,
+    _answerCallbackQuery, _editMessageText, _sendMessage,
+    log, now = Date.now, dedupeWindowMs = DEDUPE_WINDOW_MS,
+    decisionDedupe = null,
+  } = ctx;
+
+  const uid = upd.update_id;
+  const cq = upd.callback_query;
+  if (!cq) {
+    log(`telegram-listener: update ${uid} has no callback_query — skipping`);
+    return { update_id: uid, outcome: "non-callback-skipped" };
+  }
+  const parsed = parseCallbackData(cq.data);
+  if (!parsed) {
+    log(`telegram-listener: update ${uid} unparseable callback_data="${redactCb(cq.data)}" — answering + skipping`);
+    await _answerCallbackQuery(cq.id, "unparseable action", upOpts).catch(() => {});
+    return { update_id: uid, outcome: "unparseable" };
+  }
+  const issue = idMap[parsed.shortId];
+  if (!issue) {
+    log(`telegram-listener: update ${uid} ${parsed.action} shortId=${parsed.shortId} — no matching Paperclip issue; answering + skipping`);
+    await _answerCallbackQuery(cq.id, "issue not found", upOpts).catch(() => {});
+    return { update_id: uid, outcome: "issue-not-found", action: parsed.action, shortId: parsed.shortId };
+  }
+
+  // IMMEDIATE ACK (daemon mode): clear the spinner before any Paperclip work.
+  if (immediateAck) {
+    await _answerCallbackQuery(cq.id, "Processing…", upOpts).catch(() => {});
+  }
+
+  try {
+    const r = await applyAction({
+      base, companyId, issue, parsed, cq, upOpts, labelMap,
+      _get, _listLabels, _ensureLabel, _postComment, _patchIssue,
+      _answerCallbackQuery, _editMessageText, _sendMessage, log,
+      preAcked: !!immediateAck, now, dedupeWindowMs, decisionDedupe,
+    });
+    return { update_id: uid, identifier: parsed.shortId, action: parsed.action, outcome: r.outcome };
+  } catch (err) {
+    // Never let one update's handler crash the whole sweep.
+    log(`telegram-listener: update ${uid} ${parsed.action} ${parsed.shortId} handler threw: ${err && err.message}`);
+    if (!immediateAck) {
+      await _answerCallbackQuery(cq.id, "internal error", upOpts).catch(() => {});
+    }
+    return { update_id: uid, identifier: parsed.shortId, action: parsed.action, outcome: "handler-error", error: String(err && err.message) };
+  }
+}
+
+// Core, dependency-injected for testability.
+// deps: { base, companyId, telegramBase, stateFile,
+//         httpGet, listLabels, ensureLabel, postComment, patchIssue,
+//         getUpdates, answerCallbackQuery, editMessageText, sendMessage,
+//         readState, writeState, log }
+export async function runListenerOnce(deps) {
+  const {
+    base,
+    companyId = COMPANY_ID,
+    telegramBase,
+    stateFile = STATE_FILE,
+    httpGet: _get = httpGet,
+    listLabels: _listLabels = listLabels,
+    ensureLabel: _ensureLabel = ensureLabel,
+    postComment: _postComment = postComment,
+    patchIssue: _patchIssue = patchIssue,
+    getUpdates: _getUpdates = getUpdates,
+    answerCallbackQuery: _answerCallbackQuery = answerCallbackQuery,
+    editMessageText: _editMessageText = editMessageText,
+    sendMessage: _sendMessage = sendMessage,
+    readState: _readState = defaultReadState,
+    writeState: _writeState = defaultWriteState,
+    log = (m) => console.log(m),
+  } = deps;
+
+  const results = [];
+  if (!base) {
+    log("telegram-listener: no Paperclip base resolved (instance not running)");
+    return { results, error: "no-base" };
+  }
+
+  // Load persisted offset (non-silent: a corrupt/unreadable file is warned).
+  const sr = await _readState(stateFile);
+  let offset = 0;
+  let stateReadReset = false;
+  if (sr.ok && sr.value && Number.isFinite(sr.value.offset)) {
+    offset = sr.value.offset;
+  } else if (!sr.ok && sr.code !== "ENOENT") {
+    // ENOENT is the normal first-run case (no file yet). Anything else is a
+    // real read problem — warn loudly because we are resetting to 0, which
+    // can reprocess (and thus duplicate) any updates still in Telegram's queue.
+    stateReadReset = true;
+    log(`telegram-listener: WARN state file read failed (code=${sr.code || "?"}, msg=${String(sr.message || "").slice(0, 120)}) — resetting offset to 0; recent updates may be REPROCESSED (duplicate actions possible)`);
+  }
+  log(`telegram-listener: polling getUpdates with offset=${offset}${stateReadReset ? " (reset due to state read failure)" : ""}`);
+
+  const upOpts = {};
+  if (telegramBase) upOpts.baseUrl = telegramBase;
+  // Keep long-poll short for a single --once sweep so it returns promptly.
+  upOpts.timeoutMs = 8000;
+  const up = await _getUpdates(offset, upOpts);
+  if (!up.ok) {
+    const why = up.networkError
+      ? `network error: ${up.networkErrorMessage}`
+      : up.reason || `Telegram API status ${up.status}`;
+    log(`telegram-listener: getUpdates failed (${why})`);
+    return { results, error: up.reason ? "no-token" : "getupdates-failed", reason: why };
+  }
+  const updates = up.updates || [];
+  log(`telegram-listener: ${updates.length} update(s) returned`);
+
+  if (updates.length === 0) {
+    return { results };
+  }
+
+  // Ensure labels we may need to add exist (idempotent).
+  const labelMap = await ensureLabelMap(base, companyId, _ensureLabel);
+
+  // Build identifier -> issue map once.
+  const mapResult = await buildIdentifierMap(base, companyId, _get);
+  if (mapResult.networkError) {
+    log(`telegram-listener: identifier map build network error: ${mapResult.networkErrorMessage} — skipping updates this sweep`);
+    return { results, error: "map-network" };
+  }
+  const idMap = mapResult.map;
+
+  const decisionDedupe = new Map();
+  let maxUpdateId = offset;
+  for (const upd of updates) {
+    const uid = upd.update_id;
+    if (Number.isFinite(uid) && uid > maxUpdateId) maxUpdateId = uid;
+    const r = await processUpdateForCallback(upd, {
+      base, companyId, labelMap, idMap, upOpts, immediateAck: false,
+      _get, _listLabels, _ensureLabel, _postComment, _patchIssue,
+      _answerCallbackQuery, _editMessageText, _sendMessage, log, decisionDedupe,
+    });
+    results.push(r);
+  }
+
+  // Persist the advanced offset so a re-run never reprocesses the same updates.
+  // Non-silent: if the write fails, the next run WILL reprocess these updates
+  // (duplicate actions possible) — we surface that as an error in the result.
+  const nextOffset = maxUpdateId + 1;
+  const wr = await _writeState(stateFile, { offset: nextOffset, updatedAt: iso() });
+  if (wr.ok) {
+    log(`telegram-listener: persisted offset=${nextOffset}`);
+  } else {
+    log(`telegram-listener: ERROR persisting offset=${nextOffset} FAILED (code=${wr.code || "?"}, msg=${String(wr.message || "").slice(0, 120)}) — next run may REPROCESS these updates (duplicate actions possible)`);
+  }
+
+  return { results, advancedOffset: nextOffset, persistError: wr.ok ? false : (wr.code || wr.message || "write-failed") };
+}
+
+export async function applyAction(ctx) {
+  const {
+    base, issue, parsed, cq, upOpts, labelMap, _get, _postComment, _patchIssue,
+    _answerCallbackQuery, _editMessageText, _sendMessage, log,
+    preAcked = false, now = Date.now, dedupeWindowMs = DEDUPE_WINDOW_MS,
+    decisionDedupe = null,
+  } = ctx;
+  const { action, shortId } = parsed;
+  const issueId = issue.id;
+  const decisionKey = `${issueId}:${action}`;
+  const messageId = cq.message && cq.message.message_id;
+  // When preAcked (daemon mode), the callback was already answered with
+  // "Processing…" before this function was called; a callback_query can only be
+  // answered ONCE, so internal toasts become no-ops (the final outcome is shown
+  // via editMessageText instead). When not preAcked (--once), the toast is the
+  // real per-outcome answerCallbackQuery (original behaviour, preserved).
+  const toast = (text) =>
+    preAcked
+      ? Promise.resolve({ sent: false, reason: "pre-acked" })
+      : _answerCallbackQuery(cq.id, text, upOpts).catch(() => {});
+  const edit = (text) => {
+    if (messageId == null) return Promise.resolve({ sent: false, reason: "no-message" });
+    return _editMessageText(messageId, text, { ...upOpts }).catch(() => ({ sent: false }));
+  };
+
+  if (action === "APPROVE") {
+    const fresh = await freshIssue(base, issueId, _get);
+    if (!fresh) { await toast("error loading issue"); return { outcome: "load-failed" }; }
+    const cur = Array.isArray(fresh.labelIds) ? fresh.labelIds.slice() : [];
+    const next = new Set(cur);
+    if (labelMap.OWNER_REQUIRED) next.delete(labelMap.OWNER_REQUIRED);
+    const p = await _patchIssue(base, issueId, { labelIds: [...next] });
+    if (p.networkError || !okStatus(p.status)) {
+      const failDesc = p.networkError ? `Paperclip network error (${p.networkErrorMessage || "?"})` : `Paperclip HTTP ${p.status}`;
+      log(`telegram-listener: ${shortId} APPROVE PATCH FAILED (${failDesc}) — recording received decision, NOT claiming success; offset will still advance`);
+      const fc = await postFailureComment(_postComment, base, issueId, shortId, "APPROVED", failDesc);
+      if (fc && fc.networkError) log(`telegram-listener: ${shortId} APPROVE failure-comment ALSO failed to post (network error) — owner decision is NOT recorded in Paperclip; investigate manually`);
+      await toast("⚠️ Approved but apply failed");
+      await edit(`⚠️ *Approved (apply failed)* via Telegram\n\`${shortId}\` — ${escMd(fresh.title || "(untitled)")}\n_OWNER_REQUIRED removal FAILED in Paperclip; manual fix needed. Tap was received._`);
+      return { outcome: "patch-failed", networkError: !!p.networkError, status: p.status };
+    }
+    log(`telegram-listener: ${shortId} APPROVE -> removed OWNER_REQUIRED (PATCH ${p.status})`);
+    // Comment-dedupe: skip a duplicate confirmation comment if this process has
+    // already handled the same decision in the window, or Paperclip already has
+    // a recent matching decision comment.
+    const dup = hasRecentInProcessDecision(decisionDedupe, decisionKey, now(), dedupeWindowMs) ||
+      await hasRecentDecisionComment(_get, base, issueId, DECISION_COMMENT_PREFIX.APPROVE, dedupeWindowMs, now);
+    if (dup) {
+      log(`telegram-listener: ${shortId} APPROVE — duplicate confirmation comment suppressed (recent identical decision already recorded)`);
+    } else {
+      const cm = await _postComment(base, issueId,
+        `OWNER APPROVED via Telegram (${iso()}) — @ahmadsuperbot tap by owner. OWNER_REQUIRED label removed so the automatic flow may resume.`,
+        { authorType: "user" });
+      if (cm && cm.networkError) log(`telegram-listener: ${shortId} APPROVE label WAS removed but the confirmation comment FAILED to post (network error)`);
+    }
+    await toast("✅ Approved — flow resumed");
+    await edit(`✅ *Approved* via Telegram\n\`${shortId}\` — ${escMd(fresh.title || "(untitled)")}\n_OWNER_REQUIRED removed; automatic flow may resume._`);
+    return { outcome: "approved" };
+  }
+
+  if (action === "REJECT") {
+    const fresh = await freshIssue(base, issueId, _get);
+    if (!fresh) { await toast("error loading issue"); return { outcome: "load-failed" }; }
+    const cur = Array.isArray(fresh.labelIds) ? fresh.labelIds.slice() : [];
+    const next = new Set(cur);
+    if (labelMap.OWNER_REQUIRED) next.delete(labelMap.OWNER_REQUIRED);
+    if (labelMap.OWNER_REJECTED) next.add(labelMap.OWNER_REJECTED);
+    // "cancelled" is a real accepted status on this Paperclip instance (verified live).
+    const p = await _patchIssue(base, issueId, { status: "cancelled", labelIds: [...next] });
+    if (p.networkError || !okStatus(p.status)) {
+      const failDesc = p.networkError ? `Paperclip network error (${p.networkErrorMessage || "?"})` : `Paperclip HTTP ${p.status}`;
+      log(`telegram-listener: ${shortId} REJECT PATCH FAILED (${failDesc}) — recording received decision, NOT claiming success; offset will still advance`);
+      const fc = await postFailureComment(_postComment, base, issueId, shortId, "REJECTED", failDesc);
+      if (fc && fc.networkError) log(`telegram-listener: ${shortId} REJECT failure-comment ALSO failed to post (network error) — investigate manually`);
+      await toast("⚠️ Rejected but apply failed");
+      await edit(`⚠️ *Rejected (apply failed)* via Telegram\n\`${shortId}\` — ${escMd(fresh.title || "(untitled)")}\n_Status=cancelled/OWNER_REJECTED change FAILED in Paperclip; manual fix needed. Tap was received._`);
+      return { outcome: "patch-failed", networkError: !!p.networkError, status: p.status };
+    }
+    log(`telegram-listener: ${shortId} REJECT -> status=cancelled + OWNER_REJECTED (PATCH ${p.status})`);
+    const dup = hasRecentInProcessDecision(decisionDedupe, decisionKey, now(), dedupeWindowMs) ||
+      await hasRecentDecisionComment(_get, base, issueId, DECISION_COMMENT_PREFIX.REJECT, dedupeWindowMs, now);
+    if (dup) {
+      log(`telegram-listener: ${shortId} REJECT — duplicate confirmation comment suppressed (recent identical decision already recorded)`);
+    } else {
+      const cm = await _postComment(base, issueId,
+        `OWNER REJECTED via Telegram (${iso()}) — @ahmadsuperbot tap by owner. Status set to cancelled; OWNER_REJECTED label added.`,
+        { authorType: "user" });
+      if (cm && cm.networkError) log(`telegram-listener: ${shortId} REJECT state WAS changed but the confirmation comment FAILED to post (network error)`);
+    }
+    await toast("🚫 Rejected — cancelled");
+    await edit(`🚫 *Rejected* via Telegram\n\`${shortId}\` — ${escMd(fresh.title || "(untitled)")}\n_Status: cancelled._`);
+    return { outcome: "rejected" };
+  }
+
+  if (action === "DETAILS") {
+    // No state change; send a follow-up message with more detail.
+    const cRes = await _get(`${base}/api/issues/${issueId}/comments`);
+    const comments = Array.isArray(cRes.body) ? cRes.body : [];
+    const recent = comments.slice(-4).map((c) =>
+      `• ${escMd(c.authorType || "?")}${c.authorAgentId ? "(agent)" : ""}: ${escMd(String(c.body || "").split("\n")[0].slice(0, 120))}`)
+      .join("\n") || "(no comments)";
+    const fresh = await freshIssue(base, issueId, _get);
+    const status = fresh ? fresh.status : issue.status;
+    const title = fresh ? fresh.title : issue.title;
+    const labelIds = (fresh ? fresh.labelIds : issue.labelIds) || [];
+    const detail = [
+      `*Details for* \`${shortId}\``,
+      "",
+      `*Title:* ${escMd(title || "(untitled)")}`,
+      `*Status:* ${escMd(status)}`,
+      `*Labels:* ${escMd(labelIds.join(", "))}`,
+      "",
+      `*Recent comments (${comments.length}):*`,
+      recent,
+    ].join("\n");
+    await _sendMessage(detail, { ...upOpts }).catch(() => ({ sent: false }));
+    log(`telegram-listener: ${shortId} DETAILS -> sent follow-up message (${comments.length} comments)`);
+    await toast("📋 details sent");
+    // Intentionally do NOT edit or change Paperclip state.
+    return { outcome: "details-sent" };
+  }
+
+  if (action === "DEFER") {
+    // Deliberately non-durable: only a comment. Label + buttons stay.
+    const dup = hasRecentInProcessDecision(decisionDedupe, decisionKey, now(), dedupeWindowMs) ||
+      await hasRecentDecisionComment(_get, base, issueId, DECISION_COMMENT_PREFIX.DEFER, dedupeWindowMs, now);
+    if (dup) {
+      log(`telegram-listener: ${shortId} DEFER — duplicate confirmation comment suppressed (recent identical decision already recorded)`);
+      await toast("⏸ deferred — still pending");
+      return { outcome: "deferred", deduped: true };
+    }
+    const cm = await _postComment(base, issueId,
+      `OWNER DEFERRED via Telegram (${iso()}) — @ahmadsuperbot tap by owner. No state change; issue remains OWNER_REQUIRED and pending.`,
+      { authorType: "user" });
+    if (cm && cm.networkError) {
+      log(`telegram-listener: ${shortId} DEFER comment FAILED to post (network error) — nothing was recorded`);
+      await toast("⚠️ defer failed");
+      return { outcome: "comment-failed", networkError: true };
+    }
+    log(`telegram-listener: ${shortId} DEFER -> posted defer comment, no state change`);
+    await toast("⏸ deferred — still pending");
+    return { outcome: "deferred" };
+  }
+
+  if (action === "ASK AHMAD") {
+    const fresh = await freshIssue(base, issueId, _get);
+    if (!fresh) { await toast("error loading issue"); return { outcome: "load-failed" }; }
+    const cur = Array.isArray(fresh.labelIds) ? fresh.labelIds.slice() : [];
+    const next = new Set(cur);
+    if (labelMap.ESCALATED_TO_AHMAD) next.add(labelMap.ESCALATED_TO_AHMAD);
+    const p = await _patchIssue(base, issueId, { labelIds: [...next] });
+    if (p.networkError || !okStatus(p.status)) {
+      const failDesc = p.networkError ? `Paperclip network error (${p.networkErrorMessage || "?"})` : `Paperclip HTTP ${p.status}`;
+      log(`telegram-listener: ${shortId} ASK AHMAD PATCH FAILED (${failDesc}) — recording received decision, NOT claiming success; offset will still advance`);
+      const fc = await postFailureComment(_postComment, base, issueId, shortId, "ESCALATED TO AHMAD", failDesc);
+      if (fc && fc.networkError) log(`telegram-listener: ${shortId} ASK AHMAD failure-comment ALSO failed to post (network error) — investigate manually`);
+      await toast("⚠️ escalate failed");
+      await edit(`⚠️ *Escalated (apply failed)* via Telegram\n\`${shortId}\` — ${escMd(fresh.title || "(untitled)")}\n_ESCALATED_TO_AHMAD add FAILED in Paperclip; manual fix needed. Tap was received._`);
+      return { outcome: "patch-failed", networkError: !!p.networkError, status: p.status };
+    }
+    log(`telegram-listener: ${shortId} ASK AHMAD -> added ESCALATED_TO_AHMAD (PATCH ${p.status})`);
+    const dup = hasRecentInProcessDecision(decisionDedupe, decisionKey, now(), dedupeWindowMs) ||
+      await hasRecentDecisionComment(_get, base, issueId, DECISION_COMMENT_PREFIX["ASK AHMAD"], dedupeWindowMs, now);
+    if (dup) {
+      log(`telegram-listener: ${shortId} ASK AHMAD — duplicate confirmation comment suppressed (recent identical decision already recorded)`);
+    } else {
+      const cm = await _postComment(base, issueId,
+        `OWNER escalated to AHMAD via Telegram (${iso()}) — @ahmadsuperbot tap by owner. ESCALATED_TO_AHMAD label added so it surfaces in ops-watcher detectors.`,
+        { authorType: "user" });
+      if (cm && cm.networkError) log(`telegram-listener: ${shortId} ASK AHMAD label WAS added but the confirmation comment FAILED to post (network error)`);
+    }
+    await toast("📣 escalated to Ahmad");
+    await edit(`📣 *Escalated to Ahmad* via Telegram\n\`${shortId}\` — ${escMd(fresh.title || "(untitled)")}\n_ESCALATED_TO_AHMAD added._`);
+    return { outcome: "escalated" };
+  }
+
+  await toast("unknown action");
+  return { outcome: "unknown-action" };
+}
+
+// ---- CLI ----
+function parseArgs(argv) {
+  const out = { once: false };
+  for (let i = 2; i < argv.length; i++) if (argv[i] === "--once") out.once = true;
+  return out;
+}
+
+async function main() {
+  const args = parseArgs(process.argv);
+  if (!args.once) {
+    console.log("usage: node ops-watcher/telegram-listener.mjs --once");
+    process.exit(2);
+  }
+  const port = await discoverPaperclipPort();
+  const base = port ? `http://127.0.0.1:${port}` : null;
+  const r = await runListenerOnce({ base, log: (m) => console.log(m) });
+  const processed = r.results.filter((x) => x.outcome && x.outcome !== "non-callback-skipped").length;
+  console.log(`telegram-listener --once: processed=${processed} updates=${r.results.length} (error=${r.error || "none"}${r.persistError ? ", persistError=" + r.persistError : ""})`);
+  for (const x of r.results)
+    console.log(`  - update ${x.update_id}: ${x.action || "?"} ${x.shortId || x.identifier || ""} -> ${x.outcome}`);
+}
+
+const isEntry = (() => {
+  try {
+    return path.resolve(process.argv[1] || "") === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+})();
+if (isEntry) {
+  main().catch((err) => {
+    console.error("telegram-listener fatal:", err && err.stack ? err.stack : err);
+    process.exit(1);
+  });
+}
+

@@ -1,0 +1,65 @@
+{
+  "_now": 1787918400000,
+  "paperclipReachable": true,
+  "ollamaReachable": true,
+  "ollamaModels": ["kimi-k2.7-code:cloud", "glm-5.1:cloud", "gpt-oss:20b-cloud"],
+  "gbrain": { "exists": true, "mtimeMs": 1787309713000 },
+  "graphify": { "active": true, "legacy": true },
+  "errors": [],
+  "issues": [
+    {
+      "id": "i-stuck",
+      "identifier": "PAP-101",
+      "status": "in_progress",
+      "executionLockedAt": "2026-08-28T03:00:00.000Z"
+    },
+    {
+      "id": "i-running-fresh",
+      "identifier": "PAP-102",
+      "status": "in_progress",
+      "executionLockedAt": "2026-08-28T11:40:00.000Z"
+    },
+    {
+      "id": "i-running-nolock",
+      "identifier": "PAP-103",
+      "status": "in_progress",
+      "executionLockedAt": null
+    },
+    {
+      "id": "i-blocked-new",
+      "identifier": "PAP-104",
+      "status": "blocked",
+      "blockedOwnerNotifiedAt": null,
+      "unblockDescriptor": { "reason": "waiting-on-owner-credential" }
+    },
+    {
+      "id": "i-blocked-notified",
+      "identifier": "PAP-105",
+      "status": "blocked",
+      "blockedOwnerNotifiedAt": "2026-08-28T10:00:00.000Z"
+    },
+    {
+      "id": "i-review-pending",
+      "identifier": "PAP-106",
+      "status": "in_review"
+    },
+    {
+      "id": "i-review-done",
+      "identifier": "PAP-107",
+      "status": "in_review"
+    }
+  ],
+  "_fixtureLabelsById": {
+    "i-review-pending": [{ "name": "REVIEW_REQUIRED" }],
+    "i-review-done": [{ "name": "REVIEW_REQUIRED" }]
+  },
+  "_fixtureCommentsById": {
+    "i-review-pending": [
+      { "body": "Implementation complete.", "author_agent_id": "hatta-id" }
+    ],
+    "i-review-done": [
+      { "body": "Implementation complete.", "author_agent_id": "hatta-id" },
+      { "body": "VERDICT: APPROVED. Evidence matches file state.", "author_agent_id": "ce433688-4e0d-4902-addd-b7d27eb081b7" }
+    ]
+  }
+}

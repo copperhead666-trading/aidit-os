@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.0.0",
+  "purpose": "Single canonical reference for locating the Active FounderOS-Aidit Paperclip instance. Consumers (ops-watcher, GBrain, HATTA harness, future integrations) MUST resolve the live endpoint through the discovery strategy below instead of hardcoding a port number. Investigated and written 2026-08-28 after a real, reproduced 3102->3101->3100 port drift.",
+  "canonical_identity": {
+    "instance_home": "D:\\AI\\Active FounderOS-Aidit\\.paperclip",
+    "instance_id": "default",
+    "config_path": "D:\\AI\\Active FounderOS-Aidit\\.paperclip\\instances\\default\\config.json",
+    "database": {
+      "mode": "postgres",
+      "host": "127.0.0.1",
+      "port": 5433,
+      "database_name": "paperclip_founderos_aidit",
+      "role": "paperclip_founderos_aidit",
+      "note": "Isolated role+database created for this workspace on the shared local Postgres 16 service. Password lives only in config.json's connectionString and the instance's own secrets store — never copied here."
+    },
+    "known_company": {
+      "id": "a7011f31-8891-4581-b8fb-bbda8ac6a890",
+      "name": "kolega corp",
+      "issue_prefix": "KOL"
+    },
+    "backup_dir_fingerprint": "D:\\AI\\Active FounderOS-Aidit\\.paperclip\\instances\\default\\data\\backups"
+  },
+  "primary_endpoint": {
+    "port": 3110,
+    "note": "Dedicated stable port, repinned 2026-08-28 per owner decision so this instance no longer contends with the sibling's shared 3100 default. This is the port consumers should try first, but never trust blindly -- always confirm via the fingerprint check below before treating it as canonical."
+  },
+  "discovery_strategy": {
+    "rule": "Fingerprint-based discovery is the fallback/recovery mechanism, not the primary lookup -- try primary_endpoint.port first, verify its /api/health response's databaseBackup.backupDir matches canonical_identity.backup_dir_fingerprint, and only fall back to scanning candidate_ports if that specific check fails (primary port unreachable, or answered by something else). Never treat a specific port number as identity on its own. If no candidate matches, the canonical instance is not running -- do not fall back to any other health-passing instance on the assumption it's the same one.",
+    "candidate_ports": [3110, 3100, 3101, 3102, 3103],
+    "health_path": "/api/health",
+    "identity_field_in_health_response": "databaseBackup.backupDir",
+    "timeout_ms_per_probe": 2000
+  },
+  "known_sibling_instance": {
+    "instance_home": "C:\\Users\\ASUS\\.paperclip",
+    "relationship": "Unrelated pre-existing global-home Paperclip install (predates this workspace, belongs conceptually to the sibling D:\\AI\\Agentic workspace's earlier bootstrap). Same requested port (3100) as ours by default, same shared Postgres server (127.0.0.1:5433), but a DIFFERENT database (\"postgres\", the server's default admin database) under a DIFFERENT role (\"postgres\", the Postgres superuser) -- fully isolated data, zero overlap with paperclip_founderos_aidit.",
+    "running_state_2026-08-28": "NOT currently running -- confirmed by netstat: no listener exists on any port in the 3100-3103 range other than our own instance's single active listener. Its config/data directory still exists on disk, untouched, not started or stopped by this investigation.",
+    "separate_finding_not_actioned": "That sibling's config uses the Postgres superuser role connected to the default 'postgres' database for an application workload -- a pre-existing practice on a system we don't own, flagged for owner awareness only, not touched or judged further here.",
+    "port_drift_root_cause": "Both this instance and the sibling default to requesting port 3100 (paperclipai's own onboarding default). paperclipai probes for a free port at each startup and silently takes the next one up (3101, then 3102...) if 3100 is already bound by whichever instance happened to start first that session. The config.json 'server.port' field itself does not change -- it always says 3100 (the requested port), which is why relying on that config field, or on 'whatever port answered last time', is not a safe way to find the instance. This is confirmed, not inferred: the very first onboarding log explicitly said 'Requested port is busy; using next free port (requestedPort=3100, selectedPort=3102)', and today's three consecutive restarts (by three different actors: an earlier session, Hermes/Kimi, and this session's own restart) landed on 3102, then 3101, then 3100 respectively -- purely reflecting which process happened to hold 3100 at each moment, never a data or identity ambiguity."
+  },
+  "repin_completed_2026-08-28": {
+    "action": "server.port in .paperclip/instances/default/config.json changed from 3100 to 3110 by HATTA (single-field edit, read back and confirmed). Ahmad then performed a controlled restart: stopped the running instance (targeted single-PID taskkill, not image-wide), started a fresh one, verified healthy on :3110, company/data intact (kolega corp, issueCounter unchanged at 1), fingerprint-match discovery re-verified live against the new port.",
+    "verified_dead_ports_post_repin": [3100, 3101, 3102, 3103],
+    "reversible": true
+  }
+}

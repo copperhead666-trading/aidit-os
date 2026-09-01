@@ -1,0 +1,11 @@
+{
+  "detectors": {
+    "stuck-running": ["i-stuck"],
+    "blocked-unnotified": ["i-blocked-new"],
+    "review-waiting": ["i-review-pending"],
+    "worker-lane-unavailable": ["worker-lane-unavailable"],
+    "gbrain-store-missing": [],
+    "graphify-active-missing": [],
+    "graphify-legacy-missing": []
+  }
+}

@@ -1,0 +1,508 @@
+{
+  "schema_version": "1.0.0",
+  "scope": "FounderOS-Aidit Encoded Company — canonical owner-decision ledger, umbrella across all ventures orchestrated by Ahmad (FounderOS, SJS SuperApps, Caveman Trading OS, and successors).",
+  "canonicalized_at": "2026-08-28",
+  "authorized_by": "Aidit",
+  "imported_from": {
+    "path": "D:/AI/Agentic/owner/aidit-decision-ledger.json",
+    "imported_at": "2026-08-28",
+    "import_rule": "Only records with canonical === true were copied forward as still-valid/approved. The source ledger was NOT modified, deleted, or rewritten — it remains the historical origin record.",
+    "note": "Non-canonical records (HISTORICAL_STATE/SUPERSEDED, DESIGN_REQUIRED, AGENT_GENERATED, EXTERNAL_VERIFICATION/UNKNOWN, IMPLEMENTATION_REALITY) were intentionally left out of this canonical ledger. They still exist and remain readable at the source path above; referenced by id only, not duplicated here.",
+    "non_canonical_ids_left_at_source": [
+      "D4",
+      "D1",
+      "D7",
+      "D22",
+      "D23",
+      "GOV-006-hist",
+      "CASH-30k-hist",
+      "SUGAR-legacy-char",
+      "INV-007",
+      "FIN-003",
+      "SAL-002-003",
+      "CONFLICTS-8",
+      "APPROVAL-0-64",
+      "PIN-plaintext",
+      "K-01",
+      "CUS-004",
+      "PIN-shorthand",
+      "CASH-VARIANCE-NEW",
+      "SJS-AUTH-DESIGN",
+      "AIDIT-MEMORY-IMPL",
+      "META-ORCH-IMPL",
+      "SUGAR-REG",
+      "RP13M-VERIFY",
+      "LOKA-REVIEW"
+    ]
+  },
+  "records": [
+    {
+      "id": "D3",
+      "type": "DECISION",
+      "status": "OWNER_DECISION",
+      "domain": "Finance",
+      "statement": "Ibu's TSS funds are founding capital, not a loan; no repayment schedule. New contributions are also treated as capital, not loans.",
+      "source": "04-decision-ledger.md D3; ADR-0002",
+      "source_kind": "OWNER_STATEMENT",
+      "owner_origin": "Aidit",
+      "created_at": "2026-07-31",
+      "resolved_at": "2026-07-31",
+      "effective_from": "2026-07-31",
+      "effective_to": null,
+      "supersedes": [],
+      "superseded_by": [],
+      "derived_from": null,
+      "confidence": "HIGH",
+      "dependencies": [
+        "D4"
+      ],
+      "canonical": true,
+      "monetary_values": [],
+      "temporal": null,
+      "notes": "Jointly decided with Ibu. The exact percentage capital split between Aditya and Ibu (D4) remains unresolved — see D4's own record.",
+      "provenance": {
+        "imported_from_id": "D3",
+        "imported_from_path": "D:/AI/Agentic/owner/aidit-decision-ledger.json",
+        "imported_at": "2026-08-28"
+      }
+    },
+    {
+      "id": "D10",
+      "type": "DECISION",
+      "status": "OWNER_DECISION",
+      "domain": "Architecture",
+      "statement": "Deployment target: Cloudflare Pages (frontend, final), Supabase (backend). Netlify is frozen, not to be used.",
+      "source": "04-decision-ledger.md D10; control/VISION.md, marked 'Keputusan final'",
+      "source_kind": "OWNER_STATEMENT",
+      "owner_origin": "Aidit",
+      "created_at": null,
+      "resolved_at": null,
+      "effective_from": null,
+      "effective_to": null,
+      "supersedes": [],
+      "superseded_by": [],
+      "derived_from": null,
+      "confidence": "HIGH",
+      "dependencies": [],
+      "canonical": true,
+      "monetary_values": [],
+      "temporal": null,
+      "notes": "Exact decision date not confirmed beyond 'on or before 2026-08-16' (VISION.md's last-touched date).",
+      "provenance": {
+        "imported_from_id": "D10",
+        "imported_from_path": "D:/AI/Agentic/owner/aidit-decision-ledger.json",
+        "imported_at": "2026-08-28"
+      }
+    },
+    {
+      "id": "D11",
+      "type": "DECISION",
+      "status": "OWNER_DECISION",
+      "domain": "Roadmap",
+      "statement": "Roadmap tier execution order is Tier 1 -> Tier 3 (Islamic Identity) -> Tier 2 (Multi-Unit) -> Tier 4 (SaaS); must not be reversed.",
+      "source": "04-decision-ledger.md D11; control/VISION.md",
+      "source_kind": "OWNER_STATEMENT",
+      "owner_origin": "Aidit",
+      "created_at": null,
+      "resolved_at": null,
+      "effective_from": null,
+      "effective_to": null,
+      "supersedes": [],
+      "superseded_by": [],
+      "derived_from": null,
+      "confidence": "HIGH",
+      "dependencies": [],
+      "canonical": true,
+      "monetary_values": [],
+      "temporal": null,
+      "notes": "Explicit owner phrasing: 'jangan balik urutan' (do not reverse the order).",
+      "provenance": {
+        "imported_from_id": "D11",
+        "imported_from_path": "D:/AI/Agentic/owner/aidit-decision-ledger.json",
+        "imported_at": "2026-08-28"
+      }
+    },
+    {
+      "id": "D12",
+      "type": "DECISION",
+      "status": "DIRECT_OWNER_STATEMENT",
+      "domain": "Finance",
+      "statement": "Financial transition: use non-rigid P&L for now; OWNER_WITHDRAWAL is treated as opex-for-now, not a formal draw against equity.",
+      "source": "04-decision-ledger.md D12; control/VISION.md",
+      "source_kind": "OWNER_STATEMENT",
+      "owner_origin": "Aidit",
+      "created_at": null,
+      "resolved_at": null,
+      "effective_from": null,
+      "effective_to": null,
+      "supersedes": [],
+      "superseded_by": [],
+      "derived_from": null,
+      "confidence": "HIGH",
+      "dependencies": [],
+      "canonical": true,
+      "monetary_values": [],
+      "temporal": null,
+      "notes": "Directly connects to D3/D4's unresolved capital-entanglement tension; classified EVOLVED in 03-owner-principles.md.",
+      "provenance": {
+        "imported_from_id": "D12",
+        "imported_from_path": "D:/AI/Agentic/owner/aidit-decision-ledger.json",
+        "imported_at": "2026-08-28"
+      }
+    },
+    {
+      "id": "D13",
+      "type": "DECISION",
+      "status": "OWNER_APPROVED",
+      "domain": "UX",
+      "statement": "8 binding UI decisions from the 2026-08-15 owner Q&A: sidebar regroup, new dashboard, remove Ringkasan tab, focus-mode approval queue, cash confirmation, keep checkout as-is, and opname/stock/admin complaint handling.",
+      "source": "04-decision-ledger.md D13; control/KEPUTUSAN-UI-OWNER-20260815.md",
+      "source_kind": "OWNER_STATEMENT",
+      "owner_origin": "Aidit",
+      "created_at": "2026-08-15",
+      "resolved_at": "2026-08-15",
+      "effective_from": "2026-08-15",
+      "effective_to": null,
+      "supersedes": [],
+      "superseded_by": [],
+      "derived_from": null,
+      "confidence": "HIGH",
+      "dependencies": [
+        "Shipped status of several items (D-01/02/04/06/08) not independently verified against deployed SJS code"
+      ],
+      "canonical": true,
+      "monetary_values": [],
+      "temporal": null,
+      "notes": "The decisions themselves are canonical; their IMPLEMENTATION_REALITY status is a separate, unverified question, not conflated here.",
+      "provenance": {
+        "imported_from_id": "D13",
+        "imported_from_path": "D:/AI/Agentic/owner/aidit-decision-ledger.json",
+        "imported_at": "2026-08-28"
+      }
+    },
+    {
+      "id": "D14",
+      "type": "DECISION",
+      "status": "DIRECT_OWNER_STATEMENT",
+      "domain": "UX",
+      "statement": "Checkout flow (2-click) and cashier-mode header: leave unchanged. \"2 kali tidak masalah\" (two clicks is not a problem).",
+      "source": "04-decision-ledger.md D14",
+      "source_kind": "OWNER_STATEMENT",
+      "owner_origin": "Aidit",
+      "created_at": "2026-08-15",
+      "resolved_at": "2026-08-15",
+      "effective_from": "2026-08-15",
+      "effective_to": null,
+      "supersedes": [],
+      "superseded_by": [],
+      "derived_from": null,
+      "confidence": "HIGH",
+      "dependencies": [],
+      "canonical": true,
+      "monetary_values": [],
+      "temporal": null,
+      "notes": "An explicit anti-change decision — do not 'improve away'.",
+      "provenance": {
+        "imported_from_id": "D14",
+        "imported_from_path": "D:/AI/Agentic/owner/aidit-decision-ledger.json",
+        "imported_at": "2026-08-28"
+      }
+    },
+    {
+      "id": "D16",
+      "type": "DECISION",
+      "status": "DIRECT_OWNER_STATEMENT",
+      "domain": "Identity",
+      "statement": "Aidit and Aditya/CEO are confirmed the same person throughout all SMJ material. Historical statements attributed to Aditya may be associated with Aidit, preserving original source names/provenance.",
+      "source": "04-decision-ledger.md D16",
+      "source_kind": "OWNER_STATEMENT",
+      "owner_origin": "Aidit",
+      "created_at": "2026-08-18",
+      "resolved_at": "2026-08-18",
+      "effective_from": "2026-08-18",
+      "effective_to": null,
+      "supersedes": [],
+      "superseded_by": [],
+      "derived_from": null,
+      "confidence": "HIGHEST",
+      "dependencies": [],
+      "canonical": true,
+      "monetary_values": [],
+      "temporal": null,
+      "notes": "",
+      "provenance": {
+        "imported_from_id": "D16",
+        "imported_from_path": "D:/AI/Agentic/owner/aidit-decision-ledger.json",
+        "imported_at": "2026-08-28"
+      }
+    },
+    {
+      "id": "D17",
+      "type": "PRINCIPLE",
+      "status": "DIRECT_OWNER_STATEMENT",
+      "domain": "Values",
+      "statement": "Islamic identity/values were part of Aidit's intended direction during the SMJ era, not a new SJS-only invention. Historical absence from some SMJ artifacts must not be read as evidence the principle did not exist.",
+      "source": "04-decision-ledger.md D17",
+      "source_kind": "OWNER_STATEMENT",
+      "owner_origin": "Aidit",
+      "created_at": "2026-08-18",
+      "resolved_at": "2026-08-18",
+      "effective_from": null,
+      "effective_to": null,
+      "supersedes": [],
+      "superseded_by": [],
+      "derived_from": null,
+      "confidence": "HIGHEST",
+      "dependencies": [],
+      "canonical": true,
+      "monetary_values": [],
+      "temporal": null,
+      "notes": "effective_from left null: the statement confirms the principle existed during the SMJ era, but no exact start date was given.",
+      "provenance": {
+        "imported_from_id": "D17",
+        "imported_from_path": "D:/AI/Agentic/owner/aidit-decision-ledger.json",
+        "imported_at": "2026-08-28"
+      }
+    },
+    {
+      "id": "D18",
+      "type": "DECISION",
+      "status": "DIRECT_OWNER_STATEMENT",
+      "domain": "Sales",
+      "statement": "Papoy is treated as an ordinary customer; no special margin-floor exception remains active. The historical friction is retained as a lesson, not an active rule.",
+      "source": "04-decision-ledger.md D18",
+      "source_kind": "OWNER_STATEMENT",
+      "owner_origin": "Aidit",
+      "created_at": "2026-08-18",
+      "resolved_at": "2026-08-18",
+      "effective_from": "2026-08-18",
+      "effective_to": null,
+      "supersedes": [
+        "D7"
+      ],
+      "superseded_by": [],
+      "derived_from": null,
+      "confidence": "HIGHEST",
+      "dependencies": [],
+      "canonical": true,
+      "monetary_values": [],
+      "temporal": null,
+      "notes": "Confirmed: no formula in either recovered legacy catalog (40 formulas) ever hardcoded a Papoy-specific exception, so no code-level reconciliation was required.",
+      "provenance": {
+        "imported_from_id": "D18",
+        "imported_from_path": "D:/AI/Agentic/owner/aidit-decision-ledger.json",
+        "imported_at": "2026-08-28"
+      }
+    },
+    {
+      "id": "D20",
+      "type": "PRINCIPLE",
+      "status": "DIRECT_OWNER_STATEMENT",
+      "domain": "Architecture",
+      "statement": "Buku Toko is Aidit's own hand-built ('vibe coded') live operational system. Its current operational behavior is owner-accepted reality; its architecture is NOT automatically the target architecture for SJS SuperApps. Status: LEGACY-BUT-LIVE, not dead legacy.",
+      "source": "04-decision-ledger.md D20",
+      "source_kind": "OWNER_STATEMENT",
+      "owner_origin": "Aidit",
+      "created_at": "2026-08-18",
+      "resolved_at": "2026-08-18",
+      "effective_from": "2026-08-18",
+      "effective_to": null,
+      "supersedes": [],
+      "superseded_by": [],
+      "derived_from": null,
+      "confidence": "HIGHEST",
+      "dependencies": [],
+      "canonical": true,
+      "monetary_values": [],
+      "temporal": null,
+      "notes": "Governs how the Buku Toko -> SJS migration table (06-stranded-value.md) must be read: KEEP/MODIFY/DROP calls must be evidence-based, never 'imperfect therefore obsolete'.",
+      "provenance": {
+        "imported_from_id": "D20",
+        "imported_from_path": "D:/AI/Agentic/owner/aidit-decision-ledger.json",
+        "imported_at": "2026-08-28"
+      }
+    },
+    {
+      "id": "D24",
+      "type": "DECISION",
+      "status": "OWNER_DECISION",
+      "domain": "Governance",
+      "statement": "Central Kitchen approval authority: Ibu and Teh Nurul each hold independent approval authority. Either one alone may approve. This is not a joint/dual-approval requirement.",
+      "source": "04-decision-ledger.md D24",
+      "source_kind": "OWNER_STATEMENT",
+      "owner_origin": "Aidit",
+      "created_at": "2026-08-18",
+      "resolved_at": "2026-08-18",
+      "effective_from": "2026-08-18",
+      "effective_to": null,
+      "supersedes": [
+        "GOV-006-hist"
+      ],
+      "superseded_by": [],
+      "derived_from": null,
+      "confidence": "HIGHEST",
+      "dependencies": [],
+      "canonical": true,
+      "monetary_values": [],
+      "temporal": null,
+      "notes": "",
+      "provenance": {
+        "imported_from_id": "D24",
+        "imported_from_path": "D:/AI/Agentic/owner/aidit-decision-ledger.json",
+        "imported_at": "2026-08-28"
+      }
+    },
+    {
+      "id": "D25",
+      "type": "DECISION",
+      "status": "DIRECT_OWNER_STATEMENT",
+      "domain": "Finance",
+      "statement": "The legacy Rp4,500,000 receivable and Rp8,500,000 payable must NOT be treated as current financial fact. Aidit currently asserts having no debt or receivable. Current AR/AP is tracked operationally in Loka.",
+      "source": "04-decision-ledger.md D25",
+      "source_kind": "OWNER_STATEMENT",
+      "owner_origin": "Aidit",
+      "created_at": "2026-08-18",
+      "resolved_at": "2026-08-18",
+      "effective_from": "2026-08-18",
+      "effective_to": null,
+      "supersedes": [],
+      "superseded_by": [],
+      "derived_from": null,
+      "confidence": "HIGHEST",
+      "dependencies": [
+        "RP13M-VERIFY",
+        "LOKA-REVIEW"
+      ],
+      "canonical": true,
+      "monetary_values": [
+        {
+          "amount": 4500000,
+          "currency": "IDR",
+          "label": "legacy receivable, not current fact (see RP13M-VERIFY)"
+        },
+        {
+          "amount": 8500000,
+          "currency": "IDR",
+          "label": "legacy payable, not current fact (see RP13M-VERIFY)"
+        }
+      ],
+      "temporal": {
+        "file_name_date": null,
+        "content_effective_date": null,
+        "observed_at": "2026-08-18",
+        "source_system_timestamp": null,
+        "owner_asserted_current_state": true
+      },
+      "notes": "The 'currently has no debt or receivable' claim is OWNER_ASSERTED_CURRENT_STATE — it outranks the stale, unverified Rp13M figures if the two are ever compared. Loka itself is out of scope for this and the prior mission.",
+      "provenance": {
+        "imported_from_id": "D25",
+        "imported_from_path": "D:/AI/Agentic/owner/aidit-decision-ledger.json",
+        "imported_at": "2026-08-28"
+      }
+    },
+    {
+      "id": "D26",
+      "type": "DECISION",
+      "status": "OWNER_APPROVED",
+      "domain": "Finance/Ops",
+      "statement": "Cash custody: ideal cashier float Rp300,000; at shift close, cash physically remaining at the cashier may be up to Rp2,000,000 maximum; excess must be deposited to Bank BRI or held by Aidit. The legacy Rp30,000 shift-variance tolerance is explicitly not current.",
+      "source": "04-decision-ledger.md D26",
+      "source_kind": "OWNER_STATEMENT",
+      "owner_origin": "Aidit",
+      "created_at": "2026-08-18",
+      "resolved_at": "2026-08-18",
+      "effective_from": "2026-08-18",
+      "effective_to": null,
+      "supersedes": [
+        "CASH-30k-hist"
+      ],
+      "superseded_by": [],
+      "derived_from": null,
+      "confidence": "HIGH",
+      "dependencies": [
+        "CASH-VARIANCE-NEW"
+      ],
+      "canonical": true,
+      "monetary_values": [
+        {
+          "amount": 300000,
+          "currency": "IDR",
+          "label": "ideal cashier float"
+        },
+        {
+          "amount": 2000000,
+          "currency": "IDR",
+          "label": "shift-close cash-at-cashier maximum"
+        }
+      ],
+      "temporal": null,
+      "notes": "The Rp2,000,000 shift-close maximum is numerically identical to the legacy safe overnight-holding limit (BATAS_BRANKAS_MENGINAP) but is NOT confirmed to be the same rule restated — kept distinct, not assumed identical. Legacy escort threshold (Rp5,000,000) was not addressed by the owner and is neither reaffirmed nor rejected.",
+      "provenance": {
+        "imported_from_id": "D26",
+        "imported_from_path": "D:/AI/Agentic/owner/aidit-decision-ledger.json",
+        "imported_at": "2026-08-28"
+      }
+    },
+    {
+      "id": "D27",
+      "type": "DECISION",
+      "status": "DIRECT_OWNER_STATEMENT",
+      "domain": "Compliance",
+      "statement": "A legacy rule implying sugar retail must be packaged at <=1kg must NOT be ported into SJS as an active business rule. The business sells sugar by weight (kiloan), not necessarily pre-packaged retail sugar; the legacy characterization may not fit the actual business model.",
+      "source": "04-decision-ledger.md D27",
+      "source_kind": "OWNER_STATEMENT",
+      "owner_origin": "Aidit",
+      "created_at": "2026-08-18",
+      "resolved_at": "2026-08-18",
+      "effective_from": "2026-08-18",
+      "effective_to": null,
+      "supersedes": [],
+      "superseded_by": [],
+      "derived_from": null,
+      "confidence": "HIGH",
+      "dependencies": [
+        "SUGAR-REG"
+      ],
+      "canonical": true,
+      "monetary_values": [],
+      "temporal": null,
+      "notes": "Genuine, unresolved evidentiary discrepancy: this reconciliation's own earlier second-hand paraphrase (Permendag 1/2019 jo. 17/2022 blocking retail sale of Gula Kristal Rafinasi) does not exactly match the owner's own framing (a packaging-size rule). Neither forensic pass read the original source document directly. The do-not-port decision holds regardless of which characterization is correct.",
+      "provenance": {
+        "imported_from_id": "D27",
+        "imported_from_path": "D:/AI/Agentic/owner/aidit-decision-ledger.json",
+        "imported_at": "2026-08-28"
+      }
+    },
+    {
+      "id": "D28",
+      "type": "PRINCIPLE",
+      "status": "DIRECT_OWNER_STATEMENT",
+      "domain": "Governance/UX",
+      "statement": "Buku Toko users are internal workers within the Sederhana Jaya family business environment. The application should therefore be simple, easy, low-friction, while the system must still know WHO performed each activity.",
+      "source": "04-decision-ledger.md D28",
+      "source_kind": "OWNER_STATEMENT",
+      "owner_origin": "Aidit",
+      "created_at": "2026-08-18",
+      "resolved_at": "2026-08-18",
+      "effective_from": "2026-08-18",
+      "effective_to": null,
+      "supersedes": [],
+      "superseded_by": [],
+      "derived_from": null,
+      "confidence": "HIGH",
+      "dependencies": [
+        "SJS-AUTH-DESIGN",
+        "PIN-plaintext"
+      ],
+      "canonical": true,
+      "monetary_values": [],
+      "temporal": null,
+      "notes": "This is the OWNER PHILOSOPHY PROVENANCE TEST record. Implies low-friction authentication + strong action attribution for SJS's eventual auth design. Does NOT imply plaintext PIN storage should be preserved. See PIN-shorthand for the agent-generated shorthand label linked to this record — never to be presented as this statement's verbatim text.",
+      "provenance": {
+        "imported_from_id": "D28",
+        "imported_from_path": "D:/AI/Agentic/owner/aidit-decision-ledger.json",
+        "imported_at": "2026-08-28"
+      }
+    }
+  ]
+}

@@ -1,0 +1,495 @@
+// ops-watcher/telegram-listener-daemon.mjs
+// The truly always-on OWNER Telegram control plane.
+//
+// This is a NEW, SEPARATE process from heartbeat.mjs (the periodic work sweep)
+// and from telegram-listener.mjs --once (the single sweep). heartbeat.mjs runs
+// the six-step pipeline periodically; the daemon runs a CONTINUOUS long-poll
+// loop so the OWNER's button taps are handled within seconds, 24/7, with no
+// external scheduler tick required to notice a tap. The two processes are
+// architecturally independent: heartbeat never imports this daemon and this
+// daemon never imports heartbeat. AHMAD will start the real persistent instance
+// via Windows Task Scheduler after verification.
+//
+// DESIGN (maps to the 8 required properties):
+//
+// 1. Continuous long-poll loop. Each iteration calls Telegram getUpdates with a
+//    REAL server-side long-poll timeout (pollTimeoutMs=30000ms -> Telegram
+//    `timeout`=25s, fetch bounded at 38s). When there are no updates, the call
+//    BLOCKS on Telegram's side for ~25s — so the loop sits efficiently idle
+//    between real events, NOT a busy-loop. The daemon does NOT call any LLM /
+//    hermes / kimi / GIBRAN anywhere; its whole job is Telegram <-> Paperclip.
+//    (Under --max-runtime-ms, the long-poll is bounded by the REMAINING time so
+//    the bounded smoke test exits close to the deadline instead of overshooting
+//    by a whole long-poll; production has no deadline so it uses the full 25s.)
+//
+// 2. Immediate callback ACK, decoupled from processing. The moment a
+//    callback_query update is received, answerCallbackQuery("Processing…") is
+//    called BEFORE any Paperclip read/write, so the OWNER's button spinner
+//    clears fast regardless of how long the canonical mutation takes. Then the
+//    real work runs (via the shared processUpdateForCallback/applyAction with
+//    preAcked=true), then editMessageText shows the final outcome. The callback
+//    can only be answered once, so the final outcome is shown via the message
+//    edit, not a second toast.
+//
+// 3. Bounded reconnect/backoff. If getUpdates itself fails (network error,
+//    non-200), the daemon backs off with an exponential schedule
+//        backoffMs(n) = min( BASE * 2^(n-1), CAP )
+//        BASE = 2000ms   CAP = 60000ms
+//    This is an EQUIVALENT LOCAL implementation of the same exponential formula
+//    used by ops-watcher/routing.mjs's cooldownMsFor() / recordFailure() /
+//    isInCooldown() (routing's BASE/CAP are 60s/30min, sized for LLM-lane
+//    cooldown). We use a SHORTER base (2s) and cap (60s) deliberately: the OWNER's
+//    Telegram control plane must feel responsive on a transient blip (a 60s
+//    first-retry wait would make button taps feel dead for a minute), while the
+//    60s cap still bounds repeated hammering and NEVER gives up permanently
+//    (the loop retries forever with a capped sleep, logging each attempt). We
+//    did NOT import routing.mjs's constants because they are wrong for a
+//    long-poll control plane; we mirrored the formula and documented why.
+//
+// 4. Durable update offset. Reuses the EXACT same state file
+//    (ops-watcher/telegram-listener.state.json) and the EXACT same
+//    defaultReadState / defaultWriteState logic from telegram-listener.mjs
+//    (hardened against silent corruption / write-failure). No second offset file.
+//
+// 5. Single-instance lock. On startup the daemon checks
+//    ops-watcher/telegram-listener-daemon.lock. If a lock exists, it uses Node's
+//    own process.kill(pid, 0) (throws ESRCH on any platform, incl. Windows, when
+//    the PID is not running) to decide: if the holder is alive, refuse to start
+//    a second instance and exit with a clear error; if the PID is dead (stale
+//    lock from a crash), remove it and proceed. On clean shutdown (SIGINT/SIGTERM
+//    or the --max-runtime-ms deadline) the lock file is removed.
+//
+// 6. Graceful restart/recovery. Because the offset is durable (property 4) and
+//    the lock's staleness check actually works (property 5), a fresh start after
+//    a clean OR unclean stop picks up at the persisted offset (does not
+//    reprocess old updates) and does not permanently refuse just because a crash
+//    left a stale lock.
+//
+// 7. Comment-dedupe is inherited from the shared applyAction path
+//    (telegram-listener.mjs) — both --once and the daemon get the fix.
+//
+// 8. Idempotent canonical actions preserved. The daemon changes only the
+//    comment-posting layer (via the shared applyAction) and the ACK timing; the
+//    underlying label/status PATCH logic is unchanged and remains idempotent.
+//
+// CLI:
+//   node ops-watcher/telegram-listener-daemon.mjs                 # run forever
+//   node ops-watcher/telegram-listener-daemon.mjs --max-runtime-ms 18000   # test: exit after ~18s
+//
+// INJECTION CONTRACT: runDaemon() destructures the Paperclip/Telegram helpers
+// under their `_`-prefixed names (`_get`, `_ensureLabel`, `_postComment`,
+// `_patchIssue`, `_getUpdates`, `_answerCallbackQuery`, `_editMessageText`,
+// `_sendMessage`, `_spawnHeartbeat`, ...) — the SAME names processUpdateForCallback's
+// ctx uses — so there is one consistent seam. The real CLI (main()) passes nothing
+// for these, so the imported production defaults apply; the regression test injects
+// mocks under these exact keys. _spawnHeartbeat in particular defaults to the real
+// spawnHeartbeatReal exported from telegram-listener.mjs (the event-driven wake
+// spawn); the regression test injects a no-op fake so the suite is fully offline.
+
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  discoverPaperclipPort,
+  httpGet,
+  listLabels,
+  ensureLabel,
+  postComment,
+  patchIssue,
+} from "./paperclip-write-client.mjs";
+import {
+  getUpdates,
+  answerCallbackQuery,
+  editMessageText,
+  sendMessage,
+} from "./telegram-client.mjs";
+import {
+  defaultReadState,
+  defaultWriteState,
+  ensureLabelMap,
+  buildIdentifierMap,
+  processUpdateForCallback,
+  spawnHeartbeatReal,
+} from "./telegram-listener.mjs";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+const STATE_FILE = path.join(__dirname, "telegram-listener.state.json");
+const LOCK_FILE = path.join(__dirname, "telegram-listener-daemon.lock");
+const COMPANY_ID = "a7011f31-8891-4581-b8fb-bbda8ac6a890";
+
+// Long-poll tuning. pollTimeoutMs bounds the whole fetch; telegram-client.mjs
+// derives the server-side `timeout` param as floor((pollTimeoutMs-5000)/1000),
+// so 30000 -> 25s server long-poll (sits idle efficiently, no busy-loop).
+const POLL_TIMEOUT_MS = 30_000;
+// Backoff (property 3). Equivalent local formula to routing.mjs's
+// cooldownMsFor, with control-plane-appropriate constants.
+const BACKOFF_BASE_MS = 2_000;
+const BACKOFF_CAP_MS = 60_000;
+// If Paperclip base can't be resolved, re-probe this often (don't tight-loop).
+const NO_BASE_SLEEP_MS = 5_000;
+
+const iso = () => new Date().toISOString();
+
+export function backoffMs(count) {
+  if (count <= 0) return 0;
+  const raw = BACKOFF_BASE_MS * Math.pow(2, count - 1);
+  return Math.min(raw, BACKOFF_CAP_MS);
+}
+
+// Real pid-aliveness check via Node's own process.kill(pid, 0). Throws ESRCH
+// (caught here) on every platform — including Windows — when the PID is not
+// running. Exported so the regression test can verify the REAL check against a
+// known-dead PID and the current process's own PID, and also inject a fake for
+// deterministic alive/dead scenarios.
+export function isPidAliveReal(pid) {
+  if (!Number.isFinite(pid)) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // ESRCH = no such process (dead). EPERM exists but we are checking our own
+    // machine's PIDs, so treat any throw as "not alive" for lock purposes.
+    return false;
+  }
+}
+
+// ---- Lock acquire / release (injectable for tests) ----
+//
+// ATOMIC ACQUIRE (fixes the read-then-write TOCTOU race): instead of
+// readFile-to-check-then-writeFile-to-take (where two concurrent callers can
+// both readFile "no lock" before either writeFile lands — the exact bug that
+// caused KOL-33's 6 duplicate AHMAD DISPATCH markers), we use fs.writeFile with
+// { flag: "wx" } which is an EXCLUSIVE CREATE at the OS level: it atomically
+// creates the file and fails with EEXIST if it already exists. There is no
+// window between "check" and "take" — the create IS the check+take in one
+// syscall. On EEXIST we read the existing lock to get its pid and check
+// isAlive: if alive, refuse ({ acquired:false, reason:"already-running", pid });
+// if the holder is dead (stale lock from a crash) or the file is corrupt, we
+// unlink the stale file and retry the exclusive-create ONCE (a single retry is
+// enough — do not loop forever). If the retry also hits EEXIST (another process
+// grabbed the lock between our unlink and retry), we read the new holder and
+// refuse.
+//
+// This function is used by BOTH runDaemon (telegram-listener-daemon's own
+// single-instance guard) AND ahmad-dispatch.mjs's runAhmadDispatchOnce (the
+// sweep lock) AND review-runner.mjs's runReviewOnce AND test-runner.mjs's
+// runTestOnce. The signature, return shape, and default-injection style are
+// preserved exactly so neither caller's usage changes.
+export async function acquireLock({
+  lockFile = LOCK_FILE,
+  pid = process.pid,
+  isAlive = isPidAliveReal,
+  now = Date.now,
+  _fs = fs,
+} = {}) {
+  const payload = JSON.stringify({ pid, startedAt: new Date(now()).toISOString() });
+
+  // Atomic exclusive create: { flag: "wx" } fails with EEXIST if the file
+  // already exists — no separate read-then-write window. Returns the
+  // { acquired:true, pid } result on success, or null on EEXIST (caller
+  // inspects the existing lock). A genuine I/O error (not EEXIST) propagates.
+  async function exclusiveCreate() {
+    try {
+      await _fs.writeFile(lockFile, payload, { flag: "wx" });
+      return { acquired: true, pid };
+    } catch (err) {
+      if (err && err.code === "EEXIST") return null;
+      throw err;
+    }
+  }
+
+  // Read and parse the existing lock file. Returns null on ENOENT, parse
+  // error, or any read failure (treated as "no usable lock holder info").
+  async function readHolder() {
+    try {
+      return JSON.parse(await _fs.readFile(lockFile, "utf8"));
+    } catch {
+      return null;
+    }
+  }
+
+  // First attempt: atomic exclusive create.
+  const first = await exclusiveCreate();
+  if (first) return first;
+
+  // EEXIST: the lock file already exists. Read it to check if the holder
+  // is alive (vs. a stale lock from a crashed previous holder).
+  const existing = await readHolder();
+  if (existing && Number.isFinite(existing.pid) && isAlive(existing.pid)) {
+    return { acquired: false, reason: "already-running", pid: existing.pid };
+  }
+
+  // Stale (dead holder) or corrupt/unreadable lock — remove it and retry the
+  // exclusive create once. A single retry is enough: if another process grabs
+  // the lock between our unlink and our retry, we read the new holder below
+  // and refuse. We do NOT loop forever.
+  await _fs.unlink(lockFile).catch(() => {});
+  const retry = await exclusiveCreate();
+  if (retry) return retry;
+
+  // Retry also hit EEXIST: another process acquired the lock between our
+  // unlink and retry. Read the new holder; if alive, refuse with its pid.
+  // Do not loop further.
+  const holder = await readHolder();
+  return { acquired: false, reason: "already-running", pid: holder && holder.pid };
+}
+
+export async function releaseLock({ lockFile = LOCK_FILE, _fs = fs } = {}) {
+  await _fs.unlink(lockFile).catch(() => {});
+}
+
+// ---- Core daemon loop (dependency-injected; never throws) ----
+// deps (all optional; `_`-prefixed names are the injection seam):
+//   base, companyId, telegramBase, stateFile, lockFile, pollTimeoutMs,
+//   discoverPort,
+//   _get, _listLabels, _ensureLabel, _postComment, _patchIssue,   // Paperclip
+//   _getUpdates, _answerCallbackQuery, _editMessageText, _sendMessage,        // Telegram
+//   _spawnHeartbeat,                                                             // event-driven wake
+//   readState, writeState,
+//   acquireLock, releaseLock, isAlive, lockPid,
+//   sleep, now, log, maxRuntimeMs, shouldStop,
+export async function runDaemon(deps = {}) {
+  const {
+    companyId = COMPANY_ID,
+    telegramBase,
+    stateFile = STATE_FILE,
+    lockFile = LOCK_FILE,
+    pollTimeoutMs = POLL_TIMEOUT_MS,
+    base: baseIn = null,
+    discoverPort = discoverPaperclipPort,
+    _get = httpGet,
+    _listLabels = listLabels,
+    _ensureLabel = ensureLabel,
+    _postComment = postComment,
+    _patchIssue = patchIssue,
+    _getUpdates = getUpdates,
+    _answerCallbackQuery = answerCallbackQuery,
+    _editMessageText = editMessageText,
+    _sendMessage = sendMessage,
+    _spawnHeartbeat = spawnHeartbeatReal,
+    readState: _readState = defaultReadState,
+    writeState: _writeState = defaultWriteState,
+    acquireLock: _acquireLock = acquireLock,
+    releaseLock: _releaseLock = releaseLock,
+    isAlive = isPidAliveReal,
+    lockPid = process.pid,
+    sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+    now = Date.now,
+    log = (m) => console.log(m),
+    maxRuntimeMs = null,
+    shouldStop = () => false,
+  } = deps;
+
+  // ---- Property 5: single-instance lock ----
+  const lock = await _acquireLock({ lockFile, pid: lockPid, isAlive, now, _fs: fs });
+  if (!lock.acquired) {
+    log(`telegram-listener-daemon: REFUSING to start — another instance is already running (pid=${lock.pid}). Remove ${path.basename(lockFile)} only if you are sure it is stale.`);
+    return { refused: true, pid: lock.pid };
+  }
+  log(`telegram-listener-daemon: acquired lock (pid=${lock.pid}) at ${iso()}`);
+
+  const upOpts = {};
+  if (telegramBase) upOpts.baseUrl = telegramBase;
+
+  const deadline = maxRuntimeMs ? now() + maxRuntimeMs : Infinity;
+  const bounded = Number.isFinite(deadline);
+  let base = baseIn;
+  let failCount = 0;
+  let labelMap = null;
+  const decisionDedupe = new Map();
+  const startedAt = now();
+
+  log(`telegram-listener-daemon: long-poll loop start (pollTimeoutMs=${pollTimeoutMs}, maxRuntimeMs=${maxRuntimeMs || "none"})`);
+
+  // Loop guard: stop on shouldStop() (SIGINT/SIGTERM), the runtime deadline, or
+  // an unrecoverable lock refusal (already handled above). getUpdates failures
+  // do NOT break the loop — they back off and retry (property 3).
+  while (!shouldStop() && now() < deadline) {
+    // Resolve / re-resolve Paperclip base (always-on: keep working even if
+    // Paperclip was down at startup and comes up later).
+    if (!base) {
+      try {
+        const port = await discoverPort();
+        if (port) { base = `http://127.0.0.1:${port}`; log(`telegram-listener-daemon: Paperclip base resolved -> ${base}`); }
+      } catch { /* ignore; retry next iteration */ }
+    }
+
+    // ---- Property 4: durable offset ----
+    const sr = await _readState(stateFile);
+    let offset = 0;
+    if (sr.ok && sr.value && Number.isFinite(sr.value.offset)) {
+      offset = sr.value.offset;
+    } else if (!sr.ok && sr.code !== "ENOENT") {
+      log(`telegram-listener-daemon: WARN state read failed (code=${sr.code || "?"}, msg=${String(sr.message || "").slice(0, 120)}) — resetting offset to 0 (recent updates may reprocess)`);
+    }
+
+    // ---- Property 1: real long-poll ----
+    // Under a runtime deadline (smoke test only), bound the long-poll by the
+    // remaining time so the process exits close to the deadline instead of
+    // overshooting by up to one full 25s long-poll. Production has no deadline
+    // and always uses the full pollTimeoutMs (25s server long-poll).
+    let effectivePollMs = pollTimeoutMs;
+    if (bounded) {
+      const remaining = deadline - now();
+      if (remaining <= 0) break;
+      effectivePollMs = Math.min(pollTimeoutMs, Math.max(remaining + 200, 1000));
+    }
+    const up = await _getUpdates(offset, { timeoutMs: effectivePollMs, baseUrl: telegramBase });
+
+    if (!up.ok) {
+      // ---- Property 3: bounded reconnect/backoff ----
+      failCount += 1;
+      const ms = backoffMs(failCount);
+      const why = up.networkError
+        ? `network error: ${up.networkErrorMessage}`
+        : up.reason || `Telegram API status ${up.status}`;
+      log(`telegram-listener-daemon: getUpdates FAILED (attempt #${failCount}) — ${why} — backing off ${ms}ms (capped at ${BACKOFF_CAP_MS}ms, will retry forever)`);
+      await sleep(ms);
+      continue;
+    }
+    if (failCount > 0) {
+      log(`telegram-listener-daemon: getUpdates recovered after ${failCount} failure(s)`);
+      failCount = 0;
+    }
+
+    const updates = up.updates || [];
+    if (updates.length === 0) {
+      // Long-poll returned empty (idle). The call BLOCKED on Telegram's side for
+      // up to (effectivePollMs-5000)/1000 seconds — i.e. this is a genuine
+      // server-side long-poll, not a busy-loop. Under the bounded smoke test we
+      // log the idle return as real evidence of the long-poll; production stays
+      // quiet (one sweep every ~25s would just be log noise).
+      if (bounded) log(`telegram-listener-daemon: long-poll idle return (0 updates) after ~${Math.max(0, Math.floor((effectivePollMs - 5000) / 1000))}s server long-poll`);
+      continue;
+    }
+
+    log(`telegram-listener-daemon: ${updates.length} update(s) received (offset=${offset})`);
+
+    // If Paperclip is still down, do NOT advance the offset — hold the updates
+    // so the OWNER's decisions are not lost; they will be re-delivered and
+    // processed once Paperclip is back. (always-on + never-lose-a-decision.)
+    if (!base) {
+      log(`telegram-listener-daemon: Paperclip base not resolved — HOLDING ${updates.length} update(s) (offset not advanced) and sleeping ${NO_BASE_SLEEP_MS}ms`);
+      await sleep(NO_BASE_SLEEP_MS);
+      continue;
+    }
+
+    // Ensure labels (cache; rebuild only if not yet built).
+    if (!labelMap) {
+      try {
+        labelMap = await ensureLabelMap(base, companyId, _ensureLabel);
+      } catch (err) {
+        log(`telegram-listener-daemon: ensureLabelMap threw: ${err && err.message} — holding updates`);
+        await sleep(NO_BASE_SLEEP_MS);
+        continue;
+      }
+    }
+
+    // Build identifier -> issue map for this batch (cheap relative to the
+    // infrequency of OWNER taps; keeps the map fresh against new issues).
+    let mapResult;
+    try {
+      mapResult = await buildIdentifierMap(base, companyId, _get);
+    } catch (err) {
+      log(`telegram-listener-daemon: buildIdentifierMap threw: ${err && err.message} — holding updates`);
+      await sleep(NO_BASE_SLEEP_MS);
+      continue;
+    }
+    if (mapResult.networkError) {
+      log(`telegram-listener-daemon: identifier map network error: ${mapResult.networkErrorMessage} — holding updates (offset not advanced)`);
+      await sleep(NO_BASE_SLEEP_MS);
+      continue;
+    }
+    const idMap = mapResult.map;
+
+    let maxUpdateId = offset;
+    for (const upd of updates) {
+      const uid = upd.update_id;
+      if (Number.isFinite(uid) && uid > maxUpdateId) maxUpdateId = uid;
+      // Property 2: processUpdateForCallback (immediateAck=true) answers the
+      // callback with "Processing…" FIRST, then does the Paperclip work, then
+      // edits the message with the final outcome.
+      try {
+        await processUpdateForCallback(upd, {
+          base, companyId, labelMap, idMap, upOpts, immediateAck: true,
+          _get, _listLabels, _ensureLabel, _postComment, _patchIssue,
+          _answerCallbackQuery, _editMessageText, _sendMessage, _spawnHeartbeat,
+          log, now, decisionDedupe,
+        });
+      } catch (err) {
+        // processUpdateForCallback already catches internally; this is a belt-
+        // and-braces guard so one update can never crash the daemon.
+        log(`telegram-listener-daemon: update ${uid} processing threw (suppressed): ${err && err.message}`);
+      }
+    }
+
+    // ---- Property 4: persist advanced offset ----
+    const nextOffset = maxUpdateId + 1;
+    const wr = await _writeState(stateFile, { offset: nextOffset, updatedAt: new Date(now()).toISOString() });
+    if (wr.ok) {
+      log(`telegram-listener-daemon: persisted offset=${nextOffset}`);
+    } else {
+      log(`telegram-listener-daemon: ERROR persisting offset=${nextOffset} FAILED (code=${wr.code || "?"}, msg=${String(wr.message || "").slice(0, 120)}) — next run may REPROCESS these updates`);
+    }
+  }
+
+  // ---- Clean shutdown: remove the lock ----
+  await _releaseLock({ lockFile, _fs: fs });
+  const reason = shouldStop() ? "signal" : (now() >= deadline ? "deadline" : "unknown");
+  log(`telegram-listener-daemon: loop exit (reason=${reason}, ran ${Math.round((now() - startedAt) / 1000)}s) — lock released`);
+  return { refused: false, deadlineHit: now() >= deadline, signal: shouldStop(), ranMs: now() - startedAt };
+}
+
+// ---- CLI ----
+function parseArgs(argv) {
+  const out = { maxRuntimeMs: null };
+  for (let i = 2; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--max-runtime-ms") {
+      const n = Number(argv[++i]);
+      if (Number.isFinite(n) && n > 0) out.maxRuntimeMs = n;
+    }
+  }
+  return out;
+}
+
+async function main() {
+  const args = parseArgs(process.argv);
+
+  // Signal handlers: flip a flag the loop checks. On the NEXT iteration the
+  // loop exits, the lock is released, and the process exits 0. (For an UNCLEAN
+  // kill — SIGKILL or a hard crash — the handler never runs; the stale lock is
+  // recovered by the next start's process.kill(pid,0) staleness check.)
+  let stopping = false;
+  const handle = (sig) => {
+    console.log(`telegram-listener-daemon: received ${sig}, stopping after current iteration…`);
+    stopping = true;
+  };
+  process.on("SIGINT", () => handle("SIGINT"));
+  process.on("SIGTERM", () => handle("SIGTERM"));
+
+  const r = await runDaemon({
+    maxRuntimeMs: args.maxRuntimeMs,
+    shouldStop: () => stopping,
+    log: (m) => console.log(m),
+  });
+  if (r.refused) process.exit(3);
+}
+
+const isEntry = (() => {
+  try {
+    return path.resolve(process.argv[1] || "") === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+})();
+if (isEntry) {
+  main().catch((err) => {
+    console.error("telegram-listener-daemon fatal:", err && err.stack ? err.stack : err);
+    // Best-effort lock cleanup on fatal crash (the staleness check would also
+    // handle this, but cleaning up is polite).
+    fs.unlink(LOCK_FILE).catch(() => {});
+    process.exit(1);
+  });
+}

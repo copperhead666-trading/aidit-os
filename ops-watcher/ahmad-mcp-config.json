@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "ahmad-tools": {
+      "command": "node",
+      "args": ["ops-watcher/ahmad-mcp-server.mjs"]
+    }
+  }
+}

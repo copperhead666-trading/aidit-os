@@ -1,0 +1,718 @@
+{
+  "schema_version": "1.0.0",
+  "reconciled_at": "2026-08-30",
+  "reconciled_by": "SJAHRIR (K2.7 Code)",
+  "source": "handoffs/historical/FOUNDEROS-HISTORICAL-BACKLOG-HANDOFF.md",
+  "rule": "Current verified FounderOS state overrides historical/stale reports.",
+  "counts": {
+    "DONE": 6,
+    "ACTIVE": 9,
+    "KEEP_BACKLOG": 24,
+    "SUPERSEDED": 2,
+    "NEEDS_RECOVERY": 0,
+    "OWNER_DECISION": 5,
+    "DROP_RECOMMENDED": 0,
+    "total": 46
+  },
+  "macro_sequence_after_reconciliation": [
+    "A. current stability/soak",
+    "B. Cognitive Core",
+    "C. Owner UX / cockpit",
+    "D. personal/professional modules",
+    "E. ventures/domain activation",
+    "F. cloud/zero-laptop later",
+    "G. post-stability cleanup last"
+  ],
+  "items": [
+    {
+      "id": "FOS-01",
+      "name": "FounderOS as the single canonical operating system",
+      "category": "FounderOS Core",
+      "classification": "ACTIVE",
+      "evidence": "Consolidation target is D:\\AI\\Active FounderOS-Aidit; Ahmad handoff 2026-08-28 confirms canonicalization closed; agent-registry.json schema_version 1.0.0 points to this workspace.",
+      "stale_claim": "Historical active root D:\\FounderOS-Aidit De Maestros\\app has been superseded by the new consolidation target.",
+      "remaining_work": "Continue root-sensitive tooling/path updates as new canonical root becomes operational truth.",
+      "dependencies": [
+        "FOS-18",
+        "AGENT-02"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-02",
+      "name": "Ahmad as single logical orchestrator",
+      "category": "FounderOS Core",
+      "classification": "ACTIVE",
+      "evidence": "agent-registry.json defines AHMAD as primary owner-facing orchestrator; OWNER-ROSTER-DECISIONS D-1.1 admits SJAHRIR as implementation lane but AHMAD remains orchestrator.",
+      "stale_claim": "Older multi-agent roster (Soeharto lead, etc.) retired; HERMES demoted to lane name.",
+      "remaining_work": "Capability-aware routing compliance, delegation audit, escalation UX.",
+      "dependencies": [
+        "FOS-19",
+        "FOS-22",
+        "FOS-12"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-03",
+      "name": "FounderOS cloud-first / zero-laptop control plane",
+      "category": "FounderOS Cloud",
+      "classification": "KEEP_BACKLOG",
+      "evidence": "Owner decision #3: cloud/zero-laptop work DEFERRED until Ahmad-FounderOS proven stable. Current control plane runs on ASUS via ops-watcher daemons.",
+      "stale_claim": "Historical status ACTIVE; owner has now explicitly deferred.",
+      "remaining_work": "Preserve backlog; do not activate until stability proven and owner approves.",
+      "dependencies": [
+        "FOS-04",
+        "FOS-05",
+        "FOS-06",
+        "FOS-07",
+        "FOS-08",
+        "FOS-09",
+        "FOS-10"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-04",
+      "name": "Supabase as canonical Ahmad operational state",
+      "category": "FounderOS Cloud",
+      "classification": "KEEP_BACKLOG",
+      "evidence": "Owner decision #3 defers cloud. Current operational state is Paperclip (local Postgres :3110) plus SQLite legacy where still bound.",
+      "stale_claim": "Historical ACTIVE status and Alpha shadow Supabase tables are not current production truth.",
+      "remaining_work": "Keep Supabase migration pattern as backlog; re-evaluate after stability.",
+      "dependencies": [
+        "FOS-03",
+        "FOS-09"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-05",
+      "name": "Cloud Telegram owner ingress",
+      "category": "FounderOS Cloud",
+      "classification": "KEEP_BACKLOG",
+      "evidence": "Owner decision #3 defers cloud. Current Telegram path uses local long-poll daemon (ops-watcher/telegram-listener-daemon.mjs) via Windows Scheduled Task.",
+      "stale_claim": "Historical ACTIVE status assumed imminent webhook switch; now deferred.",
+      "remaining_work": "Cloud webhook design preserved; no live setWebhook without owner approval.",
+      "dependencies": [
+        "FOS-03",
+        "FOS-04",
+        "FOS-06"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-06",
+      "name": "Cloud scheduler and reconciliation",
+      "category": "FounderOS Cloud",
+      "classification": "KEEP_BACKLOG",
+      "evidence": "Owner decision #3 defers cloud. Local scheduling uses heartbeat-daemon.mjs + Windows Task Scheduler, proven live.",
+      "stale_claim": "Historical ACTIVE status pointed to cloud cron/reconciliation; not activated.",
+      "remaining_work": "Keep cloud scheduler design; activate only after cutover gate.",
+      "dependencies": [
+        "FOS-03",
+        "FOS-04",
+        "FOS-07"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-07",
+      "name": "Dedicated cloud Ahmad execution runtime",
+      "category": "FounderOS Cloud",
+      "classification": "KEEP_BACKLOG",
+      "evidence": "Owner decision #3 defers cloud. No paid runtime provisioned; Hatta runs locally via Ollama Cloud.",
+      "stale_claim": "Historical BACKLOG assumed agreed direction; now explicitly gated by stability.",
+      "remaining_work": "Provider selection, cost approval, secret install remain owner-gated future work.",
+      "dependencies": [
+        "FOS-03",
+        "FOS-04",
+        "FOS-06"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-08",
+      "name": "Optional edge workers + WAITING_FOR_EDGE semantics",
+      "category": "FounderOS Cloud",
+      "classification": "KEEP_BACKLOG",
+      "evidence": "Owner decision #3 defers cloud. Edge semantics not yet implemented; current runtime assumes ASUS is online.",
+      "stale_claim": "Historical BACKLOG status; no progress due to cloud deferral.",
+      "remaining_work": "Capability declarations, heartbeat, waiting/retry semantics after cloud core.",
+      "dependencies": [
+        "FOS-03",
+        "FOS-07",
+        "FOS-19",
+        "FOS-22"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-09",
+      "name": "Shadow/parallel validation + Owner Action Pack",
+      "category": "FounderOS Cloud",
+      "classification": "KEEP_BACKLOG",
+      "evidence": "Owner decision #3 defers cloud. Local validation suites pass (88+ tests). Real-model cloud E2E not performed.",
+      "stale_claim": "Historical ACTIVE status included shadow pipe; cloud shadow not current truth.",
+      "remaining_work": "Consolidate Owner Action Pack when cloud work resumes.",
+      "dependencies": [
+        "FOS-03",
+        "FOS-04",
+        "FOS-07",
+        "FOS-08"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-10",
+      "name": "Live production cutover + zero-laptop acceptance",
+      "category": "FounderOS Cloud",
+      "classification": "KEEP_BACKLOG",
+      "evidence": "Owner decision #3 defers cloud/zero-laptop. Cutover/rollback plan exists but not executed.",
+      "stale_claim": "Historical FUTURE status assumed eventual cutover; now gated by stability and owner approval.",
+      "remaining_work": "Reach readiness, owner go/no-go, live switch, laptops-off acceptance.",
+      "dependencies": [
+        "FOS-03",
+        "FOS-09"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-11",
+      "name": "Telegram no-response / owner-path reliability",
+      "category": "Owner UX",
+      "classification": "ACTIVE",
+      "evidence": "AHMAD handoff 2026-08-28: always-on daemon live, real owner tap -> Paperclip state change ~10s. Closeout: 52/0 harness security, telegram regression 17/0, watchdog/daemon running. Conflict: handoff also notes rapid-repeat dedupe still produced 3 duplicate comments in 12s and Task Scheduler restart-on-force-kill unreliable.",
+      "stale_claim": "Historical note that bridge disabled by design is stale; daemon is now always-on and live-verified.",
+      "remaining_work": "Resolve conflict via real soak: confirm rapid-repeat dedupe holds in production; add watchdog or document manual recovery for Task Scheduler gap.",
+      "dependencies": [
+        "FOS-16",
+        "FOS-17",
+        "ops-watcher daemons"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-12",
+      "name": "Telegram Decision Card / escalation UX",
+      "category": "Owner UX",
+      "classification": "ACTIVE",
+      "evidence": "VERIFIED IMPLEMENTED in current codebase — the backlog claim 'not implemented / no decision-card module found' is STALE. ops-watcher/telegram-notify.mjs sends a real decision card with 4 inline buttons (APPROVE/REJECT/DETAILS/DEFER) using the documented callback_data scheme '<actionLetter>:<shortId>' (a/r/d/z; k=ASK AHMAD is supported by the listener and tested but not yet rendered as a card button). ops-watcher/telegram-listener.mjs applyAction wires each tap to real Paperclip state transitions: APPROVE removes OWNER_REQUIRED; REJECT adds OWNER_REJECTED + status=cancelled; DETAILS sends a follow-up message (no state change); DEFER posts a comment and is non-terminal. Message-update behavior real and tested: APPROVE/REJECT remove the keyboard via editMessageText; DEFER keeps APPROVE/REJECT/DETAILS (T7/T8/T9). Comment-dedupe (production-incident fix), fail-safe PATCH-not-falsified-as-success, and non-silent state-file persistence are all implemented. NOTE CAPTURE: newly CLOSED this session — an OWNER reply to a decision card is now captured as a free-text NOTE comment on the matched issue via the new findIssueByTelegramMessageId helper scanning the [TELEGRAM SENT] marker comment (no local lookup file; canonical state stays in Paperclip); falls through to directive creation if the reply target is not a known card. Tests: telegram.regression.test.mjs 17/0 (all 5 actions + offset dedupe + patch-failure-not-falsified + state persistence) and telegram-listener-daemon.regression.test.mjs 21/0 (incl. new T10/T10b/T10c/T10d reply-note capture). Full ops-watcher regression battery 18/18 files green after the change. Live behavior also corroborated by FOS-11 handoff (owner tap -> Paperclip state change ~10s).",
+      "stale_claim": "Historical BACKLOG claim 'not implemented / no decision-card module found' is stale; the module exists, is unit/regression tested offline, and is exercised live.",
+      "remaining_work": "AUDIT LEDGER: currently the Paperclip comment trail (decision comments + [TELEGRAM SENT] markers + OWNER NOTE comments, each timestamped + attributed) — a deliberate design choice (Paperclip is canonical; a second copy would duplicate state and risk drift). OPEN DESIGN QUESTION for OWNER/AHMAD: whether a separate queryable/retention-controlled structured audit ledger is wanted (schema/storage/retention) — NOT implemented; this is a larger owner-gated design decision, not a small bounded add. MINOR: the ASK AHMAD (k) action handler exists in the listener and is tested but is not surfaced as a 5th card button — a small future add if the OWNER wants it. Live-soak confirmation of the decision-card path is tracked under FOS-11.",
+      "dependencies": [
+        "FOS-02",
+        "FOS-13",
+        "Paperclip canonical state"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-13",
+      "name": "Omnichannel Ahmad",
+      "category": "Owner UX",
+      "classification": "KEEP_BACKLOG",
+      "evidence": "Principle agreed; only Telegram path exists. No web/voice/mobile surfaces.",
+      "stale_claim": "Historical FUTURE status; still future.",
+      "remaining_work": "Channel abstraction, identity/session mapping, shared context, surface-specific UI.",
+      "dependencies": [
+        "FOS-03",
+        "FOS-14",
+        "FOS-12"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-14",
+      "name": "Cognitive Core / Context Graph / relevant context retrieval",
+      "category": "Cognitive & Memory",
+      "classification": "KEEP_BACKLOG",
+      "evidence": "Owner strategic sequence #2: Cognitive Core next after stability. Local gbrain installed and working (Ollama nomic-embed-text, PGLite), but only smoke-test notes exist. No Context Graph or retrieval integration in dispatch yet.",
+      "stale_claim": "Historical BACKLOG status; no implementation yet.",
+      "remaining_work": "Graph semantics, retrieval/ranking, provenance, context selection evaluation, integration across agents.",
+      "dependencies": [
+        "FOS-01",
+        "FOS-23",
+        "GBRAIN"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-15",
+      "name": "Memory provenance, contradiction, drift and causal learning",
+      "category": "Cognitive & Memory",
+      "classification": "KEEP_BACKLOG",
+      "evidence": "Principles agreed; some contradiction/check modules referenced historically but not found in current canonical code.",
+      "stale_claim": "Historical BACKLOG status.",
+      "remaining_work": "Encode update policies, confidence gating, causal learning loops into Cognitive Core.",
+      "dependencies": [
+        "FOS-14"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-16",
+      "name": "Hatta governed tool access",
+      "category": "Agent Workforce",
+      "classification": "DONE",
+      "evidence": "hatta/harness.mjs hardened; harness.security.test.mjs 52/0; SJAHRIR independent adversarial probe 23/0; security-audit.regression 14/0; secrets clean.",
+      "stale_claim": "Earlier Phase-7 claim of 9/9 blocked was found incomplete by independent audit; now fully remediated.",
+      "remaining_work": "Maintenance only; re-audit if new tools or roots added.",
+      "dependencies": [],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-17",
+      "name": "Hatta interactive CLI + multiline UX",
+      "category": "Agent Workforce",
+      "classification": "KEEP_BACKLOG",
+      "evidence": "AHMAD verified 2026-08-29: `scripts/_hatta-cli.ts` (the artifact this item's original evidence cites) does NOT exist anywhere in the canonical D:\\AI\\Active FounderOS-Aidit repo (find turned up nothing). The current, real HATTA dispatch mechanism is hatta/harness.mjs, invoked non-interactively as `node hatta/harness.mjs \"<task>\"` -- a single-string task argument, not an interactive multiline-paste CLI session. This item's whole premise (interactive CLI + multiline paste UX) describes a dispatch pattern that does not exist in the current architecture.",
+      "stale_claim": "The prior ACTIVE classification and remaining_work (verify multiline paste, adapt paths to canonical root) both assumed an interactive `_hatta-cli.ts` artifact that never made it into (or was superseded before) the canonical D:\\AI\\Active FounderOS-Aidit repo. Demoted to KEEP_BACKLOG pending a real decision on whether an interactive HATTA CLI is still wanted at all, now that hatta/harness.mjs's non-interactive one-shot pattern is the proven, working dispatch mechanism used successfully throughout this session.",
+      "remaining_work": "OPEN DESIGN QUESTION for OWNER/AHMAD: is an interactive, multiline-paste HATTA CLI still desired as a separate surface, given hatta/harness.mjs's one-shot non-interactive pattern already works reliably? If yes, this needs to be scoped and built fresh (no salvageable artifact exists); if no, this item should be marked SUPERSEDED by the harness.mjs pattern. Not decided by AHMAD unilaterally.",
+      "dependencies": [
+        "FOS-16",
+        "FOS-18"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-18",
+      "name": "Hatta canonical root and context precedence",
+      "category": "Agent Workforce",
+      "classification": "DONE",
+      "evidence": "Canonical root is D:\\AI\\Active FounderOS-Aidit; Hatta workspace scoped under it; agent-registry.json and handoffs confirm no drift to D:\\Agentic.",
+      "stale_claim": "Historical drift into D:\\Agentic fixed and verified.",
+      "remaining_work": "Maintain root policy; historical roots remain read-only.",
+      "dependencies": [
+        "FOS-01"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-19",
+      "name": "Multi-agent delegation / workforce orchestration",
+      "category": "Agent Workforce",
+      "classification": "ACTIVE",
+      "evidence": "agent-registry.json canonicalizes AHMAD/HATTA/GIBRAN/SJAHRIR/HERMES; CANONICAL-ROLE-MAP.json exists; ops-watcher/review-runner.mjs dispatches GIBRAN; routing.mjs resolves lanes.",
+      "stale_claim": "Older roster (Soeharto, Soekarno, Corleone) retired/resting per owner decisions.",
+      "remaining_work": "Formal capability-aware routing compliance, dynamic availability, delegation audit, Qwen role if useful.",
+      "dependencies": [
+        "FOS-22",
+        "AGENT-01"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-20",
+      "name": "Delta-only Prompting Style Contract",
+      "category": "Agent Workforce",
+      "classification": "DONE",
+      "evidence": "Skills system built (skills/resolve-skills.mjs, 24 skill files); delta-only contract encoded in skills; preview-skills.mjs verifies targeted injection.",
+      "stale_claim": "Historical ACTIVE status; now encoded.",
+      "remaining_work": "Ongoing compliance evaluation; update skills as patterns evolve.",
+      "dependencies": [
+        "AGENT-02"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-21",
+      "name": "False-DONE integrity / quality-gate closure semantics",
+      "category": "Orchestration Reliability",
+      "classification": "ACTIVE",
+      "evidence": "Quality-gate patches landed; regression tests pass; agent-registry closeout shows owner_required_blockers=[], needsRework=0, reviewRequired=0. Conflict: historical ledger listed 3 stale false-DONE rows needing owner-approved correction; no evidence found whether corrected or cancelled.",
+      "stale_claim": "Historical 'Explicit fix; live acceptance pending' status may overstate remaining work, but stale-row disposition is unverified.",
+      "remaining_work": "Verify disposition of 3 historical stale false-DONE rows; if still present, request owner GO for correction; run fresh evidence-backed DONE proving cycle.",
+      "dependencies": [
+        "FOS-22",
+        "Paperclip state"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-22",
+      "name": "Capability-aware dispatch routing (remove staff[0] hardcoding)",
+      "category": "Orchestration Reliability",
+      "classification": "ACTIVE",
+      "evidence": "ops-watcher/routing.mjs resolves lanes from CANONICAL-ROLE-MAP.json and was real-exercised on provider failures. Need to confirm the specific staff[0] hardcoding in legacy dispatch paths is gone from canonical code.",
+      "stale_claim": "Historical BACKLOG bug identified; current routing layer likely addresses it but legacy path not fully verified.",
+      "remaining_work": "Audit canonical dispatch paths for staff[0] or equivalent hardcoding; add regression test; close.",
+      "dependencies": [
+        "FOS-19",
+        "CANONICAL-ROLE-MAP.json"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-23",
+      "name": "Historical backlog recovery / master ledger",
+      "category": "Historical Recovery",
+      "classification": "ACTIVE",
+      "evidence": "This reconciliation produces MASTER-CANONICAL-BACKLOG.md/json; FOS-23 is the current mission.",
+      "stale_claim": "Historical Pass 1 ~50 candidates from D:\\Agentic now superseded by targeted reconciliation against current truth.",
+      "remaining_work": "Finish artifact set; owner review; integrate with Cognitive Core.",
+      "dependencies": [
+        "FOS-01",
+        "FOS-18"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-24",
+      "name": "Legacy D:\\Agentic decommission",
+      "category": "Historical Recovery",
+      "classification": "KEEP_BACKLOG",
+      "evidence": "Owner decision #4: post-stability ASUS+Lenovo cleanup APPROVED IN PRINCIPLE, but deletion remains OWNER-gated and only after stability/dependency proof.",
+      "stale_claim": "Historical FUTURE status assumed eventual decommission; now explicitly owner-gated.",
+      "remaining_work": "Complete recovery, dependency checks, archive, explicit owner approval, staged decommission.",
+      "dependencies": [
+        "FOS-10",
+        "FOS-23",
+        "FOS-25"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-25",
+      "name": "Post-stability AI/FounderOS filesystem cleanup",
+      "category": "Historical Recovery",
+      "classification": "KEEP_BACKLOG",
+      "evidence": "Owner decision #4: cleanup approved in principle, owner-gated deletion after stability.",
+      "stale_claim": "Historical FUTURE status.",
+      "remaining_work": "Inventory, dependency map, archive plan, owner review, staged deletion.",
+      "dependencies": [
+        "FOS-10",
+        "FOS-23",
+        "FOS-24"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "FOS-26",
+      "name": "FounderOS product/capability roadmap FINAL",
+      "category": "FounderOS Core",
+      "classification": "ACTIVE",
+      "evidence": "This mission derives non-activating macro roadmap A-G per owner strategic sequence. Roadmap not yet FINAL/approved.",
+      "stale_claim": "Historical FUTURE status; roadmap now being reconciled.",
+      "remaining_work": "Owner review of reconciled roadmap; dependency clustering; final approval.",
+      "dependencies": [
+        "FOS-10",
+        "FOS-14",
+        "FOS-23"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "PROD-01",
+      "name": "AI Employees / Agentic Foundry / AI Solution Factory",
+      "category": "Products & Ventures",
+      "classification": "KEEP_BACKLOG",
+      "evidence": "Concept/framework exists; FounderOS workforce is internal implementation direction. No product packaging or business model defined.",
+      "stale_claim": "Historical BACKLOG status.",
+      "remaining_work": "Recover target customer/use cases, product packaging, reusable agent-factory boundaries, deployment/business model.",
+      "dependencies": [
+        "FOS-02",
+        "FOS-19",
+        "PROD-03"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "PROD-02",
+      "name": "Autonomous-company operating model",
+      "category": "Products & Ventures",
+      "classification": "KEEP_BACKLOG",
+      "evidence": "Core orchestration patterns implemented in FounderOS (runners, review-runner, Paperclip workflow). Formal company operating model not finalized.",
+      "stale_claim": "Historical BACKLOG status.",
+      "remaining_work": "Formal operating model, KPI/reporting, multi-venture scheduling, staffing economics, governance.",
+      "dependencies": [
+        "FOS-02",
+        "FOS-12",
+        "FOS-19",
+        "PROD-03"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "PROD-03",
+      "name": "Business / venture management modules",
+      "category": "Products & Ventures",
+      "classification": "KEEP_BACKLOG",
+      "evidence": "Paperclip company 'kolega corp' live; SJS/Caveman ventures referenced. Real vs demo/stale modules not inventoried.",
+      "stale_claim": "Historical claim that FounderOS repo contains many modules/connectors; current canonical inventory needed.",
+      "remaining_work": "Inventory real vs demo/stale modules, connect canonical data, define venture templates and owner dashboards.",
+      "dependencies": [
+        "FOS-01",
+        "FOS-23",
+        "Paperclip"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "PROD-04",
+      "name": "Health OS / health-life execution",
+      "category": "Personal OS Modules",
+      "classification": "OWNER_DECISION",
+      "evidence": "Specs recovered 2026-08-29 from OWNER/ChatGPT history, persisted in handoffs/ahmad/RECOVERED-SPECS-HEALTH-LEARNING-LAWYER-CIVILLAW-2026-08-29.md. Decided: core domains (sleep/recovery, activity, screen load, smoking, health-trend engine), Huawei Watch Fit 5 as primary wearable, morning check-in + adaptive NORMAL/LOW-ENERGY/EMERGENCY daily mode, protected anchors, autonomy ladder (Ask->Trusted Autonomy, high-risk always requires approval), lives INSIDE FounderOS (no separate Health OS), fork/adapt an OSS donor rather than build from zero.",
+      "stale_claim": "SUPERSEDED 2026-08-29 -- specs are no longer missing, they are recovered and decided-vs-open is now explicit; the blocker is OWNER decisions, not missing information.",
+      "remaining_work": "BLOCKED on explicit OWNER decisions before real implementation can start (per the OWNER's own binding rule -- these are not AHMAD's to decide): canonical storage schema/database; exact OSS donor repository; exact Huawei wearable ingestion mechanism; exact LOW-ENERGY/EMERGENCY numeric thresholds; canonical dashboard design; data retention/sharing policy. AHMAD may dispatch RESEARCH (candidate OSS donors, proposed schema options) for the OWNER to choose from, but may not pick for them.",
+      "dependencies": [
+        "FOS-14",
+        "FOS-15",
+        "calendar/goals integrations"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "PROD-05",
+      "name": "Learning OS",
+      "category": "Personal OS Modules",
+      "classification": "OWNER_DECISION",
+      "evidence": "Specs recovered 2026-08-29, same source doc. Decided: general adaptive/mastery-based/output-based learning philosophy, UNDERSTAND->APPLY->PRODUCE loop, ~70% AI-directed/~30% user-override, mastery-based (not time-based) progress, weak-area detection + spaced review, ~biweekly 'boss' assessment, aligns with shared Cognitive Core rather than a second memory brain, Notion not required as the system of record.",
+      "stale_claim": "SUPERSEDED 2026-08-29 -- specs recovered; blocker is now specific open decisions, not missing information.",
+      "remaining_work": "BLOCKED on OWNER decisions: canonical curriculum (which subjects belong beyond Civil Law), progress database/schema and scoring metric, exact spaced-repetition algorithm, exact Learning-OS-to-GBrain write/promotion policy, canonical daily UI surface (Telegram/web/app/dashboard). AHMAD may research/propose options (e.g. FSRS as one candidate algorithm) but may not finalize them.",
+      "dependencies": [
+        "FOS-14",
+        "FOS-15",
+        "goals/calendar"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "PROD-06",
+      "name": "Lawyer Copilot",
+      "category": "Personal OS Modules",
+      "classification": "OWNER_DECISION",
+      "evidence": "Specs recovered 2026-08-29, same source doc. Decided: full matter workflow (ingest->facts->issues->missing facts->evidence needed->research->matter map->next actions->drafts->litigation/hearing support), authoritative-source provenance mandatory, confidentiality/matter isolation required, no autonomous legal commitment or filing -- final legal decisions always remain human, internal alpha before commercialization.",
+      "stale_claim": "SUPERSEDED 2026-08-29 -- specs recovered; blocker is now specific open decisions, not missing information.",
+      "remaining_work": "BLOCKED on OWNER decisions: commercial jurisdiction(s) in scope (Indonesian civil law was decided only for the Civil Law Mastery LEARNING track, not confirmed as the commercial product's jurisdiction); jurisdiction-specific authoritative source list; canonical document state machine/approval stages; citation format; full risk-class escalation matrix (which outputs require licensed-lawyer review vs. recommendation-only). Legal-domain decisions are especially high-stakes -- AHMAD will not guess at any of these.",
+      "dependencies": [
+        "FOS-14",
+        "document/research tools"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "PROD-07",
+      "name": "Civil Law Mastery",
+      "category": "Personal OS Modules",
+      "classification": "OWNER_DECISION",
+      "evidence": "Specs recovered 2026-08-29, same source doc. Decided: target jurisdiction Indonesia (KUHPerdata), foundation topics named (perikatan/perjanjian/wanprestasi/PMH/pembuktian), 20-20-20 Understand/Apply/Produce daily pattern, ~70/30 AI/user direction split, Knowledge->Case Analysis->Drafting->Oral Reasoning->Full Simulation progression, ~biweekly boss assessment, shares infrastructure with Learning OS/Lawyer Copilot, precedes Lawyer Copilot in build sequence.",
+      "stale_claim": "SUPERSEDED 2026-08-29 -- specs recovered; blocker is now specific open decisions, not missing information.",
+      "remaining_work": "BLOCKED on OWNER decisions: complete chapter-by-chapter curriculum sequencing, named textbooks/doctrine authors/jurisprudence corpus and its authoritative-source hierarchy, exact scoring rubric and spaced-repetition algorithm, and critically whether this personal-study content ever feeds the commercial Lawyer Copilot corpus (a real product/legal-liability boundary question, not a technical detail).",
+      "dependencies": [
+        "PROD-05",
+        "PROD-06",
+        "FOS-14"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "PROD-08",
+      "name": "Work / Life / Personal operating modules",
+      "category": "Personal OS Modules",
+      "classification": "KEEP_BACKLOG",
+      "evidence": "Principles explicit (protected human time). No current canonical modules/interfaces found beyond generic goals/calendar aspirations.",
+      "stale_claim": "Historical BACKLOG status; module details incomplete.",
+      "remaining_work": "Recover exact modules/workflows and balanced planning interfaces.",
+      "dependencies": [
+        "FOS-14",
+        "FOS-15",
+        "PROD-04",
+        "PROD-05"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "TRD-01",
+      "name": "Robot Trading / TradingOS",
+      "category": "Trading",
+      "classification": "KEEP_BACKLOG",
+      "evidence": "Owner decision D-4.3 in agent-registry: TRADING_DASHBOARD + OpenClaw gateway remain FROZEN. No active trading work.",
+      "stale_claim": "Historical BACKLOG status assumed active architecture work; now frozen.",
+      "remaining_work": "Recover architecture, broker/data/execution/risk/backtest details if owner unfreezes.",
+      "dependencies": [
+        "TRD-02",
+        "infrastructure",
+        "financial safety"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "TRD-02",
+      "name": "Caveman Trading OS",
+      "category": "Trading",
+      "classification": "KEEP_BACKLOG",
+      "evidence": "AHMAD handoff: Phase 8 domain activation GATED; do not proceed. Caveman is a real venture but no active backlog in current canonical repo.",
+      "stale_claim": "Historical ACTIVE status; now gated by P7/P8 stability.",
+      "remaining_work": "Recover current venture roadmap; resume only after owner ungates domain activation.",
+      "dependencies": [
+        "FOS-21",
+        "FOS-22",
+        "FOS-10"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "BUS-01",
+      "name": "SJS SuperApps",
+      "category": "Business Venture",
+      "classification": "KEEP_BACKLOG",
+      "evidence": "AHMAD handoff: Phase 8 domain activation GATED. SJS decisions exist in decision-ledger.json (D10-D28). No active SJS backlog in current canonical repo.",
+      "stale_claim": "Historical ACTIVE status; now gated by P7/P8 stability.",
+      "remaining_work": "Recover full product backlog/current roadmap; correct stale false-DONE queue state if any remains; execute fixes after ungate.",
+      "dependencies": [
+        "FOS-21",
+        "FOS-22",
+        "decision-ledger"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "VOICE-01",
+      "name": "AHMAD voice surface (\"Jarvis mode\") -- supersedes standalone Jason",
+      "category": "Voice & Embodiment",
+      "classification": "OWNER_DECISION",
+      "evidence": "OWNER decided 2026-08-30: voice becomes AHMAD's own surface, not a separate Jason persona/runtime -- resolves this item's previously-open 'persona vs Ahmad voice surface' question explicitly. Also decided: ElevenLabs for TTS, device-trust AND voiceprint biometric access control (both required, not either alone), trusted devices = Huawei Watch Fit 5 + primary phone + ASUS/Lenovo laptop. Full scope/architecture/roadmap drafted same-day: knowledge/voice-jarvis/VOICE-01-SCOPE-ARCHITECTURE-ROADMAP-2026-08-30.md, including live-verified (real web search) candidate research: whisper.cpp (local STT), openWakeWord (wake word), pyannote-audio (speaker verification), alongside OWNER-specified ElevenLabs (TTS + optional cloud STT).",
+      "stale_claim": "SUPERSEDED 2026-08-29/30 -- 'no Jason code found' is no longer the blocker; the real blocker is now a specific, itemized list of implementation-shaping decisions (see remaining_work), not a general 'recover Jason' task.",
+      "remaining_work": "BLOCKED on OWNER decisions before Phase 2 prototyping (per the roadmap doc's Phase 1): exact primary-phone make/model; local (whisper.cpp, private, no internet dependency) vs cloud (ElevenLabs) STT; voiceprint enrollment process design; wake word/activation phrase; fallback behavior on a failed voice match (silent ignore vs explicit 'not recognized' response); where always-listening runs (battery/resource budget, especially on the watch). Priority: OWNER explicitly said scope/plan now, implement AFTER P4/P5 settle -- not to be started as real build work before then.",
+      "dependencies": [
+        "FOS-13",
+        "FOS-08",
+        "hardware"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "VOICE-02",
+      "name": "Embodied / voice / mobile owner interface",
+      "category": "Voice & Embodiment",
+      "classification": "KEEP_BACKLOG",
+      "evidence": "Concept only; no implementation.",
+      "stale_claim": "Historical FUTURE status.",
+      "remaining_work": "Persona/surface, mobile stack, wake/listen model, privacy, latency, offline behavior.",
+      "dependencies": [
+        "FOS-13",
+        "VOICE-01",
+        "cloud core"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "INFRA-01",
+      "name": "Agentic workstation topology / hardware plan",
+      "category": "Infrastructure",
+      "classification": "SUPERSEDED",
+      "evidence": "Owner decision #3 cloud-first; laptops are optional edge workers. Historical ASUS-control/Lenovo-worker topology no longer drives architecture.",
+      "stale_claim": "Historical SUPERSEDED status already noted; confirmed by current owner deferral of cloud.",
+      "remaining_work": "Preserve as historical reference; future hardware purchase only when workload/revenue justifies.",
+      "dependencies": [
+        "FOS-03",
+        "FOS-08"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "INFRA-02",
+      "name": "Cloud/edge worker transport and capability model",
+      "category": "Infrastructure",
+      "classification": "KEEP_BACKLOG",
+      "evidence": "Owner decision #3 defers cloud. No secure remote transport implemented.",
+      "stale_claim": "Historical BACKLOG status.",
+      "remaining_work": "Transport/auth, worker registration/heartbeat, secure tool execution, edge-offline semantics after cloud resumes.",
+      "dependencies": [
+        "FOS-03",
+        "FOS-07",
+        "FOS-08",
+        "FOS-19"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "INFRA-03",
+      "name": "Credential/security/owner-authority framework",
+      "category": "Infrastructure",
+      "classification": "DONE",
+      "evidence": "hatta/harness.mjs hardened; ops-watcher/security-audit.mjs passes; secrets clean; owner-only gates applied throughout; .env.local and *.key gitignored.",
+      "stale_claim": "Historical ACTIVE status; now implemented and verified.",
+      "remaining_work": "Maintenance; formalize centralized secret policy, rotation/revocation as future improvement.",
+      "dependencies": [],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "HIST-01",
+      "name": "Legacy 2026-09-14 Agentic worker-ownership cutover",
+      "category": "Historical / Superseded",
+      "classification": "SUPERSEDED",
+      "evidence": "Historical plan tied to Claude subscription timing and legacy workflow. Not current FounderOS architecture; do not repair/activate.",
+      "stale_claim": "Historical SUPERSEDED status already.",
+      "remaining_work": "Preserve lessons/backlog only.",
+      "dependencies": [
+        "FOS-23"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "HIST-02",
+      "name": "Paperclip / external-Postgres migration pattern",
+      "category": "Historical / Foundation",
+      "classification": "DONE",
+      "evidence": "Paperclip live on local Postgres 127.0.0.1:5433, port 3110, company 'kolega corp'; config/paperclip-endpoint.json documents identity/discovery.",
+      "stale_claim": "Historical DONE status for subset migration; current truth is that Paperclip is the operational company of record.",
+      "remaining_work": "Maintenance; reuse lessons if Supabase migration resumes.",
+      "dependencies": [],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "AGENT-01",
+      "name": "Qwen agent formalization",
+      "category": "Agent Workforce",
+      "classification": "KEEP_BACKLOG",
+      "evidence": "agent-registry.json notes Qwen installed locally but no formal FounderOS identity/role; no current canonical use.",
+      "stale_claim": "Historical BACKLOG status.",
+      "remaining_work": "Inventory exact model, bounded evaluation, role assignment or explicit non-use.",
+      "dependencies": [
+        "FOS-19",
+        "CANONICAL-ROLE-MAP.json"
+      ],
+      "safe_for_ahmad": true
+    },
+    {
+      "id": "AGENT-02",
+      "name": "Session/account-swap bootstrap and continuation handoffs",
+      "category": "Agent Workforce",
+      "classification": "DONE",
+      "evidence": "Handoff protocol exists (handoffs/ahmad/AHMAD-SESSION-HANDOFF-2026-08-28.md, handoffs/sjahrir/*); this SJAHRIR session resumed using current truth + handoffs; skills system supports targeted bootstrap.",
+      "stale_claim": "Historical ACTIVE status.",
+      "remaining_work": "Maintain protocol; update paths when canonical root changes.",
+      "dependencies": [
+        "FOS-20",
+        "FOS-01"
+      ],
+      "safe_for_ahmad": true
+    }
+  ],
+  "highest_value_keep_backlog": [
+    "FOS-14 — Cognitive Core / Context Graph (enables every personal/professional module)",
+    "FOS-15 — Memory provenance / contradiction / drift (trustworthy learning)",
+    "PROD-08 — Work / Life / Personal operating modules (protected human time)",
+    "PROD-03 — Business / venture management modules (command center for SJS/Caveman)",
+    "TRD-02 — Caveman Trading OS (active venture, gated)",
+    "BUS-01 — SJS SuperApps (active venture, gated)"
+  ],
+  "needs_recovery": [
+    "PROD-04 — Health OS / health-life execution",
+    "PROD-05 — Learning OS",
+    "PROD-06 — Lawyer Copilot",
+    "PROD-07 — Civil Law Mastery"
+  ],
+  "owner_decision_items": [],
+  "biggest_stale_conflicts": [
+    "Cloud/zero-laptop cluster (FOS-03/04/05/06/07/08/09/10): historical ACTIVE/BACKLOG/FUTURE statuses are overridden by owner decision #3 to DEFER until stability.",
+    "FOS-11 Telegram reliability: AHMAD handoff lists two live residual issues (rapid-repeat dedupe, Task Scheduler restart gap), while closeout update claims PASS for both. Real soak needed to resolve conflict.",
+    "FOS-21 false-DONE: historical ledger listed 3 stale rows needing owner-approved correction; current registry shows zero owner_required/needsRework/reviewRequired, but disposition of those rows is unverified.",
+    "TRD-02 Caveman / BUS-01 SJS: historical ACTIVE status overridden by AHMAD handoff gating Phase 8 domain activation pending P7 remediation/stability.",
+    "FOS-12 Telegram Decision Card: historical BACKLOG claim 'not implemented' was STALE — verified implemented + tested in current codebase this session (classification moved KEEP_BACKLOG -> ACTIVE); only open item is the owner-gated audit-ledger design question."
+  ],
+  "recommended_next_macro_mission": "STABILITY SOAK + COGNITIVE CORE FOUNDATION: (1) resolve FOS-11 live residual conflicts via supervised soak and optional watchdog; (2) verify FOS-21 stale false-DONE disposition and run fresh evidence-backed DONE cycle; (3) close FOS-22 staff[0] audit; (4) begin FOS-14 Cognitive Core by inventorying gbrain schema, defining context-graph semantics, and wiring retrieval into Ahmad dispatch; do not activate cloud, ventures, trading, or cleanup until these complete."
+}
