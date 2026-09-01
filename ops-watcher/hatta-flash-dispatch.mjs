@@ -21,6 +21,7 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { logLaneUsage } from "./lane-usage.mjs";
+import { guardLaneStart, recordLaneOutcome } from "./lane-guard.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -42,6 +43,15 @@ async function main() {
   // HATTA_MAX_ITER, etc.) is preserved; only the one model-selection key is
   // overridden. process.execPath is the real node binary, so this stays exe=node
   // (consistent with the harness being a node script, not a native binary).
+  const guard = await guardLaneStart("hatta-flash");
+  if (guard.skip) {
+    const reason = guard.reason || "unknown";
+    const retryMinutes = Math.ceil(guard.remainingMs / 60000);
+    process.stderr.write(`hatta-flash-dispatch: lane skipped (${reason}), retry in ${retryMinutes}m — no spawn attempted\n`);
+    await logLaneUsage({ lane: "hatta-flash", promptLength: prompt.length, ok: false, exitCode: 3, durationMs: 0, extra: { skipped: true, reason } });
+    process.exit(3);
+  }
+
   const t0 = Date.now();
   const r = spawnSync(process.execPath, [HARNESS_SCRIPT, prompt], {
     cwd: REPO_ROOT,
@@ -59,15 +69,18 @@ async function main() {
   if (r.signal === "SIGTERM" && r.status === null) {
     // spawnSync sets status=null + signal="SIGTERM" on timeout kill.
     process.stderr.write(`hatta-flash-dispatch: harness timed out after ${TIMEOUT_MS}ms\n`);
+    await recordLaneOutcome("hatta-flash", { ok: false, stdout: r.stdout, stderr: r.stderr });
     await logLaneUsage({ lane: "hatta-flash", promptLength: prompt.length, ok: false, exitCode: 1, durationMs });
     process.exit(1);
   }
   if (r.error) {
     process.stderr.write(`hatta-flash-dispatch: failed to spawn harness: ${r.error && r.error.message ? r.error.message : r.error}\n`);
+    await recordLaneOutcome("hatta-flash", { ok: false, stdout: r.stdout, stderr: r.stderr });
     await logLaneUsage({ lane: "hatta-flash", promptLength: prompt.length, ok: false, exitCode: 1, durationMs });
     process.exit(1);
   }
   const exitCode = typeof r.status === "number" ? r.status : 1;
+  await recordLaneOutcome("hatta-flash", { ok: exitCode === 0, stdout: r.stdout, stderr: r.stderr });
   await logLaneUsage({ lane: "hatta-flash", promptLength: prompt.length, ok: exitCode === 0, exitCode, durationMs });
   process.exit(exitCode);
 }

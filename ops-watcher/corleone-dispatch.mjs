@@ -38,6 +38,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { logLaneUsage } from "./lane-usage.mjs";
+import { guardLaneStart, recordLaneOutcome } from "./lane-guard.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -81,6 +82,15 @@ async function main() {
   // interactive approval (confirmed via `codex exec --help`). Deliberately NOT
   // using --dangerously-bypass-approvals-and-sandbox (documented as extremely
   // dangerous, out of scope here).
+  const guard = await guardLaneStart("corleone");
+  if (guard.skip) {
+    const reason = guard.reason || "unknown";
+    const retryMinutes = Math.ceil(guard.remainingMs / 60000);
+    process.stderr.write(`corleone-dispatch: lane skipped (${reason}), retry in ${retryMinutes}m — no spawn attempted\n`);
+    await logLaneUsage({ lane: "corleone", promptLength: prompt.length, ok: false, exitCode: 3, durationMs: 0, extra: { skipped: true, reason } });
+    process.exit(3);
+  }
+
   const codexJs = resolveCodexEntry();
   let file;
   let args;
@@ -112,15 +122,18 @@ async function main() {
   if (r.signal === "SIGTERM" && r.status === null) {
     // spawnSync sets status=null + signal="SIGTERM" on timeout kill.
     process.stderr.write(`corleone-dispatch: codex timed out after ${TIMEOUT_MS}ms\n`);
+    await recordLaneOutcome("corleone", { ok: false, stdout: r.stdout, stderr: r.stderr });
     await logLaneUsage({ lane: "corleone", promptLength: prompt.length, ok: false, exitCode: 1, durationMs });
     process.exit(1);
   }
   if (r.error) {
     process.stderr.write(`corleone-dispatch: failed to spawn codex: ${r.error && r.error.message ? r.error.message : r.error}\n`);
+    await recordLaneOutcome("corleone", { ok: false, stdout: r.stdout, stderr: r.stderr });
     await logLaneUsage({ lane: "corleone", promptLength: prompt.length, ok: false, exitCode: 1, durationMs });
     process.exit(1);
   }
   const exitCode = typeof r.status === "number" ? r.status : 1;
+  await recordLaneOutcome("corleone", { ok: exitCode === 0, stdout: r.stdout, stderr: r.stderr });
   await logLaneUsage({ lane: "corleone", promptLength: prompt.length, ok: exitCode === 0, exitCode, durationMs });
   process.exit(exitCode);
 }
