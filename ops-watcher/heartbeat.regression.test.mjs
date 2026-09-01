@@ -58,6 +58,10 @@ import {
   rotateStepLogFile,
   STEP_LOG_KEEP_LINES,
 } from "./heartbeat.mjs";
+import {
+  acquireLock as acquireLockPrimitive,
+  releaseLock as releaseLockPrimitive,
+} from "./telegram-listener-daemon.mjs";
 
 let passed = 0;
 let failed = 0;
@@ -114,10 +118,51 @@ function makeLogCapture() {
   return { lines, log };
 }
 
+function makeMemoryLockFs(initialFiles = {}) {
+  const files = new Map(Object.entries(initialFiles));
+  const calls = [];
+  return {
+    files,
+    calls,
+    async writeFile(file, data, opts = {}) {
+      calls.push({ op: "writeFile", file, data: String(data), opts });
+      if (opts && opts.flag === "wx" && files.has(file)) {
+        const err = new Error("EEXIST");
+        err.code = "EEXIST";
+        throw err;
+      }
+      files.set(file, String(data));
+    },
+    async readFile(file) {
+      calls.push({ op: "readFile", file });
+      if (!files.has(file)) {
+        const err = new Error("ENOENT");
+        err.code = "ENOENT";
+        throw err;
+      }
+      return files.get(file);
+    },
+    async unlink(file) {
+      calls.push({ op: "unlink", file });
+      if (!files.has(file)) {
+        const err = new Error("ENOENT");
+        err.code = "ENOENT";
+        throw err;
+      }
+      files.delete(file);
+    },
+  };
+}
+
 // A no-op durable-step-log writer injected into every existing sweep test so the
 // real heartbeat-steps.jsonl file is never touched during the regression run.
 // (The NEW R-series tests inject their own capturing/rejecting writers.)
 const noopAppendStepLog = async () => {};
+
+// A no-op heartbeat lock injected into existing tests so the regression suite
+// never touches the real ops-watcher/heartbeat.lock file.
+const noopAcquireLock = async ({ pid = 17001 } = {}) => ({ acquired: true, pid });
+const noopReleaseLock = async () => {};
 
 const SCRIPTS = {
   watcher:           "ops-watcher/watcher.mjs",
@@ -167,7 +212,13 @@ const alwaysRunFallback = async () => true;
 // ops-watcher/PAUSED flag file.
 const notPaused = async () => ({ paused: false });
 function runHeartbeatOnce(deps = {}) {
-  return runHeartbeatOnceReal({ checkPause: notPaused, ...deps });
+  return runHeartbeatOnceReal({
+    checkPause: notPaused,
+    acquireLock: noopAcquireLock,
+    releaseLock: noopReleaseLock,
+    lockFile: "fake-heartbeat.lock",
+    ...deps,
+  });
 }
 
 // =====================================================================
@@ -839,6 +890,201 @@ async function testRotationHelper() {
 }
 
 // =====================================================================
+// L1: lock free -> the full 15-step sweep runs, then the lock is released after
+// the durable step-log append.
+// =====================================================================
+async function testHeartbeatLockFreeRunsAndReleases() {
+  const name = "L1 lock-free heartbeat runs all 15 steps and releases after step-log append";
+  const events = [];
+  const seen = [];
+  const runStep = async (argv) => { seen.push(argv.slice()); return makeDefaultSuccessfulRunStep()(argv); };
+  const appendStepLog = async () => { events.push("append-step-log"); };
+  try {
+    const r = await runHeartbeatOnce({
+      runStep,
+      log: () => {},
+      now: () => 1700000000000,
+      shouldRunTelegramListenerStep: alwaysRunFallback,
+      appendStepLog,
+      acquireLock: async ({ pid }) => { events.push("acquire-lock"); return { acquired: true, pid }; },
+      releaseLock: async () => { events.push("release-lock"); },
+      lockPid: 99101,
+    });
+    assert.equal(r.results.length, STEPS.length, "all 15 steps produced results");
+    assert.equal(seen.length, STEPS.length, "all 15 steps ran");
+    assert.equal(r.failed, 0, "lock-free happy sweep succeeds");
+    assert.equal(events.filter((e) => e === "acquire-lock").length, 1, "_acquireLock called exactly once");
+    assert.equal(events.filter((e) => e === "release-lock").length, 1, "_releaseLock called exactly once");
+    assert.deepEqual(events, ["acquire-lock", "append-step-log", "release-lock"], "lock acquired before sweep and released after step-log append");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// L2: lock held by a live pid -> zero steps, success return, and a clear log
+// line naming the holder pid.
+// =====================================================================
+async function testHeartbeatLiveLockRefusesSuccessfully() {
+  const name = "L2 live-held heartbeat lock refuses overlap successfully and names pid";
+  const holderPid = 24680;
+  let runCalls = 0;
+  let appendCalls = 0;
+  let releaseCalls = 0;
+  const { lines, log } = makeLogCapture();
+  try {
+    const r = await runHeartbeatOnce({
+      runStep: async () => { runCalls += 1; return { code: 0, stdout: "should not run", stderr: "" }; },
+      log,
+      now: () => 1700000000000,
+      shouldRunTelegramListenerStep: alwaysRunFallback,
+      appendStepLog: async () => { appendCalls += 1; },
+      acquireLock: async () => ({ acquired: false, reason: "already-running", pid: holderPid }),
+      releaseLock: async () => { releaseCalls += 1; },
+    });
+    assert.equal(runCalls, 0, "no heartbeat steps run when live lock is held");
+    assert.equal(appendCalls, 0, "refused overlap does not append a sweep record");
+    assert.equal(releaseCalls, 0, "refused caller does not release a lock it never acquired");
+    assert.equal(r.results.length, 0, "refused overlap returns zero step results");
+    assert.equal(r.failed, 0, "refused overlap maps to success");
+    assert.equal(r.refused, true, "return value marks refused overlap");
+    assert.equal(r.pid, holderPid, "return value carries holding pid");
+    assert.ok(lines.some((l) => /another sweep is in progress/.test(l) && l.includes(`pid=${holderPid}`)), "log names the holding pid");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// L3: lock held by a dead pid -> the shared primitive reclaims it and the full
+// 15-step sweep runs.
+// =====================================================================
+async function testHeartbeatDeadLockIsReclaimedBySharedPrimitive() {
+  const name = "L3 dead-held heartbeat lock is reclaimed by shared primitive and all 15 steps run";
+  const lockFile = "memory-heartbeat.lock";
+  const deadPid = 33333;
+  const fakeFs = makeMemoryLockFs({
+    [lockFile]: JSON.stringify({ pid: deadPid, startedAt: "2026-09-01T00:00:00.000Z" }),
+  });
+  const seen = [];
+  const runStep = async (argv) => { seen.push(argv.slice()); return makeDefaultSuccessfulRunStep()(argv); };
+  try {
+    const r = await runHeartbeatOnce({
+      runStep,
+      log: () => {},
+      now: () => 1700000000000,
+      shouldRunTelegramListenerStep: alwaysRunFallback,
+      appendStepLog: noopAppendStepLog,
+      acquireLock: acquireLockPrimitive,
+      releaseLock: releaseLockPrimitive,
+      isAlive: (pid) => pid !== deadPid,
+      lockPid: 44444,
+      lockFile,
+      _fs: fakeFs,
+    });
+    assert.equal(r.results.length, STEPS.length, "all 15 steps produced results after stale lock reclaim");
+    assert.equal(seen.length, STEPS.length, "all 15 steps ran after stale lock reclaim");
+    assert.equal(r.failed, 0, "reclaimed-lock happy sweep succeeds");
+    assert.equal(fakeFs.files.has(lockFile), false, "lock released after the sweep");
+    const staleUnlinks = fakeFs.calls.filter((c) => c.op === "unlink" && c.file === lockFile);
+    assert.equal(staleUnlinks.length, 2, "shared primitive unlinked stale lock, then releaseLock removed the acquired lock");
+    assert.equal(fakeFs.calls.filter((c) => c.op === "writeFile" && c.file === lockFile && c.opts.flag === "wx").length, 2, "primitive retried exclusive-create after stale holder removal");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// L4: a throwing mid-sweep step still releases the lock via finally, after the step-log
+// append attempt.
+// =====================================================================
+async function testHeartbeatThrowingStepStillReleasesLock() {
+  const name = "L4 throwing mid-sweep step still releases heartbeat lock after step-log append";
+  const events = [];
+  const appendStepLog = async () => { events.push("append-step-log"); };
+  try {
+    const r = await runHeartbeatOnce({
+      runStep: makeDefaultSuccessfulRunStep({ throwFor: SCRIPTS.gbrainCurator }),
+      log: () => {},
+      now: () => 1700000000000,
+      shouldRunTelegramListenerStep: alwaysRunFallback,
+      appendStepLog,
+      acquireLock: async ({ pid }) => { events.push("acquire-lock"); return { acquired: true, pid }; },
+      releaseLock: async () => { events.push("release-lock"); },
+      lockPid: 51515,
+    });
+    assert.equal(r.results.length, STEPS.length, "sweep still produces all 15 results");
+    assert.equal(r.results[11].name, "gbrain-curator", "throwing step is mid-sweep");
+    assert.equal(r.results[11].ok, false, "throwing mid-sweep step is recorded as failed");
+    assert.equal(r.failed, 1, "only the throwing step fails");
+    assert.deepEqual(events, ["acquire-lock", "append-step-log", "release-lock"], "finally releases after appendStepLog even when a step throws");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// L5: _acquireLock throwing refuses the sweep and never releases a lock that was
+// not acquired.
+// =====================================================================
+async function testHeartbeatAcquireLockThrowRefusesWithoutRelease() {
+  const name = "L5 acquireLock throw refuses heartbeat without running steps or releasing";
+  let runCalls = 0;
+  let appendCalls = 0;
+  let releaseCalls = 0;
+  const { lines, log } = makeLogCapture();
+  try {
+    const r = await runHeartbeatOnce({
+      runStep: async () => { runCalls += 1; return { code: 0, stdout: "should not run", stderr: "" }; },
+      log,
+      now: () => 1700000000000,
+      shouldRunTelegramListenerStep: alwaysRunFallback,
+      appendStepLog: async () => { appendCalls += 1; },
+      acquireLock: async () => { throw new Error("lock fs unreadable"); },
+      releaseLock: async () => { releaseCalls += 1; },
+    });
+    assert.equal(runCalls, 0, "no heartbeat steps run when acquireLock throws");
+    assert.equal(appendCalls, 0, "refused acquire failure does not append a sweep record");
+    assert.equal(releaseCalls, 0, "releaseLock is not called for a lock that was never acquired");
+    assert.equal(r.results.length, 0, "acquire failure returns zero step results");
+    assert.equal(r.failed, 0, "acquire failure refusal maps to success");
+    assert.equal(r.refused, true, "return value marks refused sweep");
+    assert.equal(r.error, "lock-failed", "return value records lock failure refusal");
+    assert.ok(lines.some((l) => /lock acquire threw/.test(l) && /refusing to run/.test(l) && /lock fs unreadable/.test(l)), "log records acquire failure refusal");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// L6: paused beats locked; the pause check stays first and no lock acquisition
+// is attempted.
+// =====================================================================
+async function testHeartbeatPausedWinsBeforeLock() {
+  const name = "L6 paused heartbeat wins before lock acquisition and logs pause reason";
+  let acquireCalls = 0;
+  let runCalls = 0;
+  const { lines, log } = makeLogCapture();
+  try {
+    const r = await runHeartbeatOnce({
+      runStep: async () => { runCalls += 1; return { code: 0, stdout: "should not run", stderr: "" }; },
+      log,
+      now: () => 1700000000000,
+      shouldRunTelegramListenerStep: alwaysRunFallback,
+      appendStepLog: noopAppendStepLog,
+      acquireLock: async () => { acquireCalls += 1; return { acquired: true, pid: 61616 }; },
+      checkPause: async () => ({
+        paused: true,
+        reason: "owner stopped all sweeps",
+        atIso: "2026-09-01T02:03:04.000Z",
+        by: "owner",
+      }),
+    });
+    assert.equal(acquireCalls, 0, "lock acquire is not called while paused");
+    assert.equal(runCalls, 0, "no steps run while paused");
+    assert.equal(r.paused, true, "return value is paused");
+    assert.equal(r.failed, 0, "paused still maps to success");
+    assert.ok(lines.some((l) => /PAUSED/.test(l) && /owner stopped all sweeps/.test(l)), "pause reason is logged");
+    assert.equal(lines.some((l) => /another sweep is in progress/.test(l)), false, "pause log is not replaced by a lock refusal");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+// =====================================================================
 // P1-P3: owner pause stops all steps, exits successfully, and still writes a
 // paused durable step-log record with the owner's reason.
 // =====================================================================
@@ -940,6 +1186,12 @@ async function testThrowingPauseCheckFailsClosed() {
 }
 async function main() {
   console.log("# ops-watcher PHASE-8 heartbeat regression tests");
+  await testHeartbeatLockFreeRunsAndReleases();
+  await testHeartbeatLiveLockRefusesSuccessfully();
+  await testHeartbeatDeadLockIsReclaimedBySharedPrimitive();
+  await testHeartbeatThrowingStepStillReleasesLock();
+  await testHeartbeatAcquireLockThrowRefusesWithoutRelease();
+  await testHeartbeatPausedWinsBeforeLock();
   await testPausedStopsAllStepsAndWritesRecord();
   await testNotPausedRunsAllFifteenSteps();
   await testThrowingPauseCheckFailsClosed();
