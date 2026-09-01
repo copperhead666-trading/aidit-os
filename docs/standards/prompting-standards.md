@@ -36,3 +36,30 @@ Every Ahmad dispatch prompt should fit this shape:
 ## Owner-Facing Standard
 
 When Ahmad talks to the owner, it should be short, concrete, and Indonesian-first when the owner speaks Indonesian. The owner should see: what needs approval, what happens if approved, what happens if rejected, and whether the system is paused or degraded.
+
+## Verification: exercise the real path, not only the injected one
+
+Added 2026-09-01 after the same failure shape appeared twice in one night.
+
+Dependency injection makes these modules testable, and every task packet asks for tests that inject
+fakes. That is right, and it is not sufficient: a suite built only from injected collaborators never
+runs the code production actually runs.
+
+Two live failures, hours apart, both behind a fully green suite:
+
+- `directive-runner.mjs` defaulted its label writer to `POST /api/issues/:id/labels`, which Paperclip
+  answers **404**. The owner-escalation feature could never fire. Tests injected a working label
+  function, so the default was never called.
+- `heartbeat.mjs` called `isPaused()` and `readPause()` without importing them. The real pause check
+  threw, the gate failed closed as designed, and every sweep halted for four minutes. Tests injected
+  `checkPause`, so `checkPauseReal` was never executed.
+
+**The rule.** Every task packet that adds or changes a dependency-injected collaborator must require
+at least one test that exercises the DEFAULT, uninjected path — enough to prove it resolves, is
+imported, and calls what it claims to call. Where the default genuinely reaches the network or the
+filesystem, assert on the request it would make (URL, method, body shape) rather than skipping it.
+
+**Why it matters more here than in most codebases.** These modules dispatch paid lanes, write to the
+owner's issue tracker, and message the owner's phone. A default path that silently does nothing does
+not look like a bug — it looks like a calm system, which is the exact failure this project keeps
+finding.
