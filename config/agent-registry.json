@@ -23,8 +23,8 @@
       "GIBRAN": "Nous Free reviewer (unchanged, reconfirms prior fix)",
       "HERMES": "demoted to a lane name (\"L4 Nous free worker\"), not a standing named agent — per OWNER-ROSTER-DECISIONS D-3.2",
       "SJAHRIR": "must probe availability before dispatch; K3-256K default for research/synthesis, K2.7 Code for bounded coding, full K3 reserved for escalation only. Registry admission (D-1.1) now APPROVED by this mission's explicit inclusion of SJAHRIR in the delegation rule.",
-      "SOEKARNO": "ACTIVE LANE as of 2026-09-01 — owner instruction \"soekarno belum dipake bro. pake aja\" supersedes the earlier scarce-emergency-only restriction (D-4.2). Reached by SSH over Tailscale: ssh WIN10@100.87.42.3, Claude Code 2.1.252 at D:\\Development\\npm-global\\claude.cmd. It runs on the Lenovo and does NOT have this repository, so dispatch it work whose deliverable is printed text (file contents between markers, reviews, analysis) which AHMAD then writes into the repo — never assume it can read or write here.",
-      "CORLEONE": "active lane — wired into ops-watcher/routing.mjs (L6), dedicated dispatch wrapper ops-watcher/corleone-dispatch.mjs built and live-verified 2026-09-01, has completed real dispatched work (ESCALATION-SEC, AUDIT-CLERK builds)",
+      "SOEKARNO": "ACTIVE LANE as of 2026-09-01 by owner decision - owner instruction \"soekarno belum dipake bro. pake aja\" supersedes the earlier scarce-emergency-only restriction (D-4.2). Reached by SSH over Tailscale: ssh WIN10@100.87.42.3, Claude Code 2.1.252 at D:\\Development\\npm-global\\claude.cmd. It runs on the Lenovo and does NOT have this repository, so dispatch it work whose deliverable is printed text (file contents between markers, reviews, analysis) which AHMAD then writes into the repo - never assume it can read or write here.",
+      "CORLEONE": "ACTIVE LANE as of 2026-09-01 by owner decision - wired into ops-watcher/routing.mjs (L6), dedicated dispatch wrapper ops-watcher/corleone-dispatch.mjs built and live-verified 2026-09-01, has completed real dispatched work (ESCALATION-SEC, AUDIT-CLERK builds). Codex CLI quota is a 5-hour rolling window whose exhaustion message names an explicit retry time.",
       "SOEHARTO": "retired (unchanged)",
       "Gemini_operational_path": "Antigravity AI, NOT Gemini CLI — supersedes OWNER-ROSTER-DECISIONS D-5.1 (Gemini CLI login option is moot; Gemini CLI stays UNASSIGNED/installed-never-logged-in; Antigravity AI is a new candidate lane not yet inventoried, out of scope until an actual role needs it)",
       "budget_ceiling_usd_per_month": 80,
@@ -351,6 +351,42 @@
       "review_note": "implementation output requires tests; material changes require independent GIBRAN verdict; SJAHRIR does not self-approve",
       "last_verified_at": "2026-08-29",
       "dispatch_mechanism_2026-08-29": "Re-confirmed live on the local ASUS machine: `kimi -p \"<task>\"` (real completion returned, e.g. a PONG probe). For real work, dispatched non-interactively with `kimi --auto -p \"<task>\"` (--auto = fully autonomous, no interactive questions) from AHMAD, mirroring HATTA's external-dispatch pattern -- no dedicated wrapper script built yet, ad hoc CLI invocation. OWNER directed AHMAD to actually parallelize independent work across HATTA/CORLEONE/SJAHRIR rather than defaulting to HATTA alone."
+    },
+    "CORLEONE": {
+      "agent_id": "CORLEONE",
+      "display_name": "Corleone",
+      "role": "strong Codex CLI lane for implementation and review work dispatched by AHMAD; first-class Active FounderOS-Aidit agent as of the owner decision on 2026-09-01.",
+      "machine": "asus-control",
+      "runtime": "Codex CLI, reached through `node ops-watcher/corleone-dispatch.mjs \"<prompt>\"`; the wrapper resolves the Windows npm `codex.cmd` shim to the real codex.js entry and spawns `node` directly with shell:false.",
+      "provider": "openai",
+      "model_if_known": "gpt-5.5",
+      "auth": "Local Codex CLI authentication on this ASUS machine; prior registry note records C:\\Users\\ASUS\\AppData\\Roaming\\npm\\codex.cmd, codex-cli 0.149.0, auth at C:\\Users\\ASUS\\.codex\\auth.json, and a live completion.",
+      "capacity_isolation": "Codex/OpenAI quota pool separate from AHMAD (Anthropic Claude Code CLI), HATTA (Ollama Cloud), GIBRAN (Nous Free), SJAHRIR (Kimi Code), and SOEKARNO (Lenovo Claude Code). Quota is a 5-hour rolling window; exhaustion output names an explicit retry time, and routing records provider-stated retry times when present.",
+      "dispatch_command_pattern": "node ops-watcher/corleone-dispatch.mjs \"<prompt>\"",
+      "working_directory_access": "D:\\AI\\Active FounderOS-Aidit via ops-watcher/corleone-dispatch.mjs REPO_ROOT cwd; wrapper uses workspace-write sandbox for Codex exec.",
+      "dispatch_policy": "Use as an active implementation and review lane, not only as fallback. The wrapper guards lane start, skips without spawning during cooldown, and reports retry timing instead of burning a dispatch.",
+      "can_implement": true,
+      "can_review": true,
+      "review_note": "Can review by owner instruction; this entry does not change any separate material-change review gate recorded elsewhere.",
+      "last_verified_at": "2026-09-01"
+    },
+    "SOEKARNO": {
+      "agent_id": "SOEKARNO",
+      "display_name": "Soekarno",
+      "role": "Lenovo Claude Code lane for printed-text deliverables and review/analysis dispatched by AHMAD; first-class Active FounderOS-Aidit agent as of the owner decision on 2026-09-01.",
+      "machine": "LENOVO-BLACK",
+      "runtime": "Claude Code 2.1.252 on the Lenovo, reached over Tailscale SSH with `ssh WIN10@100.87.42.3`; binary at D:\\Development\\npm-global\\claude.cmd.",
+      "provider": "anthropic",
+      "model_if_known": "not recorded in this registry entry; runtime is Claude Code 2.1.252",
+      "auth": "Claude Code CLI authentication on LENOVO-BLACK; exact account is not recorded in this registry entry.",
+      "capacity_isolation": "Lenovo Claude Code lane, separate from this ASUS AHMAD runtime and the other ASUS lanes. Historical capacity notes treated it as scarce; owner decision on 2026-09-01 makes it an active lane.",
+      "dispatch_command_pattern": "ssh WIN10@100.87.42.3 \"D:\\Development\\npm-global\\claude.cmd <task>\"",
+      "working_directory_access": "NO access to D:\\AI\\Active FounderOS-Aidit on LENOVO-BLACK: this repository is not on that machine. Do not dispatch file read/write/edit tasks to SOEKARNO; dispatch printed text deliverables only, which AHMAD then writes into this repo.",
+      "dispatch_policy": "Active lane as of 2026-09-01 by owner decision. Use for printed text outputs such as file contents between markers, reviews, and analysis; never assume it can read or write repository files.",
+      "can_implement": false,
+      "can_review": true,
+      "review_note": "Can review/analyze and produce text for AHMAD to apply; cannot directly implement repo file edits because the repository is absent on LENOVO-BLACK.",
+      "last_verified_at": "2026-09-01"
     }
   },
   "retired_reference_only": {
@@ -361,11 +397,7 @@
     }
   },
   "external_agents_not_owned_by_this_registry": {
-    "CORLEONE": {
-      "source": "D:\\AI\\Agentic\\config\\agent-registry.json",
-      "status": "SUPERSEDED 2026-08-29: this entry's 'Lenovo-only' status is stale. OWNER confirmed CORLEONE (codex-cli) is ALSO installed and logged in locally on this ASUS machine (C:\\Users\\ASUS\\AppData\\Roaming\\npm\\codex.cmd, codex-cli 0.149.0, auth at C:\\Users\\ASUS\\.codex\\auth.json, live-tested with a real completion). Dispatched directly via `codex exec \"<task>\" --sandbox workspace-write --approve-for-me --skip-git-repo-check -C \"<repo root>\"` (mirrors HATTA's external-dispatch pattern; now dispatched via the dedicated wrapper ops-watcher/corleone-dispatch.mjs (built and live-verified 2026-09-01), superseding the earlier ad hoc CLI invocation from AHMAD). The old Lenovo dispatch-worker.js path below is untouched/not revived (OWNER's DELTA BOOTSTRAP: 'do not revive legacy D:\\Agentic architecture') -- local ASUS dispatch is a SEPARATE, additional lane, not a replacement discovery of the same thing.",
-      "dispatch_reference": "D:\\AI\\Agentic\\scripts\\dispatch-worker.js / lenovo-transport-adapter.js (Lenovo-side mechanism, still out of scope to rebuild/revive here -- superseded for THIS workspace's purposes by the local ASUS codex-cli dispatch above)"
-    }
+    "CORLEONE": "Moved to agents.CORLEONE as a first-class registry entry on 2026-09-01 by owner decision; retained here as history pointer only."
   },
   "corleone_hardening_closeout_2026_08_28": {
     "updated_at": "2026-08-28T13:22:34.835Z",
