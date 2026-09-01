@@ -10,12 +10,15 @@ import { fileURLToPath } from "node:url";
 import {
   CONSECUTIVE_FAILURES_TO_ACT,
   REPAIR_COOLDOWN_MS,
+  SCAN_MIN_INTERVAL_MS,
+  MAX_REPAIRS_PER_SWEEP,
   appendEvidence,
   classifyFault,
   detectFaultingSteps,
   readRecentSweeps,
   repairScopeFor,
   runSelfRepairScan,
+  runSelfRepairOnce,
   shouldAttemptRepair,
 } from "./self-repair.mjs";
 
@@ -47,6 +50,27 @@ function rec(name, opts = {}) {
     durationMs: opts.durationMs || 1,
     excerpt: opts.excerpt || "",
   };
+}
+
+// A tiny in-memory fs for the runSelfRepairOnce tests. Maps filenames to
+// string contents; readFile returns the content or throws ENOENT, writeFile
+// records the content. Used so the state-file cooldown gate can be exercised
+// without touching the real self-repair-state.json.
+function makeMemFs(initial = new Map()) {
+  const files = new Map(initial);
+  const readFile = async (file) => {
+    if (!files.has(file)) {
+      const err = new Error("missing");
+      err.code = "ENOENT";
+      throw err;
+    }
+    return files.get(file);
+  };
+  const writeFile = async (file, data) => { files.set(file, data); };
+  const appendFile = async (file, data) => {
+    files.set(file, (files.get(file) || "") + data);
+  };
+  return { files, readFile, writeFile, appendFile };
 }
 
 // =====================================================================
@@ -263,6 +287,225 @@ async function testAppendEvidenceNeverThrows() {
   } catch (err) { bad(name, err); }
 }
 
+// =====================================================================
+// S8: runSelfRepairOnce skips inside SCAN_MIN_INTERVAL_MS without scanning
+// =====================================================================
+async function testOnceSkipsInsideCooldown() {
+  const name = "S8 runSelfRepairOnce skips inside SCAN_MIN_INTERVAL_MS (no scan, no attemptRepair)";
+  try {
+    const stateFile = "state-s8.json";
+    const mem = makeMemFs(new Map([
+      [stateFile, JSON.stringify({ lastScanMs: 1_000_000 })],
+    ]));
+    let scanCalls = 0;
+    let attemptCalls = 0;
+    const logs = [];
+    const result = await runSelfRepairOnce({
+      scan: async () => { scanCalls++; return { scannedSweeps: 0, faults: [] }; },
+      attemptRepair: async () => { attemptCalls++; return { outcome: "repaired" }; },
+      escalate: async () => ({ alerted: true }),
+      now: () => 1_000_000 + 60_000, // 1 minute later — well under 30 min
+      log: (m) => logs.push(m),
+      readFile: mem.readFile,
+      writeFile: mem.writeFile,
+      appendFile: mem.appendFile,
+      stateFile,
+      evidenceLogFile: "ev-s8.jsonl",
+    });
+    assert.equal(result.skipped, true, "returns { skipped: true }");
+    assert.equal(scanCalls, 0, "scan never called inside cooldown");
+    assert.equal(attemptCalls, 0, "attemptRepair never called inside cooldown");
+    // lastScanMs is NOT rewritten (the sweep skipped before scanning).
+    const stateAfter = JSON.parse(mem.files.get(stateFile));
+    assert.equal(stateAfter.lastScanMs, 1_000_000, "lastScanMs unchanged on skip");
+    assert.ok(logs.some((l) => /self-repair: skipped \(next run after/.test(l)), "skip line logged with next-run ISO");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// S9: past the interval with zero faults -> scan ran, no attemptRepair,
+//     lastScanMs written
+// =====================================================================
+async function testOncePastIntervalZeroFaults() {
+  const name = "S9 runSelfRepairOnce past interval with zero faults writes lastScanMs, no attemptRepair";
+  try {
+    assert.equal(SCAN_MIN_INTERVAL_MS, 30 * 60 * 1000, "SCAN_MIN_INTERVAL_MS is 30 minutes");
+    const stateFile = "state-s9.json";
+    const mem = makeMemFs(new Map([
+      [stateFile, JSON.stringify({ lastScanMs: 1_000_000 })],
+    ]));
+    const nowMs = 1_000_000 + SCAN_MIN_INTERVAL_MS + 1; // just past the window
+    let scanCalls = 0;
+    let attemptCalls = 0;
+    const result = await runSelfRepairOnce({
+      scan: async () => { scanCalls += 1; return { scannedSweeps: 3, faults: [] }; },
+      attemptRepair: async () => { attemptCalls += 1; return { outcome: "repaired" }; },
+      escalate: async () => ({ alerted: true }),
+      now: () => nowMs,
+      log: () => {},
+      readFile: mem.readFile,
+      writeFile: mem.writeFile,
+      appendFile: mem.appendFile,
+      stateFile,
+      evidenceLogFile: "ev-s9.jsonl",
+    });
+    assert.equal(result.skipped, false, "not skipped past the interval");
+    assert.equal(scanCalls, 1, "scan ran exactly once");
+    assert.equal(attemptCalls, 0, "attemptRepair not called with zero faults");
+    assert.equal(result.attemptsMade, 0);
+    const stateAfter = JSON.parse(mem.files.get(stateFile));
+    assert.equal(stateAfter.lastScanMs, nowMs, "lastScanMs written to state file");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// S10: two repairable faults -> attemptRepair called exactly
+//      MAX_REPAIRS_PER_SWEEP times
+// =====================================================================
+async function testOnceCapsRepairsPerSweep() {
+  const name = "S10 runSelfRepairOnce calls attemptRepair at most MAX_REPAIRS_PER_SWEEP times";
+  try {
+    assert.equal(MAX_REPAIRS_PER_SWEEP, 1, "MAX_REPAIRS_PER_SWEEP is 1");
+    const stateFile = "state-s10.json";
+    const mem = makeMemFs(new Map());
+    const faults = [
+      { name: "gbrain-curator", kind: "crash", repairable: true, blockedBy: null },
+      { name: "audit-clerk", kind: "crash", repairable: true, blockedBy: null },
+    ];
+    let attemptCalls = 0;
+    const attemptedNames = [];
+    const result = await runSelfRepairOnce({
+      scan: async () => ({ scannedSweeps: 1, faults }),
+      attemptRepair: async (fault) => { attemptCalls += 1; attemptedNames.push(fault.name); return { outcome: "repaired" }; },
+      escalate: async () => ({ alerted: true }),
+      now: () => 5_000_000,
+      log: () => {},
+      readFile: mem.readFile,
+      writeFile: mem.writeFile,
+      appendFile: mem.appendFile,
+      stateFile,
+      evidenceLogFile: "ev-s10.jsonl",
+    });
+    assert.equal(attemptCalls, MAX_REPAIRS_PER_SWEEP, "attemptRepair called exactly the per-sweep cap");
+    assert.equal(result.attemptsMade, MAX_REPAIRS_PER_SWEEP);
+    assert.deepEqual(attemptedNames, ["gbrain-curator"], "only the first repairable fault is attempted");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// S11: a fault blocked by the envelope is never passed to attemptRepair
+// =====================================================================
+async function testOnceEnvelopeBlockedNeverDispatched() {
+  const name = "S11 runSelfRepairOnce never dispatches an envelope-blocked fault";
+  try {
+    const stateFile = "state-s11.json";
+    const mem = makeMemFs(new Map());
+    const faults = [
+      { name: "heartbeat", kind: "crash", repairable: false, blockedBy: "envelope" },
+    ];
+    let attemptCalls = 0;
+    const logs = [];
+    const result = await runSelfRepairOnce({
+      scan: async () => ({ scannedSweeps: 1, faults }),
+      attemptRepair: async () => { attemptCalls += 1; return { outcome: "repaired" }; },
+      escalate: async () => ({ alerted: true }),
+      now: () => 5_000_000,
+      log: (m) => logs.push(m),
+      readFile: mem.readFile,
+      writeFile: mem.writeFile,
+      appendFile: mem.appendFile,
+      stateFile,
+      evidenceLogFile: "ev-s11.jsonl",
+    });
+    assert.equal(attemptCalls, 0, "attemptRepair never called for an envelope-blocked fault");
+    assert.equal(result.attemptsMade, 0);
+    assert.ok(logs.some((l) => /skipping heartbeat \(blockedBy=envelope\)/.test(l)), "blocked fault logged");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// S12: attemptRepair `reverted` -> escalate called once; `repaired` -> escalate
+//      NOT called
+// =====================================================================
+async function testOnceEscalateOnRevertedOnly() {
+  const name = "S12 runSelfRepairOnce escalates on reverted but not on repaired";
+  try {
+    // --- reverted -> escalate once ---
+    const stateFileA = "state-s12a.json";
+    const memA = makeMemFs(new Map());
+    let escalateCallsA = 0;
+    const faultA = { name: "gbrain-curator", kind: "crash", repairable: true, blockedBy: null };
+    await runSelfRepairOnce({
+      scan: async () => ({ scannedSweeps: 1, faults: [faultA] }),
+      attemptRepair: async () => ({ outcome: "reverted", reason: "scoped-suite-red" }),
+      escalate: async () => { escalateCallsA += 1; return { alerted: true }; },
+      now: () => 5_000_000,
+      log: () => {},
+      readFile: memA.readFile,
+      writeFile: memA.writeFile,
+      appendFile: memA.appendFile,
+      stateFile: stateFileA,
+      evidenceLogFile: "ev-s12a.jsonl",
+    });
+    assert.equal(escalateCallsA, 1, "escalate called exactly once on reverted");
+
+    // --- repaired -> escalate NOT called ---
+    const stateFileB = "state-s12b.json";
+    const memB = makeMemFs(new Map());
+    let escalateCallsB = 0;
+    const faultB = { name: "gbrain-curator", kind: "crash", repairable: true, blockedBy: null };
+    await runSelfRepairOnce({
+      scan: async () => ({ scannedSweeps: 1, faults: [faultB] }),
+      attemptRepair: async () => ({ outcome: "repaired", suite: "gbrain-curator.regression.test.mjs" }),
+      escalate: async () => { escalateCallsB += 1; return { alerted: true }; },
+      now: () => 6_000_000,
+      log: () => {},
+      readFile: memB.readFile,
+      writeFile: memB.writeFile,
+      appendFile: memB.appendFile,
+      stateFile: stateFileB,
+      evidenceLogFile: "ev-s12b.jsonl",
+    });
+    assert.equal(escalateCallsB, 0, "escalate NOT called on repaired");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// S13: attemptRepair throwing does not throw out of runSelfRepairOnce
+// =====================================================================
+async function testOnceAttemptRepairThrowCaught() {
+  const name = "S13 runSelfRepairOnce never throws when attemptRepair throws";
+  try {
+    const stateFile = "state-s13.json";
+    const mem = makeMemFs(new Map());
+    const fault = { name: "gbrain-curator", kind: "crash", repairable: true, blockedBy: null };
+    const logs = [];
+    const result = await runSelfRepairOnce({
+      scan: async () => ({ scannedSweeps: 1, faults: [fault] }),
+      attemptRepair: async () => { throw new Error("lane exploded"); },
+      escalate: async () => ({ alerted: true }),
+      now: () => 7_000_000,
+      log: (m) => logs.push(m),
+      readFile: mem.readFile,
+      writeFile: mem.writeFile,
+      appendFile: mem.appendFile,
+      stateFile,
+      evidenceLogFile: "ev-s13.jsonl",
+    });
+    assert.equal(result.skipped, false, "sweep still resolves (not skipped)");
+    assert.equal(result.attemptsMade, 1, "the throwing attempt still counts as made");
+    assert.equal(result.outcomes.length, 1);
+    assert.equal(result.outcomes[0].outcome, "error");
+    assert.ok(logs.some((l) => /attemptRepair threw for gbrain-curator/.test(l)), "throw logged");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
 async function main() {
   console.log("# ops-watcher self-repair regression tests");
   await testReadRecentSweeps();
@@ -272,6 +515,12 @@ async function main() {
   await testShouldAttemptRepair();
   await testRunSelfRepairScan();
   await testAppendEvidenceNeverThrows();
+  await testOnceSkipsInsideCooldown();
+  await testOncePastIntervalZeroFaults();
+  await testOnceCapsRepairsPerSweep();
+  await testOnceEnvelopeBlockedNeverDispatched();
+  await testOnceEscalateOnRevertedOnly();
+  await testOnceAttemptRepairThrowCaught();
   console.log("");
   console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
   if (failed > 0) { for (const f of failures) console.log(`  FAILED: ${f}`); process.exit(1); }

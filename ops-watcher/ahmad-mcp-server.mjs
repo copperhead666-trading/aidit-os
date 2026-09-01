@@ -70,6 +70,7 @@ export const ALLOWED_SCRIPTS = [
   "ops-watcher/hatta-flash-dispatch.mjs",
   "ops-watcher/hatta-dispatch.mjs",
   "ops-watcher/graphify-analyst.mjs",
+  "ops-watcher/self-repair.mjs",
 ];
 const ALLOWED_FLAGS = new Set(["--once"]);
 const RUN_TIMEOUT_MS = 9 * 60 * 1000; // under heartbeat.mjs's 10-min per-step cap

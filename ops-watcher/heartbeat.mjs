@@ -4,7 +4,7 @@
 //   node ops-watcher/heartbeat.mjs --once
 //
 // This is a SINGLE SWEEP, not a daemon. It runs, in order, ONE invocation each
-// of the thirteen ops-watcher scripts:
+// of the fourteen ops-watcher scripts:
 //
 //   1. node ops-watcher/watcher.mjs          --once
 //   2. node ops-watcher/test-runner.mjs      --once
@@ -19,6 +19,7 @@
 //  11. node ops-watcher/escalation-sec.mjs   --once
 //  12. node ops-watcher/gbrain-curator.mjs  --once
 //  13. node ops-watcher/audit-clerk.mjs     --once
+//  14. node ops-watcher/self-repair.mjs     --once   (bounded self-repair sweep)
 //
 // Step 5 (telegram-listener) is GATED: it only runs its one-shot getUpdates check
 // when the persistent telegram-listener-daemon is NOT confirmed healthy. The
@@ -84,6 +85,17 @@
 // findings. Single-instance PID lock, 1-hour re-alert cooldown state file. See
 // steward-caveman.mjs's own header for the full read-only safety contract.
 //
+// Step 14 (self-repair --once): the BOUNDED self-repair sweep. It runs the
+// fault detector, then for at most one repairable fault per sweep delegates to
+// the actuator's attemptRepair (snapshot/rollback + two-stage verification),
+// escalating to the owner only when an attempt ended `reverted`. It self-skips
+// for 30 minutes after each attempt-sweep (SCAN_MIN_INTERVAL_MS) and never
+// dispatches more than one lane call per sweep (MAX_REPAIRS_PER_SWEEP), so it
+// can never turn into the unbounded repair loop that burned the SJAHRIR quota.
+// See ops-watcher/self-repair.mjs's header for the full bounds rationale. This
+// step is the LAST step on purpose: it reads the durable step log written by the
+// sweep above, so it must run after every other step has recorded its outcome.
+//
 // It does NOT modify, import, or reference the internals of those scripts. It
 // only invokes them as child processes exactly the way a human would from the
 // command line, capturing and relaying their real stdout / exit codes.
@@ -92,7 +104,7 @@
 // heartbeat. Each step is wrapped so an ENOENT (missing script), a crash, a
 // non-zero exit, or a thrown error for one step is recorded and the sweep
 // continues to the next step. After each step a compact real summary line is
-// printed (step name, exit code, one-line result excerpt). After all thirteen a
+// printed (step name, exit code, one-line result excerpt). After all fourteen a
 // final summary is printed (how many succeeded / failed).
 //
 // Durable step log: after every sweep, exactly ONE JSON line is appended to
@@ -157,7 +169,7 @@ export const STEP_LOG_KEEP_LINES = 2000;
 // marker that can exceed 300 once the marker is appended).
 const STEP_RECORD_EXCERPT_MAX = 300;
 
-// The thirteen steps, in order. Each entry: { name, argv }. argv is the full argv as
+// The fourteen steps, in order. Each entry: { name, argv }. argv is the full argv as
 // a human would type after `node` (the script path relative to repo root + any
 // flags). This is a literal, hand-maintained list of the safe pipeline — NOT
 // derived from a directory scan, so a stray file can never sneak in.
@@ -175,6 +187,7 @@ const STEPS = [
   { name: "escalation-sec",    argv: ["ops-watcher/escalation-sec.mjs", "--once"] },
   { name: "gbrain-curator",    argv: ["ops-watcher/gbrain-curator.mjs", "--once"] },
   { name: "audit-clerk",       argv: ["ops-watcher/audit-clerk.mjs", "--once"] },
+  { name: "self-repair",       argv: ["ops-watcher/self-repair.mjs", "--once"] },
 ];
 
 const iso = () => new Date().toISOString();
@@ -493,7 +506,7 @@ async function main() {
   const r = await runHeartbeatOnce();
   // Exit 0 if every step succeeded; non-zero if any failed. We still exit
   // non-zero (not a hard crash) so an external scheduler can detect a degraded
-  // sweep — but we never abort mid-sweep (all 13 always run first).
+  // sweep — but we never abort mid-sweep (all 14 always run first).
   process.exit(r.failed === 0 ? 0 : 1);
 }
 

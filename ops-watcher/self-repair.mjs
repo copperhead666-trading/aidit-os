@@ -1,13 +1,43 @@
 // SELF-REPAIR detector: fault detection, classification, and safety envelope.
 //
-// This module intentionally contains NO actuation: no child processes, no lane
-// dispatch, no Telegram, and no project-code edits. It only reads heartbeat
-// sweep evidence, classifies repeated failures, records detector evidence, and
-// maintains minimal detector bookkeeping.
+// This module intentionally contains NO actuation of its own: no child
+// processes, no lane dispatch, no Telegram, and no project-code edits. It only
+// reads heartbeat sweep evidence, classifies repeated failures, records
+// detector evidence, and maintains minimal detector bookkeeping.
+//
+// --scan runs the read-only detector only (prints + records faults, never
+//    dispatches). Used by a human or a dry-run to inspect what the detector
+//    sees right now.
+// --once  runs runSelfRepairOnce: the BOUNDED repair sweep the heartbeat wires
+//    in as step 14. It runs the detector, then for at most
+//    MAX_REPAIRS_PER_SWEEP repairable faults delegates to the actuator's
+//    attemptRepair (snapshot/rollback + two-stage verification), and escalates
+//    to the owner only when an attempt ended `reverted`. It NEVER runs more
+//    often than SCAN_MIN_INTERVAL_MS, never dispatches more than the per-sweep
+//    cap, and always resolves (never throws) so it can never wedge the
+//    heartbeat.
+//
+// Rationale for the bounds: the heartbeat runs every 5 minutes, a single
+// repair costs a real lane call (a CORLEONE dispatch with a 12-minute timeout),
+// and an UNBOUNDED repair loop is exactly the failure mode that killed the
+// SJAHRIR quota — the detector kept firing, the dispatcher kept calling the
+// lane, and the quota burned down to a hard lockout. So the 30-minute scan
+// cadence (SCAN_MIN_INTERVAL_MS), the per-sweep repair cap
+// (MAX_REPAIRS_PER_SWEEP = 1), and the actuator's per-step 6-hour cooldown
+// (REPAIR_COOLDOWN_MS) are all deliberate, layered brakes. No single sweep may
+// spend more than one lane call, and no step may be retried more than once per
+// cooldown window even across sweeps.
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+// The actuator is imported only for its default attemptRepair / escalate
+// bindings, which are read lazily inside runSelfRepairOnce (at call time, not
+// at module-eval time). This is a harmless live-binding cycle: the actuator
+// imports pure helpers from this module, and this module references the
+// actuator's functions only when a sweep actually runs, by which point both
+// modules are fully evaluated.
+import * as actuator from "./self-repair-actuator.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -16,6 +46,14 @@ export const STATE_FILE = path.join(__dirname, "self-repair-state.json");
 export const EVIDENCE_LOG_FILE = path.join(__dirname, "self-repair-log.jsonl");
 export const CONSECUTIVE_FAILURES_TO_ACT = 3;
 export const REPAIR_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+// Bounded --once sweep bounds. See the file header for the rationale.
+// SCAN_MIN_INTERVAL_MS: the minimum gap between two attempt-sweeps. A sweep
+//   fired sooner than this is skipped wholesale (no scan, no dispatch).
+// MAX_REPAIRS_PER_SWEEP: the hard cap on lane-dispatching attempts in a single
+//   sweep. Additional repairable faults are logged and left for the next sweep.
+export const SCAN_MIN_INTERVAL_MS = 30 * 60 * 1000;
+export const MAX_REPAIRS_PER_SWEEP = 1;
 
 const DEFAULT_SWEEP_LIMIT = 10;
 const TAIL_CHUNK_BYTES = 64 * 1024;
@@ -293,8 +331,141 @@ export async function runSelfRepairScan(deps = {}) {
   return { scannedSweeps: sweeps.length, faults };
 }
 
+// =====================================================================
+// runSelfRepairOnce — the bounded repair sweep wired into heartbeat step 14.
+//
+// deps (all optional, all injectable so the regression suite is fully offline):
+//   scan          : async (deps) => { scannedSweeps, faults }  (default: runSelfRepairScan)
+//   attemptRepair : async (fault, deps) => { outcome, ... }    (default: actuator.attemptRepair)
+//   escalate      : async (fault, evidence, deps) => {...}     (default: actuator.escalate)
+//   now           : () => ms                                    (default: Date.now)
+//   log           : (msg) => void                               (default: console.log)
+//   readFile / writeFile / appendFile : injected fs (default: node:fs/promises)
+//   stateFile / evidenceLogFile : paths (default: STATE_FILE / EVIDENCE_LOG_FILE)
+//
+// Returns one of:
+//   { skipped: true }                                    — inside the scan cooldown
+//   { skipped: false, scannedSweeps, faults, outcomes, attemptsMade } — ran
+// Always resolves; never throws.
+// =====================================================================
+export async function runSelfRepairOnce(deps = {}) {
+  const {
+    scan = runSelfRepairScan,
+    attemptRepair = actuator.attemptRepair,
+    escalate = actuator.escalate,
+    now = Date.now,
+    log = (m) => console.log(m),
+    readFile = fs.readFile,
+    writeFile = fs.writeFile,
+    stateFile = STATE_FILE,
+    evidenceLogFile = EVIDENCE_LOG_FILE,
+  } = deps;
+
+  const nowMs = now();
+
+  // 1. Cooldown gate: read the state file. If the last attempt-scan ran less
+  //    than SCAN_MIN_INTERVAL_MS ago, skip the whole sweep — no scan, no
+  //    dispatch — and tell the operator when the next run is eligible.
+  let state = {};
+  try {
+    const raw = await readFile(stateFile, "utf8");
+    const parsed = JSON.parse(raw);
+    state = parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    state = {};
+  }
+
+  const lastScanMs = Number.isFinite(state && state.lastScanMs) ? state.lastScanMs : null;
+  if (lastScanMs !== null && nowMs - lastScanMs < SCAN_MIN_INTERVAL_MS) {
+    const nextIso = new Date(lastScanMs + SCAN_MIN_INTERVAL_MS).toISOString();
+    try { log(`self-repair: skipped (next run after ${nextIso})`); } catch { /* observational */ }
+    return { skipped: true };
+  }
+
+  // 2. Run the detector scan. A throwing scan is caught so the sweep still
+  //    records lastScanMs and resolves; it never propagates.
+  let scanResult;
+  try {
+    scanResult = await scan(deps);
+  } catch (err) {
+    try { log(`self-repair: scan threw — ${err && err.message ? err.message : String(err)}`); } catch { /* observational */ }
+    scanResult = { scannedSweeps: 0, faults: [] };
+  }
+
+  // 3. Record lastScanMs so the cooldown gate can fire on the next invocation.
+  //    This is independent of whether the scan found anything.
+  const nextState = { ...(state && typeof state === "object" ? state : {}), lastScanMs: nowMs };
+  try {
+    await writeFile(stateFile, JSON.stringify(nextState, null, 2) + "\n", "utf8");
+  } catch {
+    // Bookkeeping is best-effort; the sweep still proceeds with what it has.
+  }
+
+  const faults = scanResult && Array.isArray(scanResult.faults) ? scanResult.faults : [];
+
+  // 4. For at most MAX_REPAIRS_PER_SWEEP repairable faults, delegate to the
+  //    actuator's attemptRepair. Faults the detector already blocked
+  //    (envelope / cooldown / lane-quota) are repairable:false and are never
+  //    handed to attemptRepair — they are logged and left for the next sweep.
+  const outcomes = [];
+  let attemptsMade = 0;
+  for (const fault of faults) {
+    if (!fault || fault.repairable !== true) {
+      const blockedBy = (fault && fault.blockedBy) || "none";
+      try { log(`self-repair: skipping ${fault ? fault.name : "unknown"} (blockedBy=${blockedBy})`); } catch { /* observational */ }
+      continue;
+    }
+    if (attemptsMade >= MAX_REPAIRS_PER_SWEEP) {
+      try { log(`self-repair: repairable fault ${fault.name} deferred (per-sweep cap ${MAX_REPAIRS_PER_SWEEP} reached)`); } catch { /* observational */ }
+      continue;
+    }
+    attemptsMade += 1;
+
+    let result;
+    try {
+      result = await attemptRepair(fault, deps);
+    } catch (err) {
+      // attemptRepair must never throw out of the sweep. Log and move on.
+      try { log(`self-repair: attemptRepair threw for ${fault.name} — ${err && err.message ? err.message : String(err)}`); } catch { /* observational */ }
+      outcomes.push({ name: fault.name, outcome: "error", error: String((err && err.message) || err) });
+      continue;
+    }
+
+    const outcome = result && result.outcome ? result.outcome : "unknown";
+    outcomes.push({ name: fault.name, outcome, result });
+
+    if (outcome === "reverted") {
+      // The system tried and could not fix itself — escalate so the owner
+      // learns. escalate has its own 24h per-step cooldown, so this is safe to
+      // call every sweep. A throwing escalate is caught, never propagated.
+      try {
+        await escalate(fault, outcomes, deps);
+      } catch (err) {
+        try { log(`self-repair: escalate threw for ${fault.name} — ${err && err.message ? err.message : String(err)}`); } catch { /* observational */ }
+      }
+    } else if (outcome === "repaired") {
+      // A successful repair does NOT alert the owner. It appends one evidence
+      // entry and logs a single line so the sweep is auditable.
+      try { log(`self-repair: repaired ${fault.name}${result && result.suite ? " (" + result.suite + ")" : ""}`); } catch { /* observational */ }
+      try {
+        await appendEvidence({ type: "repair-success", name: fault.name, ...(result || {}) }, { ...deps, file: evidenceLogFile, now });
+      } catch {
+        // Evidence is best-effort.
+      }
+    }
+  }
+
+  return {
+    skipped: false,
+    scannedSweeps: scanResult && Number.isFinite(scanResult.scannedSweeps) ? scanResult.scannedSweeps : 0,
+    faults,
+    outcomes,
+    attemptsMade,
+  };
+}
+
 function usage() {
-  return "usage: node ops-watcher/self-repair.mjs --scan";
+  return "usage: node ops-watcher/self-repair.mjs --scan | --once";
 }
 
 function printSummary(result) {
@@ -306,13 +477,19 @@ function printSummary(result) {
 
 async function main() {
   const argv = process.argv.slice(2);
-  if (argv.length !== 1 || argv[0] !== "--scan") {
-    console.error(usage());
-    process.exit(2);
+  if (argv.length === 1 && argv[0] === "--scan") {
+    const result = await runSelfRepairScan();
+    printSummary(result);
+    process.exit(0);
   }
-  const result = await runSelfRepairScan();
-  printSummary(result);
-  process.exit(0);
+  if (argv.length === 1 && argv[0] === "--once") {
+    await runSelfRepairOnce();
+    // Exit code is 0 unless the module itself crashed (caught above). A skipped
+    // or all-skipped sweep is still a successful bounded step.
+    process.exit(0);
+  }
+  console.error(usage());
+  process.exit(2);
 }
 
 const isEntry = (() => {
