@@ -18,7 +18,7 @@ Every Ahmad dispatch prompt should fit this shape:
 ## Worker Rules
 
 - AHMAD: Claude Code CLI, orchestrator, does not self-modify.
-- HATTA: Ollama Cloud glm-5.2:cloud; bounded maker; has a path jail; times out around 8 minutes, so never give it a packet larger than roughly 3 KB or more than about two files.
+- HATTA: Ollama Cloud glm-5.2:cloud; bounded maker; has a path jail; times out hard at 8 minutes. Measured over 25 real dispatches on 2026-09-01: 68% success, 335s average — three of the failures were timeouts on packets of roughly 3 KB. Keep its packets under 2 KB and to a single file; anything larger goes to CORLEONE.
 - CORLEONE: codex CLI (gpt-5.5); maker and reviewer.
 - SJAHRIR: Kimi Code CLI; implementation; weak on open-ended many-file tasks, give it exact targets.
 - GIBRAN: Hermes Nous free lane; review and analysis only; truncates long list-shaped output.
@@ -30,7 +30,7 @@ Every Ahmad dispatch prompt should fit this shape:
 - Prefer file paths and hashes over pasted context.
 - Use durable records from `config/decision-ledger.json` and `handoffs/` with source paths; never say a record exists without a file.
 - Ask reviewers for a checklist verdict, not a rewrite of the whole plan.
-- Never give HATTA a packet larger than roughly 3 KB or more than about two files.
+- Never give HATTA a packet larger than roughly 2 KB or more than one file. Measured 2026-09-01: 68% success over 25 dispatches, its failures concentrated on larger packets. CORLEONE managed 81% at 241s average over 26 dispatches in the same window, so route anything substantial there.
 - For long missions, write a compact state artifact first and dispatch from that.
 
 ## Owner-Facing Standard
