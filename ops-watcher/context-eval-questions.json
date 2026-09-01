@@ -1,0 +1,188 @@
+{
+  "schema_version": "1.0.0",
+  "authored_at": "2026-09-01",
+  "note": "Ground truth for context-retrieval evaluation. Each case names the sources a good context bundle MUST surface. Entries in must_include_any are real GBrain slugs or real repo paths. The out-of-scope case (q12) has an empty must_include_any so the harness can measure over-retrieval.",
+  "cases": [
+    {
+      "id": "q01",
+      "question": "What is the exact ordered list of steps the heartbeat single-sweep runs, and which step is gated by the telegram-listener daemon health check?",
+      "issue": {
+        "identifier": "KOL-CTX-01",
+        "title": "Document the heartbeat fourteen-step pipeline and the step-5 daemon-health gate",
+        "description": "heartbeat.mjs runs a single sweep of fourteen ops-watcher scripts in order. Step 5 (telegram-listener) is gated: it only runs its one-shot getUpdates check when the persistent PM2 daemon is NOT confirmed healthy. Need the canonical step list and the gate logic for a dispatch packet."
+      },
+      "targetRole": "HATTA",
+      "taskKind": "implementation",
+      "mentionedPaths": ["ops-watcher/heartbeat.mjs"],
+      "must_include_any": ["ops-watcher/heartbeat.mjs"],
+      "must_not_include": ["config/decision-ledger.json"],
+      "rationale": "The hand-maintained STEPS array in ops-watcher/heartbeat.mjs is the single canonical source for the fourteen-step ordered pipeline and the shouldRunTelegramListenerStepReal gate. A good bundle must surface that file. The decision ledger is about owner financial decisions and would be a clear false positive here."
+    },
+    {
+      "id": "q02",
+      "question": "How does the lane/quota guard decide whether to skip a dispatch, and what lane keys map corleone/sjahrir/hatta?",
+      "issue": {
+        "identifier": "KOL-CTX-02",
+        "title": "Explain lane-guard.mjs guardLaneStart/recordLaneOutcome and the LANE_KEYS mapping",
+        "description": "lane-guard.mjs wraps routing.mjs lane health state. guardLaneStart checks shouldSkipLane; recordLaneOutcome records success/quota/failure. LANE_KEYS maps corleone->codex, sjahrir->kimi, hatta->ollama. Need this for a dispatch that must respect lane cooldowns."
+      },
+      "targetRole": "HATTA",
+      "taskKind": "implementation",
+      "mentionedPaths": ["ops-watcher/lane-guard.mjs"],
+      "must_include_any": ["ops-watcher/lane-guard.mjs"],
+      "must_not_include": ["config/paperclip-endpoint.json"],
+      "rationale": "ops-watcher/lane-guard.mjs is the canonical module for the lane/quota guard and the LANE_KEYS map. The Paperclip endpoint config is unrelated to lane health and would be a false positive."
+    },
+    {
+      "id": "q03",
+      "question": "What are the bounds of the self-repair envelope (scan cooldown, per-sweep repair cap, hard-deny steps) and why were they chosen?",
+      "issue": {
+        "identifier": "KOL-CTX-03",
+        "title": "Describe the self-repair bounded sweep envelope (SCAN_MIN_INTERVAL_MS, MAX_REPAIRS_PER_SWEEP, HARD_DENY_STEPS)",
+        "description": "self-repair.mjs runs a bounded repair sweep as heartbeat step 14. SCAN_MIN_INTERVAL_MS=30min, MAX_REPAIRS_PER_SWEEP=1, REPAIR_COOLDOWN_MS=6h. HARD_DENY_STEPS forbids repairing heartbeat/telegram/ahmad-dispatch/steward. The bounds exist so an unbounded repair loop cannot burn the SJAHRIR quota again."
+      },
+      "targetRole": "HATTA",
+      "taskKind": "implementation",
+      "mentionedPaths": ["ops-watcher/self-repair.mjs"],
+      "must_include_any": ["ops-watcher/self-repair.mjs"],
+      "must_not_include": ["handoffs/sjahrir/MASTER-CANONICAL-BACKLOG.json"],
+      "rationale": "ops-watcher/self-repair.mjs is the canonical source for the bounded repair envelope constants and the HARD_DENY_STEPS set. The master backlog is a planning artifact, not the repair safety contract."
+    },
+    {
+      "id": "q04",
+      "question": "How does the audit-clerk drift check decide whether to run, and what is the throttle interval and the two canonical documents it compares?",
+      "issue": {
+        "identifier": "KOL-CTX-04",
+        "title": "Explain audit-clerk.mjs shouldRunDriftCheck, DRIFT_MIN_INTERVAL_MS, and the registry-vs-role-map comparison",
+        "description": "audit-clerk.mjs has two checks: orphaned allowlist entries (every cycle) and a CORLEONE-dispatched fuzzy consistency comparison between config/agent-registry.json and handoffs/sjahrir/CANONICAL-ROLE-MAP.json. The drift check is throttled to DRIFT_MIN_INTERVAL_MS=6h via shouldRunDriftCheck. Need this for a dispatch that adds a new agent role."
+      },
+      "targetRole": "HATTA",
+      "taskKind": "implementation",
+      "mentionedPaths": ["ops-watcher/audit-clerk.mjs"],
+      "must_include_any": ["ops-watcher/audit-clerk.mjs", "agent-registry", "canonical-role-map"],
+      "must_not_include": ["config/decision-ledger.json"],
+      "rationale": "audit-clerk.mjs is the canonical module for the drift check; the two documents it compares are config/agent-registry.json (slug agent-registry) and handoffs/sjahrir/CANONICAL-ROLE-MAP.json (slug canonical-role-map). Any of these three is a valid hit. The decision ledger is not part of the drift comparison."
+    },
+    {
+      "id": "q05",
+      "question": "What is the canonical Paperclip endpoint discovery strategy (primary port, fingerprint field, candidate ports) and why is a port number alone never identity?",
+      "issue": {
+        "identifier": "KOL-CTX-05",
+        "title": "Document the Paperclip endpoint discovery rule from config/paperclip-endpoint.json",
+        "description": "config/paperclip-endpoint.json defines fingerprint-based discovery: try primary_endpoint.port 3110 first, verify /api/health databaseBackup.backupDir matches the canonical fingerprint, then fall back to candidate_ports [3110,3100,3101,3102,3103]. Never trust a port number alone as identity. Need this for a dispatch that must reach the canonical Paperclip instance."
+      },
+      "targetRole": "HATTA",
+      "taskKind": "implementation",
+      "mentionedPaths": ["config/paperclip-endpoint.json"],
+      "must_include_any": ["paperclip-endpoint", "config/paperclip-endpoint.json"],
+      "must_not_include": ["ops-watcher/self-repair.mjs"],
+      "rationale": "config/paperclip-endpoint.json (GBrain slug paperclip-endpoint) is the single canonical reference for the endpoint discovery strategy. The self-repair module is unrelated to Paperclip port discovery."
+    },
+    {
+      "id": "q06",
+      "question": "What is the canonical role map (role_id, default_lane, disposition) for the FounderOS-Aidit agent roster, including HATTA, CORLEONE, SJAHRIR, GIBRAN?",
+      "issue": {
+        "identifier": "KOL-CTX-06",
+        "title": "Summarize the canonical role map from handoffs/sjahrir/CANONICAL-ROLE-MAP.json",
+        "description": "CANONICAL-ROLE-MAP.json defines the agent roster with role_id, department, boundary, default_lane, fallback_lane, disposition. HATTA=L2 glm-5.2:cloud, CORLEONE=L6 Codex, SJAHRIR=L2 kimi-k2.7-code:cloud, GIBRAN=L4 Nous free. Need this for a dispatch that routes work to the correct lane."
+      },
+      "targetRole": "AHMAD",
+      "taskKind": "status",
+      "mentionedPaths": ["handoffs/sjahrir/CANONICAL-ROLE-MAP.json"],
+      "must_include_any": ["canonical-role-map", "handoffs/sjahrir/CANONICAL-ROLE-MAP.json"],
+      "must_not_include": ["config/paperclip-endpoint.json"],
+      "rationale": "handoffs/sjahrir/CANONICAL-ROLE-MAP.json (GBrain slug canonical-role-map) is the canonical role/lane map. The Paperclip endpoint config does not describe agent roles or lanes."
+    },
+    {
+      "id": "q07",
+      "question": "What does the agent registry declare about each agent (AHMAD, HATTA, GIBRAN, SJAHRIR) — runtime, provider, capacity isolation, can_implement?",
+      "issue": {
+        "identifier": "KOL-CTX-07",
+        "title": "Summarize config/agent-registry.json agent definitions and the canonical_boundary_note",
+        "description": "config/agent-registry.json is the declarative-only agent registry. Each agent block declares runtime, provider, auth, capacity_isolation, can_implement, can_review. The canonical_boundary_note says this file must never hold live task state. Need this for a dispatch that must respect capacity isolation between AHMAD and HATTA."
+      },
+      "targetRole": "AHMAD",
+      "taskKind": "status",
+      "mentionedPaths": ["config/agent-registry.json"],
+      "must_include_any": ["agent-registry", "config/agent-registry.json"],
+      "must_not_include": ["ops-watcher/telegram-listener.mjs"],
+      "rationale": "config/agent-registry.json (GBrain slug agent-registry) is the canonical declarative agent registry. The telegram-listener module is about Telegram callback handling, not agent identity/capacity."
+    },
+    {
+      "id": "q08",
+      "question": "How does the PM2 supervisor diagnose process health (three-state model, expected processes, resurrect cooldown) and when is resurrect allowed?",
+      "issue": {
+        "identifier": "KOL-CTX-08",
+        "title": "Explain pm2-supervisor.mjs diagnose/resurrect and the three-state reachable/false/unknown model",
+        "description": "pm2-supervisor.mjs runs OUTSIDE PM2 and polls the daemon. readPm2State returns reachable:true (jlist parsed), reachable:false (daemon down), or unknown:true (could not get authoritative answer). EXPECTED_PROCESSES=[heartbeat,paperclip,telegram-listener]. resurrect may ONLY run on reachable:false or reachable:true+missing, NEVER on unknown. RESURRECT_COOLDOWN_MS=10min. Need this for a dispatch that hardens the supervisor."
+      },
+      "targetRole": "HATTA",
+      "taskKind": "implementation",
+      "mentionedPaths": ["ops-watcher/pm2-supervisor.mjs"],
+      "must_include_any": ["ops-watcher/pm2-supervisor.mjs"],
+      "must_not_include": ["config/decision-ledger.json"],
+      "rationale": "ops-watcher/pm2-supervisor.mjs is the canonical module for the three-state diagnose model, EXPECTED_PROCESSES, and the resurrect safety rule. The decision ledger is about owner financial decisions, not PM2 supervision."
+    },
+    {
+      "id": "q09",
+      "question": "What is the review-runner verdict flow (VERDICT: PASS/REJECT/PARSE_FAILED, parseVerdict, verdictCategory, bounded retry, OWNER_REQUIRED guard)?",
+      "issue": {
+        "identifier": "KOL-CTX-09",
+        "title": "Document the review-runner.mjs verdict extraction and transition flow",
+        "description": "review-runner.mjs dispatches GIBRAN via hermes to review REVIEW_REQUIRED issues. parseVerdict extracts VERDICT: <value>; verdictCategory classifies pass/reject/workspace-error/ambiguous. On PASS -> done+DONE_VERIFIED; on REJECT -> todo+NEEDS_REWORK. Bounded retry via comment count (MAX_HERMES_ATTEMPTS=3). OWNER_REQUIRED blocks all action. Need this for a dispatch that changes the verdict flow."
+      },
+      "targetRole": "HATTA",
+      "taskKind": "implementation",
+      "mentionedPaths": ["ops-watcher/review-runner.mjs"],
+      "must_include_any": ["ops-watcher/review-runner.mjs"],
+      "must_not_include": ["ops-watcher/lane-guard.mjs"],
+      "rationale": "ops-watcher/review-runner.mjs is the canonical module for the verdict flow (parseVerdict, verdictCategory, transitions, bounded retry). lane-guard.mjs is a dependency but does not itself contain the verdict logic."
+    },
+    {
+      "id": "q10",
+      "question": "What is the Telegram decision-comment dedupe window and how does hasRecentDecisionComment suppress duplicate confirmation comments?",
+      "issue": {
+        "identifier": "KOL-CTX-10",
+        "title": "Explain the telegram-listener.mjs DEDUPE_WINDOW_MS comment-dedupe fix",
+        "description": "telegram-listener.mjs suppresses duplicate decision confirmation comments when the OWNER rapidly taps the same button. DEDUPE_WINDOW_MS=60000 (60s). hasRecentDecisionComment scans the issue's comments for a matching decision prefix within the window. The canonical PATCH is still applied (idempotent); only the spam comment is suppressed. Need this for a dispatch that fixes a duplicate-comment regression."
+      },
+      "targetRole": "HATTA",
+      "taskKind": "implementation",
+      "mentionedPaths": ["ops-watcher/telegram-listener.mjs"],
+      "must_include_any": ["ops-watcher/telegram-listener.mjs"],
+      "must_not_include": ["ops-watcher/pm2-supervisor.mjs"],
+      "rationale": "ops-watcher/telegram-listener.mjs is the canonical source for DEDUPE_WINDOW_MS, hasRecentDecisionComment, and the DECISION_COMMENT_PREFIX map. The PM2 supervisor is about process health, not Telegram comment dedupe."
+    },
+    {
+      "id": "q11",
+      "question": "How does the GBrain curator project the agent-registry before capture, and what are the five canonical source slugs it ingests?",
+      "issue": {
+        "identifier": "KOL-CTX-11",
+        "title": "Document gbrain-curator.mjs projectAgentRegistry, SOURCE_PROJECTIONS, and KNOWN_CANONICAL_SOURCES",
+        "description": "gbrain-curator.mjs ingests five canonical sources by slug: agent-registry, canonical-decision-ledger, paperclip-endpoint, master-canonical-backlog, canonical-role-map. projectAgentRegistry projects the 181KB registry into a compact summary (<60KB) before capture because the raw file is too large to embed. PROJECTION_MAX_BYTES=60000. Need this for a dispatch that adds a new canonical source to the curator."
+      },
+      "targetRole": "HATTA",
+      "taskKind": "implementation",
+      "mentionedPaths": ["ops-watcher/gbrain-curator.mjs"],
+      "must_include_any": ["ops-watcher/gbrain-curator.mjs", "agent-registry"],
+      "must_not_include": ["ops-watcher/review-runner.mjs"],
+      "rationale": "ops-watcher/gbrain-curator.mjs is the canonical module for projectAgentRegistry, SOURCE_PROJECTIONS, and the KNOWN_CANONICAL_SOURCES slug map. The agent-registry slug is one of the five canonical sources it ingests. review-runner.mjs is about GIBRAN verdicts, not GBrain curation."
+    },
+    {
+      "id": "q12",
+      "question": "What is the Kubernetes ingress configuration for the production FounderOS-Aidit cloud deployment?",
+      "issue": {
+        "identifier": "KOL-CTX-12",
+        "title": "Find the Kubernetes ingress configuration for the cloud deployment",
+        "description": "We need the Kubernetes ingress YAML and the load-balancer service definition for the production cloud deployment of FounderOS-Aidit. This is a deliberately out-of-scope question: this repository has no Kubernetes manifests, no ingress configuration, and no cloud deployment manifests. The correct retrieval answer is no strong evidence."
+      },
+      "targetRole": "HATTA",
+      "taskKind": "implementation",
+      "mentionedPaths": [],
+      "must_include_any": [],
+      "must_not_include": ["ops-watcher/heartbeat.mjs", "config/agent-registry.json"],
+      "must_not_include_rationale": "If the retrieval surfaces heartbeat.mjs or agent-registry.json for a Kubernetes ingress question, that is over-retrieval — those files have nothing to do with Kubernetes or cloud ingress.",
+      "rationale": "This repository contains no Kubernetes, no cloud ingress, no load-balancer manifests. The correct answer is an empty/degraded bundle with no relevant evidence. This case lets the harness measure over-retrieval: a good retrieval system returns no strong evidence rather than surfacing unrelated files. must_include_any is intentionally empty so hit can only be true via a false match, and must_not_include catches the most likely false positives."
+    }
+  ]
+}
