@@ -31,21 +31,40 @@ const NOW = 2_000_000_000;
 
 // ---- fixtures ----
 // Raw jlist shape (as pm2 actually emits): name/pid at top level, status in pm2_env.
+// The supervisor now watches FOUR processes: heartbeat, paperclip,
+// telegram-listener and cockpit. Each fixture below keeps its stated
+// single-issue intent by leaving the other three (now four) online.
 const HEALTHY_JLIST = [
   { name: "heartbeat", pid: 111, pm2_env: { status: "online", restart_time: 2 } },
   { name: "paperclip", pid: 222, pm2_env: { status: "online", restart_time: 1 } },
   { name: "telegram-listener", pid: 333, pm2_env: { status: "online", restart_time: 0 } },
+  { name: "cockpit", pid: 444, pm2_env: { status: "online", restart_time: 0 } },
 ];
-// heartbeat gone — critical (missing).
+// heartbeat gone — critical (missing). The other three, incl. cockpit, online.
 const MISSING_JLIST = [
   { name: "paperclip", pid: 222, pm2_env: { status: "online", restart_time: 1 } },
   { name: "telegram-listener", pid: 333, pm2_env: { status: "online", restart_time: 0 } },
+  { name: "cockpit", pid: 444, pm2_env: { status: "online", restart_time: 0 } },
 ];
-// heartbeat present but stopped — critical (not online).
+// heartbeat present but stopped — critical (not online). Others online.
 const STOPPED_JLIST = [
   { name: "heartbeat", pid: 0, pm2_env: { status: "stopped", restart_time: 3 } },
   { name: "paperclip", pid: 222, pm2_env: { status: "online", restart_time: 1 } },
   { name: "telegram-listener", pid: 333, pm2_env: { status: "online", restart_time: 0 } },
+  { name: "cockpit", pid: 444, pm2_env: { status: "online", restart_time: 0 } },
+];
+// cockpit gone but the other three online — critical (cockpit missing).
+const COCKPIT_MISSING_JLIST = [
+  { name: "heartbeat", pid: 111, pm2_env: { status: "online", restart_time: 2 } },
+  { name: "paperclip", pid: 222, pm2_env: { status: "online", restart_time: 1 } },
+  { name: "telegram-listener", pid: 333, pm2_env: { status: "online", restart_time: 0 } },
+];
+// cockpit present but stopped — critical (cockpit not online). Others online.
+const COCKPIT_STOPPED_JLIST = [
+  { name: "heartbeat", pid: 111, pm2_env: { status: "online", restart_time: 2 } },
+  { name: "paperclip", pid: 222, pm2_env: { status: "online", restart_time: 1 } },
+  { name: "telegram-listener", pid: 333, pm2_env: { status: "online", restart_time: 0 } },
+  { name: "cockpit", pid: 0, pm2_env: { status: "stopped", restart_time: 5 } },
 ];
 
 function jlistResult(arr) {
@@ -204,7 +223,7 @@ async function testReadStateValid() {
     });
     assert.equal(r.reachable, true);
     assert.equal(r.unknown, undefined);
-    assert.equal(r.processes.length, 3);
+    assert.equal(r.processes.length, 4);
     assert.deepEqual(r.processes.map((p) => p.name), EXPECTED_PROCESSES);
     assert.equal(r.processes[0].status, "online");
     assert.equal(r.processes[0].pid, 111);
@@ -253,7 +272,7 @@ async function testReadStateGarbage() {
 async function testDiagnose() {
   const name = "P8 diagnose: healthy / daemon-down-critical / stopped-critical / port-null-warning / unknown";
   try {
-    // 1. three online + port 3110 -> healthy
+    // 1. four online + port 3110 -> healthy
     const d1 = diagnose({ reachable: true, processes: HEALTHY_JLIST }, 3110);
     assert.equal(d1.healthy, true);
     assert.equal(d1.severity, null);
@@ -426,6 +445,78 @@ async function testResurrectOnlyResurrectThenSave() {
   } catch (err) { bad(name, err); }
 }
 
+// =====================================================================
+// P15: EXPECTED_PROCESSES contains cockpit (the owner's only visual surface)
+// =====================================================================
+async function testExpectedIncludesCockpit() {
+  const name = "P15 EXPECTED_PROCESSES contains cockpit";
+  try {
+    assert.ok(Array.isArray(EXPECTED_PROCESSES), "EXPECTED_PROCESSES is an array");
+    assert.ok(EXPECTED_PROCESSES.includes("cockpit"), "cockpit is watched");
+    // the original three are still watched too
+    for (const n of ["heartbeat", "paperclip", "telegram-listener"]) {
+      assert.ok(EXPECTED_PROCESSES.includes(n), `${n} still watched`);
+    }
+    assert.equal(EXPECTED_PROCESSES.length, 4, "exactly four expected processes");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// P16: cockpit missing but the other three online -> critical, cockpit named in reason
+// =====================================================================
+async function testDiagnoseCockpitMissing() {
+  const name = "P16 diagnose: cockpit missing, other three online -> critical, cockpit named in reason";
+  try {
+    const d = diagnose({ reachable: true, processes: COCKPIT_MISSING_JLIST }, 3110);
+    assert.equal(d.healthy, false);
+    assert.equal(d.severity, "critical");
+    assert.deepEqual(d.missing, ["cockpit"]);
+    assert.deepEqual(d.notOnline, []);
+    // cockpit must be named explicitly in the reason, otherwise the recovery
+    // advice to the operator is incomplete.
+    assert.ok(d.reasons.some((r) => r.includes("cockpit")),
+      "a reason names cockpit so the operator knows what to look for");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// P17: cockpit present but stopped -> critical (not online)
+// =====================================================================
+async function testDiagnoseCockpitStopped() {
+  const name = "P17 diagnose: cockpit present but stopped -> critical (not online)";
+  try {
+    const d = diagnose({ reachable: true, processes: COCKPIT_STOPPED_JLIST }, 3110);
+    assert.equal(d.healthy, false);
+    assert.equal(d.severity, "critical");
+    assert.deepEqual(d.missing, []);
+    assert.deepEqual(d.notOnline, ["cockpit"]);
+    assert.ok(d.reasons.some((r) => r.includes("cockpit") && r.includes("stopped")),
+      "a reason names cockpit and its stopped status");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// P18: all four online -> healthy (the supervisor no longer calls a dead
+// cockpit "fine")
+// =====================================================================
+async function testDiagnoseAllFourHealthy() {
+  const name = "P18 diagnose: all four (incl. cockpit) online -> healthy";
+  try {
+    const d = diagnose({ reachable: true, processes: HEALTHY_JLIST }, 3110);
+    assert.equal(d.healthy, true);
+    assert.equal(d.severity, null);
+    assert.deepEqual(d.missing, []);
+    assert.deepEqual(d.notOnline, []);
+    // sanity: every expected process is actually present and online here
+    const names = new Set(HEALTHY_JLIST.map((p) => p.name));
+    for (const n of EXPECTED_PROCESSES) assert.ok(names.has(n), `${n} present in fixture`);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
 // ---- main ----
 async function main() {
   console.log("# ops-watcher pm2-supervisor regression tests");
@@ -444,6 +535,10 @@ async function main() {
     testSupervisorCriticalInsideCooldown,
     testSupervisorUnknownNoResurrect,
     testResurrectOnlyResurrectThenSave,
+    testExpectedIncludesCockpit,
+    testDiagnoseCockpitMissing,
+    testDiagnoseCockpitStopped,
+    testDiagnoseAllFourHealthy,
   ];
   for (const t of tests) {
     try { await t(); }

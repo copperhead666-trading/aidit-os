@@ -57,7 +57,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
 const NODE = process.execPath || "node";
 
-export const EXPECTED_PROCESSES = ["heartbeat", "paperclip", "telegram-listener"];
+// The set of PM2-managed processes the supervisor watches for. The cockpit
+// (the owner's only visual surface, served on :4200 over Tailscale) is watched
+// here at process-level presence only — a dead cockpit reported as a healthy
+// stack is exactly the failure this module exists to prevent. No port/HTTP
+// health check is performed for the cockpit; that is a separate decision.
+export const EXPECTED_PROCESSES = ["heartbeat", "paperclip", "telegram-listener", "cockpit"];
 export const STATE_FILE = path.join(__dirname, "pm2-supervisor-state.json");
 export const EVIDENCE_FILE = path.join(__dirname, "pm2-supervisor-log.jsonl");
 export const RESURRECT_COOLDOWN_MS = 10 * 60 * 1000;   // do not thrash
@@ -339,7 +344,7 @@ export function diagnose(pm2State, paperclipPort, { expected = EXPECTED_PROCESSE
     return {
       healthy: false, severity: "critical",
       missing: expected.slice(), notOnline: expected.slice(),
-      reasons: ["Daemon PM2 tidak aktif (tidak berjalan) — seluruh proses (heartbeat, paperclip, telegram-listener) perlu dipulihkan via `pm2 resurrect`."],
+      reasons: ["Daemon PM2 tidak aktif (tidak berjalan) — seluruh proses (heartbeat, paperclip, telegram-listener, cockpit) perlu dipulihkan via `pm2 resurrect`."],
     };
   }
 

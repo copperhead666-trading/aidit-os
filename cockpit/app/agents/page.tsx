@@ -51,6 +51,65 @@ function formatDuration(ms: number): string {
   return `${minutes}m`;
 }
 
+const DESCRIPTION_DISCLOSURE_CHAR_LIMIT = 180;
+
+function normalizeText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function descriptionSentences(text: string): string[] {
+  return normalizeText(text).match(/[^.!?]+[.!?]?/g)?.map((sentence) => sentence.trim()) ?? [];
+}
+
+function isHistoryFirstSentence(sentence: string): boolean {
+  return /^(SUPERSEDED|RESOLVED|DISCOVERED|PRIOR|EARLIER|LEGACY)\b/i.test(sentence);
+}
+
+function shortenSummary(summary: string): string {
+  const clean = normalizeText(summary)
+    .replace(/^OWNER confirmed\s+/i, '')
+    .replace(/\bALSO\b/g, 'also');
+  if (clean.length <= 150) return clean;
+
+  const softBreak = Math.max(
+    clean.lastIndexOf(', ', 150),
+    clean.lastIndexOf('; ', 150),
+    clean.lastIndexOf(' - ', 150),
+  );
+  return `${clean.slice(0, softBreak > 80 ? softBreak : 150).trim()}...`;
+}
+
+function currentDescriptionLine(description: string): string {
+  const sentences = descriptionSentences(description);
+  const firstCurrentSentence =
+    sentences.find(
+      (sentence) =>
+        !isHistoryFirstSentence(sentence) &&
+        /\b(active|available|installed|usable|wired|confirmed|runs|lane|ready)\b/i.test(sentence),
+    ) ??
+    sentences.find((sentence) => !isHistoryFirstSentence(sentence)) ??
+    sentences[0];
+
+  if (!firstCurrentSentence) return 'Current state: full registry note available below.';
+  return `Current state: ${shortenSummary(firstCurrentSentence)}`;
+}
+
+function AgentDescription({ role }: { role: string }) {
+  if (role.length <= DESCRIPTION_DISCLOSURE_CHAR_LIMIT) {
+    return <p className="text-os-muted">{role}</p>;
+  }
+
+  return (
+    <div className="space-y-1 min-w-0">
+      <p className="text-os-muted">{currentDescriptionLine(role)}</p>
+      <details className="text-os-muted min-w-0">
+        <summary className="cursor-pointer text-os-dim">Full registry note</summary>
+        <p className="mt-1 whitespace-pre-wrap break-words">{role}</p>
+      </details>
+    </div>
+  );
+}
+
 function LaneLine({ lane }: { lane: LaneStat }) {
   const successRate =
     lane.runs > 0 ? `${Math.round((lane.ok / lane.runs) * 100)}%` : '—';
@@ -195,16 +254,12 @@ export default async function AgentsPage() {
               <li key={key} className="p-3 text-xs space-y-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-mono text-os-text">{name}</span>
-                  {agent.can_implement === true && (
-                    <Badge tone="ok" ghost>
-                      maker
-                    </Badge>
-                  )}
-                  {agent.can_review === true && (
-                    <Badge tone="accent" ghost>
-                      reviewer
-                    </Badge>
-                  )}
+                  <Badge tone={agent.can_review === true ? 'accent' : 'default'} ghost>
+                    {agent.can_review === true ? 'can review' : 'cannot review'}
+                  </Badge>
+                  <Badge tone={agent.can_implement === true ? 'ok' : 'default'} ghost>
+                    {agent.can_implement === true ? 'can implement' : 'cannot implement'}
+                  </Badge>
                   {provider && (
                     <Badge tone="default" ghost>
                       {provider}
@@ -212,7 +267,7 @@ export default async function AgentsPage() {
                   )}
                 </div>
 
-                {role && <p className="text-os-muted">{role}</p>}
+                {role && <AgentDescription role={role} />}
 
                 {runtime && (
                   <div className="font-mono text-[10px] text-os-dim break-words">{runtime}</div>

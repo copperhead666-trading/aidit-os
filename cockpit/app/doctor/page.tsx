@@ -22,6 +22,28 @@ function formatDuration(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+interface HeartbeatStepSummary {
+  name: string;
+  ok: boolean;
+  skipped: boolean;
+  durationMs: number;
+}
+
+function heartbeatStepPurpose(name: string): string {
+  const stepName = name.toLowerCase();
+  if (stepName.includes('watcher')) return 'menjalankan watcher sekali untuk mencari pekerjaan baru';
+  if (stepName.includes('telegram-notify')) return 'memeriksa kartu keputusan OWNER yang perlu dikirim ke Telegram';
+  if (stepName.includes('telegram-listener')) return 'memeriksa balasan Telegram dari OWNER';
+  if (stepName.includes('self-repair')) return 'memeriksa apakah perbaikan otomatis perlu dijalankan';
+  if (stepName.includes('paperclip')) return 'memeriksa layanan Paperclip lokal';
+  return 'memeriksa satu bagian sistem';
+}
+
+function heartbeatStepLine(step: HeartbeatStepSummary): string {
+  const outcome = step.skipped ? 'dilewati' : step.ok ? 'berhasil' : 'bermasalah';
+  return `Langkah ini ${heartbeatStepPurpose(step.name)}; ${outcome} dalam ${formatDuration(step.durationMs)}.`;
+}
+
 export default async function DoctorPage() {
   const [heartbeat, supervisorEntries, repairEntries] = await Promise.all([
     readHeartbeat(),
@@ -53,9 +75,14 @@ export default async function DoctorPage() {
                     <span className="text-xs text-os-dim shrink-0">{formatDuration(step.durationMs)}</span>
                   </div>
                   {step.excerpt ? (
-                    <div className="line-clamp-4 break-words whitespace-pre-wrap font-mono text-xs text-os-muted min-w-0">
-                      {step.excerpt}
-                    </div>
+                    <>
+                      <div className="text-xs text-os-muted break-words">
+                        {heartbeatStepLine(step)}
+                      </div>
+                      <div className="line-clamp-4 break-words whitespace-pre-wrap font-mono text-xs text-os-muted min-w-0">
+                        {step.excerpt}
+                      </div>
+                    </>
                   ) : null}
                 </div>
               ))}
