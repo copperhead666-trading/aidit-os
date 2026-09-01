@@ -1,10 +1,19 @@
 import type { Metadata, Viewport } from 'next';
 import { JetBrains_Mono } from 'next/font/google';
+import { cookies } from 'next/headers';
 import './globals.css';
 import { Sidebar } from '@/components/Sidebar';
 import { Topbar } from '@/components/Topbar';
 import { CommandPalette } from '@/components/CommandPalette';
+import {
+  ALLOWED_TELEGRAM_USER_IDS_ENV,
+  SESSION_COOKIE_NAME,
+  parseAllowedTelegramUserIds,
+  verifySessionCookieValue,
+} from '@/lib/session';
 import { THEME_INIT_SCRIPT } from '@/lib/theme';
+
+const TELEGRAM_BOT_TOKEN_ENV = 'TELEGRAM_BOT_TOKEN_AHMAD';
 
 const fontMono = JetBrains_Mono({
   subsets: ['latin'],
@@ -23,7 +32,31 @@ export const metadata: Metadata = {
   description: 'Personal operating system and AI agent command center for a single person company',
 };
 
+function hasValidSession(): boolean {
+  const allowedIds = parseAllowedTelegramUserIds(process.env[ALLOWED_TELEGRAM_USER_IDS_ENV]);
+  if (!allowedIds.ok) {
+    return false;
+  }
+
+  const cookieValue = cookies().get(SESSION_COOKIE_NAME)?.value;
+  return verifySessionCookieValue(cookieValue, process.env[TELEGRAM_BOT_TOKEN_ENV], {
+    allowedIds: allowedIds.ids,
+  }).ok;
+}
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
+  if (!hasValidSession()) {
+    return (
+      <html lang="en" className={fontMono.variable} suppressHydrationWarning>
+        <head>
+          {/* Apply the persisted theme before first paint — no dark↔light flash. */}
+          <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+        </head>
+        <body>{children}</body>
+      </html>
+    );
+  }
+
   return (
     <html lang="en" className={fontMono.variable} suppressHydrationWarning>
       <head>
