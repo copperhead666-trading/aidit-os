@@ -384,10 +384,58 @@ export async function shouldRunTelegramListenerStepReal({ lockFile = TELEGRAM_LI
   return !isAlive(holder.pid);
 }
 
+function cleanPauseText(value, fallback = "") {
+  const text = value == null ? "" : String(value).trim();
+  return text || fallback;
+}
+
+function pauseStateFromCheckFailure(err) {
+  const detail = err && err.message ? `: ${err.message}` : "";
+  return {
+    paused: true,
+    reason: `Pause check failed closed${detail}`,
+    atIso: null,
+    by: null,
+  };
+}
+
+function normalizePauseState(raw) {
+  if (raw === true) {
+    return { paused: true, reason: "Pause flag is set.", atIso: null, by: null };
+  }
+  if (!raw || raw === false || !raw.paused) {
+    return { paused: false, reason: "", atIso: null, by: null };
+  }
+  return {
+    paused: true,
+    reason: cleanPauseText(raw.reason, "Pause flag is set."),
+    atIso: cleanPauseText(raw.atIso) || null,
+    by: cleanPauseText(raw.by) || null,
+  };
+}
+
+export function checkPauseReal() {
+  try {
+    if (!isPaused()) return { paused: false, reason: "", atIso: null, by: null };
+    return normalizePauseState({ ...readPause(), paused: true });
+  } catch (err) {
+    return pauseStateFromCheckFailure(err);
+  }
+}
+
+async function getPauseState(checkPause) {
+  try {
+    return normalizePauseState(await checkPause());
+  } catch (err) {
+    return pauseStateFromCheckFailure(err);
+  }
+}
+
 // Core sweep, dependency-injected for testability.
-// deps: { runStep, shouldRunTelegramListenerStep, log, now, appendStepLog, stepLogFile }
+// deps: { runStep, shouldRunTelegramListenerStep, checkPause, log, now, appendStepLog, stepLogFile }
 // runStep: async (argv) => { code, stdout, stderr, error, timedOut }
 // shouldRunTelegramListenerStep: async () => boolean (true = run fallback)
+// checkPause: async () => { paused, reason, atIso, by } | boolean
 // appendStepLog: async (record, { file }) => void (default: appendStepLogReal)
 // stepLogFile: path string for the durable step log (default: STEP_LOG_FILE)
 // Returns { results, succeeded, failed, total, startedAt, finishedAt }.
@@ -395,6 +443,7 @@ export async function runHeartbeatOnce(deps = {}) {
   const {
     runStep = runStepReal,
     shouldRunTelegramListenerStep = shouldRunTelegramListenerStepReal,
+    checkPause = checkPauseReal,
     log = (m) => console.log(m),
     now = Date.now,
     appendStepLog = appendStepLogReal,
@@ -402,6 +451,46 @@ export async function runHeartbeatOnce(deps = {}) {
   } = deps;
 
   const startedAt = now();
+  const pauseState = await getPauseState(checkPause);
+  if (pauseState.paused) {
+    const finishedAt = now();
+    const pauseReason = pauseState.reason || "Pause flag is set.";
+    const pauseAtIso = pauseState.atIso || null;
+    const pauseBy = pauseState.by || null;
+    log(`heartbeat --once PAUSED since ${pauseAtIso || "waktu tidak diketahui"} — reason: ${pauseReason}`);
+    try {
+      const sweepRecord = {
+        ts: finishedAt,
+        startedAt,
+        finishedAt,
+        durationMs: finishedAt - startedAt,
+        total: STEPS.length,
+        succeeded: 0,
+        failed: 0,
+        paused: true,
+        pauseReason,
+        pauseAtIso,
+        pauseBy,
+        steps: [],
+      };
+      await appendStepLog(sweepRecord, { file: stepLogFile });
+    } catch (err) {
+      log(`heartbeat: WARN could not append step log (${err && (err.code || err.message) || String(err)})`);
+    }
+    return {
+      results: [],
+      succeeded: 0,
+      failed: 0,
+      total: STEPS.length,
+      startedAt,
+      finishedAt,
+      paused: true,
+      pauseReason,
+      pauseAtIso,
+      pauseBy,
+    };
+  }
+
   log(`heartbeat --once START ${new Date(startedAt).toISOString()} (${STEPS.length} steps)`);
 
   const results = [];

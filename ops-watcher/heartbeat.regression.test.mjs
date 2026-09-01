@@ -52,7 +52,7 @@
 
 import assert from "node:assert/strict";
 import {
-  runHeartbeatOnce,
+  runHeartbeatOnce as runHeartbeatOnceReal,
   runStepReal,
   buildStepRecord,
   rotateStepLogFile,
@@ -161,6 +161,14 @@ function happyTable() {
 // Health-check dependency that always says "run the fallback" — used by the
 // pre-gate tests so they see the exact same behavior as before the gate existed.
 const alwaysRunFallback = async () => true;
+
+// Pause-check dependency for every non-pause regression test. This keeps the
+// regression suite fully offline and guarantees it never touches the real
+// ops-watcher/PAUSED flag file.
+const notPaused = async () => ({ paused: false });
+function runHeartbeatOnce(deps = {}) {
+  return runHeartbeatOnceReal({ checkPause: notPaused, ...deps });
+}
 
 // =====================================================================
 // A minimal fake child_process.spawn for H9 — returns a fake Child-like object
@@ -830,8 +838,111 @@ async function testRotationHelper() {
   } catch (err) { bad(name, err); }
 }
 
+// =====================================================================
+// P1-P3: owner pause stops all steps, exits successfully, and still writes a
+// paused durable step-log record with the owner's reason.
+// =====================================================================
+async function testPausedStopsAllStepsAndWritesRecord() {
+  const name = "P1-P3 paused heartbeat runs zero steps, succeeds, and records pause reason";
+  let calls = 0;
+  let lastRecord = null;
+  const runStep = async () => { calls += 1; return { code: 0, stdout: "should not run", stderr: "" }; };
+  const appendStepLog = async (record) => { lastRecord = record; };
+  const { lines, log } = makeLogCapture();
+  try {
+    const r = await runHeartbeatOnce({
+      runStep,
+      log,
+      now: () => 1700000000000,
+      shouldRunTelegramListenerStep: alwaysRunFallback,
+      appendStepLog,
+      checkPause: async () => ({
+        paused: true,
+        reason: "owner emergency stop",
+        atIso: "2026-09-01T01:02:03.000Z",
+        by: "owner",
+      }),
+    });
+    assert.equal(calls, 0, "runStep is never called while paused");
+    assert.equal(r.results.length, 0, "paused sweep has zero step results");
+    assert.equal(r.total, STEPS.length, "paused sweep still reports the pipeline size");
+    assert.equal(r.succeeded, 0, "no steps succeeded because no steps ran");
+    assert.equal(r.failed, 0, "paused sweep maps to CLI success, not failure");
+    assert.equal(r.paused, true, "return value is marked paused");
+    assert.equal(r.pauseReason, "owner emergency stop", "return value carries pause reason");
+    assert.ok(lastRecord, "paused sweep still writes one step-log record");
+    assert.equal(lastRecord.paused, true, "step-log record marked paused");
+    assert.equal(lastRecord.pauseReason, "owner emergency stop", "step-log record carries pause reason");
+    assert.equal(lastRecord.pauseAtIso, "2026-09-01T01:02:03.000Z", "step-log record carries pause time");
+    assert.equal(lastRecord.failed, 0, "step-log paused record is not a failure");
+    assert.deepEqual(lastRecord.steps, [], "step-log paused record has no step records");
+    assert.ok(lines.some((l) => /PAUSED/.test(l) && /owner emergency stop/.test(l) && /2026-09-01T01:02:03\.000Z/.test(l)), "pause log names reason and time");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// P4: explicit not-paused regression guard: the pause seam preserves the exact
+// 15-step pipeline when the owner has not paused the system.
+// =====================================================================
+async function testNotPausedRunsAllFifteenSteps() {
+  const name = "P4 not paused heartbeat still dispatches all 15 steps";
+  const seen = [];
+  const runStep = async (argv) => { seen.push(argv.slice()); return makeDefaultSuccessfulRunStep()(argv); };
+  try {
+    const r = await runHeartbeatOnce({
+      runStep,
+      log: () => {},
+      now: () => 1700000000000,
+      shouldRunTelegramListenerStep: alwaysRunFallback,
+      appendStepLog: noopAppendStepLog,
+      checkPause: async () => ({ paused: false }),
+    });
+    assert.equal(r.results.length, STEPS.length, "all 15 results produced");
+    assert.equal(seen.length, STEPS.length, "all 15 steps dispatched");
+    assert.deepEqual(seen, STEPS.map((s) => s.argv), "step order and argv unchanged");
+    assert.equal(r.failed, 0, "happy not-paused sweep still succeeds");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// P5: if the injected pause check throws, heartbeat fails closed to paused and
+// does not run any step.
+// =====================================================================
+async function testThrowingPauseCheckFailsClosed() {
+  const name = "P5 throwing pause check is treated as paused";
+  let calls = 0;
+  let lastRecord = null;
+  const runStep = async () => { calls += 1; return { code: 0, stdout: "should not run", stderr: "" }; };
+  const appendStepLog = async (record) => { lastRecord = record; };
+  const { lines, log } = makeLogCapture();
+  try {
+    const r = await runHeartbeatOnce({
+      runStep,
+      log,
+      now: () => 1700000000000,
+      shouldRunTelegramListenerStep: alwaysRunFallback,
+      appendStepLog,
+      checkPause: async () => { throw new Error("pause flag unreadable"); },
+    });
+    assert.equal(calls, 0, "runStep is never called when pause check throws");
+    assert.equal(r.paused, true, "throwing check returns a paused sweep");
+    assert.equal(r.failed, 0, "fail-closed pause is still a successful owner halt");
+    assert.match(r.pauseReason, /Pause check failed closed: pause flag unreadable/, "return value explains fail-closed pause");
+    assert.ok(lastRecord, "fail-closed pause still writes a step-log record");
+    assert.equal(lastRecord.paused, true, "step-log record marked paused");
+    assert.match(lastRecord.pauseReason, /Pause check failed closed: pause flag unreadable/, "step-log record explains fail-closed pause");
+    assert.deepEqual(lastRecord.steps, [], "no step records when pause check throws");
+    assert.ok(lines.some((l) => /PAUSED/.test(l) && /pause flag unreadable/.test(l)), "log shows deliberate fail-closed pause");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
 async function main() {
   console.log("# ops-watcher PHASE-8 heartbeat regression tests");
+  await testPausedStopsAllStepsAndWritesRecord();
+  await testNotPausedRunsAllFifteenSteps();
+  await testThrowingPauseCheckFailsClosed();
   await testAllStepsAttemptedOnStep2Fail();
   await testSummaryLinesProduced();
   await testMissingScriptDoesNotCrash();
