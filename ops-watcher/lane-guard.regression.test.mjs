@@ -78,8 +78,9 @@ async function testRecordOutcomeSuccessClearsFailure() {
   const name = "G4 recordLaneOutcome ok=true calls clearFailure with resolved key";
   try {
     const calls = [];
-    const result = await recordLaneOutcome("corleone", { ok: true, stdout: "done", stderr: "" }, {
+    const result = await recordLaneOutcome("corleone", { ok: true, stdout: "done with quota exhausted handling", stderr: "" }, {
       clearFailure: async (laneKey) => { calls.push(laneKey); },
+      recordQuotaExhausted: async () => { throw new Error("success must not record quota"); },
     });
     assert.deepEqual(calls, ["codex"]);
     assert.equal(result.recorded, true);
@@ -152,6 +153,63 @@ async function testRecordOutcomeRecorderThrows() {
 }
 
 // =====================================================================
+// G9: successful output that discusses quota still records success
+// =====================================================================
+async function testRecordOutcomeSuccessNeverClassifiesQuota() {
+  const name = "G9 recordLaneOutcome ok=true quota-looking stdout records success, not quota";
+  try {
+    const clearCalls = [];
+    const quotaCalls = [];
+    const failureCalls = [];
+    const result = await recordLaneOutcome("corleone", {
+      ok: true,
+      stdout: "provider.auth_error: 403 You've reached your weekly (7-day) usage limit.",
+      stderr: "",
+    }, {
+      clearFailure: async (laneKey) => { clearCalls.push(laneKey); },
+      recordQuotaExhausted: async (laneKey, reason) => { quotaCalls.push({ laneKey, reason }); },
+      recordFailure: async (laneKey, reason) => { failureCalls.push({ laneKey, reason }); },
+    });
+    assert.equal(result.recorded, true);
+    assert.equal(result.kind, "success");
+    assert.equal(result.laneKey, "codex");
+    assert.deepEqual(clearCalls, ["codex"]);
+    assert.deepEqual(quotaCalls, []);
+    assert.deepEqual(failureCalls, []);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// G10: prompt text is removed before quota classification
+// =====================================================================
+async function testRecordOutcomePromptTextScrubbedBeforeQuotaClassification() {
+  const name = "G10 recordLaneOutcome promptText quota phrase alone records ordinary failure";
+  try {
+    const quotaCalls = [];
+    const failureCalls = [];
+    const promptText = "Please handle provider.auth_error: 403 You've reached your weekly (7-day) usage limit.";
+    const result = await recordLaneOutcome("corleone", {
+      ok: false,
+      stdout: `Reading additional input from stdin...\n${promptText}\nWorking on patch.`,
+      stderr: "ERROR codex_skills_extension::loader::host: skills scan reached its traversal limit",
+      promptText,
+    }, {
+      recordQuotaExhausted: async (laneKey, reason) => { quotaCalls.push({ laneKey, reason }); },
+      recordFailure: async (laneKey, reason) => { failureCalls.push({ laneKey, reason }); },
+    });
+    assert.equal(result.recorded, true);
+    assert.equal(result.kind, "failure");
+    assert.equal(result.laneKey, "codex");
+    assert.deepEqual(quotaCalls, []);
+    assert.equal(failureCalls.length, 1);
+    assert.equal(failureCalls[0].laneKey, "codex");
+    assert.match(failureCalls[0].reason, /Reading additional input from stdin/);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
 // G8: unusable model output truth table
 // =====================================================================
 async function testIsUnusableModelOutputTruthTable() {
@@ -183,6 +241,8 @@ async function main() {
   await testRecordOutcomeOrdinaryFailure();
   await testRecordOutcomeRecorderThrows();
   await testIsUnusableModelOutputTruthTable();
+  await testRecordOutcomeSuccessNeverClassifiesQuota();
+  await testRecordOutcomePromptTextScrubbedBeforeQuotaClassification();
   console.log("");
   console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
   if (failed > 0) { for (const f of failures) console.log(`  FAILED: ${f}`); process.exit(1); }

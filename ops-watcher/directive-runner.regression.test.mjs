@@ -23,6 +23,8 @@ import {
   RESULT_MARKER,
   DISPATCH_MARKER,
   DEFAULT_STALLED_AFTER_MS,
+  MAX_EXECUTIONS_PER_SWEEP,
+  SWEEP_MIN_INTERVAL_MS,
 } from "./directive-runner.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -60,6 +62,9 @@ const TG_REJECT = "OWNER MENOLAK via Telegram (2026-09-01T09:30:00.000Z) — ket
 function makeSweepDeps({ issues, comments, plan = goodPlan, stateFile = TMP_STATE, extra = {} }) {
   const posts = [];
   const cards = [];
+  const messages = [];
+  const patches = [];
+  const labels = [];
   const spies = { execute: 0, telegram: 0, git: 0, pm2: 0 };
   let executeCalls = 0;
   const deps = {
@@ -82,17 +87,21 @@ function makeSweepDeps({ issues, comments, plan = goodPlan, stateFile = TMP_STAT
     // Default decision-card sender stub: records the call and reports success.
     // Real Telegram is never touched during tests.
     sendDecisionCard: async (arg) => { cards.push(arg); return { sent: true }; },
-    // Stage 3 executor seam: never called in stage 2. The spy counts calls so
-    // tests can assert it stays at zero.
-    execute: async () => { executeCalls++; return { ok: true }; },
+    // Legacy stage-2 execution seam; kept as a tripwire for older branches.
+    execute: async () => { executeCalls++; spies.execute++; return { ok: true }; },
+    // Stage 3b executor seam. The default is a harmless injected skip so tests
+    // never reach real lane execution unless a test deliberately asks for it.
+    executeDirective: async () => { executeCalls++; spies.execute++; return { outcome: "skipped", reason: "default-test-skip" }; },
+    sendOwnerMessage: async (text) => { messages.push(text); spies.telegram++; return { sent: true }; },
+    patchIssue: async (iss, patch) => { patches.push({ issue: iss, patch }); return { status: 200, body: { ...iss, ...patch }, networkError: false }; },
+    addIssueLabel: async (iss, label) => { labels.push({ issue: iss, label }); return { status: 201, body: { label }, networkError: false }; },
     stateFile,
     now: NOW,
     log: () => {},
     ...extra,
   };
-  return { deps, posts, cards, spies, getExecuteCalls: () => executeCalls };
+  return { deps, posts, cards, messages, patches, labels, spies, getExecuteCalls: () => executeCalls };
 }
-
 async function resetTmp() { await fs.unlink(TMP_STATE).catch(() => {}); }
 
 async function t(name, fn) {
@@ -331,24 +340,125 @@ await t("findPlanDecision returns approved for listener approval wording, reject
   assert.equal(predates.decision, null);
 });
 
-await t("an approved directive is reported and NOT executed (execute spy never called)", async () => {
+// ---- Stage 3b sweep execution ---------------------------------------------
+
+await t("sweep execution: done posts one DIRECTIVE RESULT, patches done, labels DONE_VERIFIED, and sends no Telegram", async () => {
   await resetTmp();
   const planAt = "2026-09-01T09:00:00.000Z";
   const after = "2026-09-01T09:30:00.000Z";
   const issues = [issue({ id: "kol70", identifier: "KOL-70", title: "approved directive" })];
   const comments = { kol70: [c(`${PLAN_MARKER} (iso):\n${goodPlan}`, planAt), c(TG_APPROVE, after)] };
-  const { deps, posts, cards, getExecuteCalls } = makeSweepDeps({ issues, comments });
+  let executeCalls = 0;
+  const { deps, posts, cards, messages, patches, labels } = makeSweepDeps({
+    issues,
+    comments,
+    extra: {
+      executeDirective: async () => {
+        executeCalls++;
+        return { outcome: "done", filesChanged: ["ops-watcher/foo.mjs", "docs/bar.md"], verifyTail: "ok\nall good" };
+      },
+    },
+  });
   const res = await runDirectiveSweepOnce(deps);
   assert.equal(res.approved.length, 1);
-  assert.equal(res.approved[0].identifier, "KOL-70");
-  assert.equal(res.approved[0].approvedAt, after);
-  assert.equal(res.planned, 0);
-  assert.equal(posts.length, 0);
+  assert.equal(res.executed, 1);
+  assert.equal(executeCalls, 1);
+  assert.equal(posts.filter((p) => /^DIRECTIVE RESULT/.test(p.body.body)).length, 1);
+  assert.match(posts[0].body.body, /ops-watcher\/foo\.mjs/);
+  assert.match(posts[0].body.body, /docs\/bar\.md/);
+  assert.match(posts[0].body.body, /Perintah verifikasi: node ops-watcher\/foo\.mjs --check/);
+  assert.match(posts[0].body.body, /all good/);
+  assert.match(posts[0].body.body, /Yang sengaja tidak dikerjakan:/);
+  assert.deepEqual(patches.map((p) => p.patch), [{ status: "done" }]);
+  assert.deepEqual(labels.map((l) => l.label), ["DONE_VERIFIED"]);
+  assert.equal(messages.length, 0);
   assert.equal(cards.length, 0);
-  // Stage 2: no execution. The executor seam is never invoked.
-  assert.equal(getExecuteCalls(), 0);
 });
 
+await t("sweep execution: reverted posts failure comment, leaves status alone, and sends exactly one Telegram", async () => {
+  await resetTmp();
+  const planAt = "2026-09-01T09:00:00.000Z";
+  const after = "2026-09-01T09:30:00.000Z";
+  const issues = [issue({ id: "kol71", identifier: "KOL-71" })];
+  const comments = { kol71: [c(`${PLAN_MARKER} (iso):\n${goodPlan}`, planAt), c(TG_APPROVE, after)] };
+  const { deps, posts, messages, patches, labels } = makeSweepDeps({
+    issues,
+    comments,
+    extra: { executeDirective: async () => ({ outcome: "reverted", reason: "verify-red" }) },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.reverted, 1);
+  assert.equal(posts.length, 1);
+  assert.match(posts[0].body.body, /^DIRECTIVE GAGAL/);
+  assert.match(posts[0].body.body, /verify-red/);
+  assert.equal(patches.length, 0);
+  assert.equal(labels.length, 0);
+  assert.equal(messages.length, 1);
+  assert.match(messages[0], /tidak dapat diselesaikan/);
+  assert.match(messages[0], /verify-red/);
+});
+
+await t("sweep execution: no-op says nothing changed, leaves status alone, and sends no Telegram", async () => {
+  await resetTmp();
+  const planAt = "2026-09-01T09:00:00.000Z";
+  const after = "2026-09-01T09:30:00.000Z";
+  const issues = [issue({ id: "kol72", identifier: "KOL-72" })];
+  const comments = { kol72: [c(`${PLAN_MARKER} (iso):\n${goodPlan}`, planAt), c(TG_APPROVE, after)] };
+  const { deps, posts, messages, patches } = makeSweepDeps({
+    issues,
+    comments,
+    extra: { executeDirective: async () => ({ outcome: "no-op", reason: "file target sudah sama" }) },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.noop, 1);
+  assert.equal(posts.length, 1);
+  assert.match(posts[0].body.body, /^DIRECTIVE NO-OP/);
+  assert.match(posts[0].body.body, /tidak ada perubahan/i);
+  assert.equal(patches.length, 0);
+  assert.equal(messages.length, 0);
+});
+
+await t("sweep execution: skipped creates no comment, Telegram, or status patch", async () => {
+  await resetTmp();
+  const planAt = "2026-09-01T09:00:00.000Z";
+  const after = "2026-09-01T09:30:00.000Z";
+  const issues = [issue({ id: "kol73", identifier: "KOL-73" })];
+  const comments = { kol73: [c(`${PLAN_MARKER} (iso):\n${goodPlan}`, planAt), c(TG_APPROVE, after)] };
+  let executeCalls = 0;
+  const { deps, posts, messages, patches, labels } = makeSweepDeps({
+    issues,
+    comments,
+    extra: { executeDirective: async () => { executeCalls++; return { outcome: "skipped", reason: "lane cooldown" }; } },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.executed, 0);
+  assert.equal(res.reverted, 0);
+  assert.equal(res.noop, 0);
+  assert.equal(res.refused, 0);
+  assert.equal(executeCalls, 1);
+  assert.equal(posts.length, 0);
+  assert.equal(messages.length, 0);
+  assert.equal(patches.length, 0);
+  assert.equal(labels.length, 0);
+});
+
+await t("sweep execution: two approved directives execute only MAX_EXECUTIONS_PER_SWEEP", async () => {
+  await resetTmp();
+  const planAt = "2026-09-01T09:00:00.000Z";
+  const after = "2026-09-01T09:30:00.000Z";
+  const issues = [issue({ id: "kol74", identifier: "KOL-74" }), issue({ id: "kol75", identifier: "KOL-75" })];
+  const approvedComments = [c(`${PLAN_MARKER} (iso):\n${goodPlan}`, planAt), c(TG_APPROVE, after)];
+  const comments = { kol74: approvedComments, kol75: approvedComments };
+  let executeCalls = 0;
+  const { deps } = makeSweepDeps({
+    issues,
+    comments,
+    extra: { executeDirective: async () => { executeCalls++; return { outcome: "skipped", reason: "cap test" }; } },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.approved.length, 2);
+  assert.equal(executeCalls, MAX_EXECUTIONS_PER_SWEEP);
+});
 // ===========================================================================
 // Stage 3a — buildExecutionPrompt + executeApprovedDirective
 // ===========================================================================
@@ -526,6 +636,50 @@ await t("executeApprovedDirective: injected git/pm2 spies are never called acros
   }
   assert.equal(gitSpy.calls, 0);
   assert.equal(pm2Spy.calls, 0);
+});
+
+// ===========================================================================
+// Sweep throttle — the --once path is bounded by SWEEP_MIN_INTERVAL_MS.
+// ===========================================================================
+
+await t("sweep throttle: inside SWEEP_MIN_INTERVAL_MS -> { skipped: true } and plan/execute spies are never called", async () => {
+  await resetTmp();
+  // One minute ago — well within the 15-minute window.
+  await fs.writeFile(TMP_STATE, JSON.stringify({ attempts: {}, lastSweepMs: NOW - 60_000 }), "utf8");
+  const issues = [issue({ id: "i1", identifier: "KOL-101" })];
+  const comments = { i1: [] };
+  let planCalls = 0, execCalls = 0;
+  const { deps } = makeSweepDeps({
+    issues, comments,
+    extra: {
+      once: true,
+      dispatchPlan: async () => { planCalls++; return { ok: true, stdout: goodPlan, stderr: "", timedOut: false }; },
+      executeDirective: async () => { execCalls++; return { outcome: "skipped", reason: "should-not-run" }; },
+    },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.skipped, true);
+  assert.equal(planCalls, 0);
+  assert.equal(execCalls, 0);
+  // The throttle must not have rewritten the persisted lastSweepMs.
+  const st = JSON.parse(await fs.readFile(TMP_STATE, "utf8"));
+  assert.equal(st.lastSweepMs, NOW - 60_000);
+});
+
+await t("sweep throttle: past SWEEP_MIN_INTERVAL_MS -> a normal sweep runs and lastSweepMs is written", async () => {
+  await resetTmp();
+  // Just past the window.
+  await fs.writeFile(TMP_STATE, JSON.stringify({ attempts: {}, lastSweepMs: NOW - SWEEP_MIN_INTERVAL_MS - 60_000 }), "utf8");
+  const issues = [issue({ id: "i1", identifier: "KOL-101" })];
+  const comments = { i1: [] };
+  const { deps, posts } = makeSweepDeps({ issues, comments, extra: { once: true } });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.skipped, undefined);
+  assert.equal(res.planned, 1);
+  assert.equal(posts.length, 1);
+  assert.match(posts[0].body.body, /^DIRECTIVE PLAN \(/);
+  const st = JSON.parse(await fs.readFile(TMP_STATE, "utf8"));
+  assert.equal(st.lastSweepMs, NOW);
 });
 
 await resetTmp();

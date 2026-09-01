@@ -1,10 +1,13 @@
 // ops-watcher/directive-runner.mjs
-// Stage 2 directive lifecycle runner: classify Paperclip DIRECTIVE issues,
-// generate a bounded approval plan, post that plan/refusal, and deliver the
-// plan to the owner as a Telegram decision card (approve/reject). A stalled
-// directive in todo/backlog is re-plannable; a stalled directive in
-// in_progress is report-only (never trampled). No execution in this stage —
-// an approved directive is only reported; stage 3 adds the executor.
+// Directive lifecycle runner: classify Paperclip DIRECTIVE issues, generate a
+// bounded approval plan, post that plan/refusal, and deliver the plan to the
+// owner as a Telegram decision card (approve/reject). A stalled directive in
+// todo/backlog is re-plannable; a stalled directive in in_progress is
+// report-only (never trampled). Stage 3b: after the planning pass, up to
+// MAX_EXECUTIONS_PER_SWEEP approved directives are executed via
+// executeApprovedDirective and the outcome is reported as a Paperclip comment
+// (+ status patch + DONE_VERIFIED label for done; one Telegram message for
+// reverted/refused/aborted).
 //
 // Outbound seams (all injectable for offline tests):
 //   - Paperclip reads/writes: httpGet / httpPost (from paperclip-write-client)
@@ -14,7 +17,11 @@
 //                             path via telegram-client.sendMessage, reusing the
 //                             telegram-notify callback_data scheme a:<shortId> /
 //                             r:<shortId> — no second scheme, no second sender)
-//   - execution (stage 3):    execute (default no-op; NEVER called in stage 2)
+//   - execution (stage 3b):   executeDirective (defaults to executeApprovedDirective)
+//   - owner Telegram (3b):    sendOwnerMessage (defaults to telegram-client.sendMessage)
+//   - issue patch (3b):       patchIssue (defaults to httpPost /api/issues/:id)
+//   - issue label (3b):       addIssueLabel (defaults to httpPost /api/issues/:id/labels)
+//   - label map (3b):         labelMap (default { doneVerified: "DONE_VERIFIED" })
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -57,6 +64,14 @@ export const DISPATCH_MARKER = "AHMAD DISPATCH";
 export const DEFAULT_STALLED_AFTER_MS = 6 * 60 * 60 * 1000;
 export const DEFAULT_MAX_PLANS_PER_SWEEP = 1;
 export const DEFAULT_MAX_PLAN_ATTEMPTS = 2;
+// Stage 3b: at most this many approved directives are executed per sweep. A
+// directive execution is one real lane dispatch (same cost shape as a repair
+// drill), so the cap stays at 1 to keep the sweep bounded and auditable.
+export const MAX_EXECUTIONS_PER_SWEEP = 1;
+// Sweep throttle for the --once path: planning and executing each cost a real
+// lane call while the heartbeat fires every five minutes, so bound back-to-back
+// invocations to one sweep per SWEEP_MIN_INTERVAL_MS window.
+export const SWEEP_MIN_INTERVAL_MS = 15 * 60 * 1000;
 const PLAN_TIMEOUT_MS = 12 * 60 * 1000;
 const CONTEXT_TIMEOUT_MS = 6000;
 const OUTPUT_CAP = 8000;
@@ -277,7 +292,7 @@ export function validatePlanScope(plan) {
   const violations = [];
   for (const raw of Array.isArray(plan?.files) ? plan.files : []) {
     const p = String(raw || "").trim();
-    const norm = p.replace(/\\/g, "/").replace(/^\.\/+/, "");
+    const norm = p.replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\.\/+/, "");
     const low = norm.toLowerCase();
     const parts = norm.split("/").filter(Boolean);
     const add = (why) => violations.push(`${p}: ${why}`);
@@ -294,8 +309,10 @@ export function validatePlanScope(plan) {
 async function loadState(file, _fs) {
   try {
     const st = JSON.parse(await _fs.readFile(file, "utf8"));
-    return st && typeof st === "object" ? { attempts: st.attempts || {} } : { attempts: {} };
-  } catch { return { attempts: {} }; }
+    return st && typeof st === "object"
+      ? { attempts: st.attempts || {}, lastSweepMs: Number(st.lastSweepMs) || 0 }
+      : { attempts: {}, lastSweepMs: 0 };
+  } catch { return { attempts: {}, lastSweepMs: 0 }; }
 }
 async function saveState(file, st, _fs) {
   try { await _fs.writeFile(file, JSON.stringify(st, null, 2), "utf8"); } catch { /* best-effort */ }
@@ -371,8 +388,7 @@ function parseFailureComment(error, attempt, max) {
   return `DIRECTIVE DRAFT FAILED (${iso()}): rencana belum bisa diproduksi dalam format yang valid (${error}). Percobaan ${attempt}/${max}. Issue tetap menunggu rencana.`;
 }
 
-// ---- Stage 2: deliver the plan to the owner as a decision card -------------
-// Builds the phone-screen summary card text in professional Indonesian: issue
+// ---- Stage 2: deliver the plan to the owner as a decision card -------------\n// Builds the phone-screen summary card text in professional Indonesian: issue
 // identifier + title, the plan's OBJECTIVE, file count, the VERIFY command, and
 // the RISK level. The full plan stays in the Paperclip comment; the card is the
 // summary plus the two buttons.
@@ -422,10 +438,51 @@ export async function sendDecisionCardReal({ issue, plan, telegramBase } = {}) {
   return telegramSendMessage(text, { buttons, baseUrl: telegramBase });
 }
 
+// ---- Stage 3b: outcome comment builders -----------------------------------
+// These build the Paperclip comment bodies for each execution outcome. Only the
+// `done` comment carries RESULT_MARKER (which classifyDirective treats as the
+// "done" signal on the next sweep); the no-op and failure comments deliberately
+// avoid RESULT_MARKER so the directive stays classified as `approved` until the
+// owner re-evaluates or a later sweep re-executes.
+function doneResultComment({ filesChanged, verifyCmd, verifyTail, outOfScope, nowMs }) {
+  const files = Array.isArray(filesChanged) ? filesChanged : [];
+  return [
+    `${RESULT_MARKER} (${iso(nowMs)}): directive telah dikerjakan dan diverifikasi.`,
+    "",
+    "File yang berubah:",
+    ...(files.length ? files.map((f) => `- ${f}`) : ["- (tidak ada file yang dilaporkan berubah)"]),
+    "",
+    `Perintah verifikasi: ${verifyCmd}`,
+    "Baris terakhir output verifikasi:",
+    String(verifyTail || "").trim() || "(tidak ada output)",
+    "",
+    `Yang sengaja tidak dikerjakan: ${outOfScope || "(tidak dinyatakan)"}`,
+  ].join("\n");
+}
+function noOpComment({ nowMs }) {
+  return [
+    `DIRECTIVE NO-OP (${iso(nowMs)}): eksekusi directive berjalan namun tidak ada perubahan yang terjadi.`,
+    "",
+    "Tidak ada file dari daftar rencana yang berubah setelah dispatch dan verifikasi.",
+    "Status issue tidak diubah; directive dapat dievaluasi atau direncanakan ulang jika diperlukan.",
+  ].join("\n");
+}
+function failureComment({ outcome, reason, nowMs }) {
+  return [
+    `DIRECTIVE GAGAL (${iso(nowMs)}): directive tidak dapat diselesaikan (hasil: ${outcome}).`,
+    `Alasan: ${reason || "tidak diketahui"}.`,
+    "Semua perubahan telah dikembalikan jika ada; status issue tetap tidak diubah.",
+  ].join("\n");
+}
+function failureTelegramText({ identifier, outcome, reason }) {
+  return `Directive ${identifier} tidak dapat diselesaikan (${outcome}): ${reason || "tidak diketahui"}. Status tetap approved; tidak ada perubahan yang dipertahankan.`;
+}
+
 export async function runDirectiveSweepOnce(deps = {}) {
   const summary = {
     scanned: 0, planned: 0, refused: 0,
     stalled: [], awaitingApproval: [], approved: [], rejected: [],
+    executed: 0, reverted: 0, noop: 0, refused: 0,
     errors: [],
   };
   const {
@@ -439,15 +496,38 @@ export async function runDirectiveSweepOnce(deps = {}) {
     sendDecisionCard = sendDecisionCardReal,
     telegramBase,
     execute = async () => ({ ok: false, reason: "stage-2-no-execution" }),
+    // Stage 3b execution + outbound seams:
+    executeDirective,
+    sendOwnerMessage,
+    patchIssue,
+    addIssueLabel,
+    labelMap = { doneVerified: "DONE_VERIFIED" },
+    executeDirectiveDeps,
     stateFile = STATE_FILE,
     _fs = fs,
     now = Date.now,
     stalledAfterMs = DEFAULT_STALLED_AFTER_MS,
     maxPlansPerSweep = DEFAULT_MAX_PLANS_PER_SWEEP,
     maxPlanAttempts = DEFAULT_MAX_PLAN_ATTEMPTS,
+    once = false,
     dryRun = false,
     log = () => {},
   } = deps;
+
+  // Sweep throttle for the --once path: planning and executing each cost a real
+  // lane call while the heartbeat fires every five minutes, so a back-to-back
+  // invocation within SWEEP_MIN_INTERVAL_MS is a no-op that touches no lane.
+  if (once) {
+    const throttleState = await loadState(stateFile, _fs);
+    const lastSweepMs = Number(throttleState.lastSweepMs) || 0;
+    const nowMs = asMs(now);
+    if (lastSweepMs && nowMs - lastSweepMs < SWEEP_MIN_INTERVAL_MS) {
+      const nextIso = iso(lastSweepMs + SWEEP_MIN_INTERVAL_MS);
+      log(`directive-runner: skipped (next run after ${nextIso})`);
+      return { skipped: true };
+    }
+  }
+
   try {
     const base = injectedBase !== undefined ? injectedBase : await (async () => {
       const port = await discoverPaperclipPort();
@@ -469,6 +549,10 @@ export async function runDirectiveSweepOnce(deps = {}) {
     const issues = Array.isArray(issuesRes.issues) ? issuesRes.issues : [];
     const state = dryRun ? { attempts: {} } : await loadState(stateFile, _fs);
     let plannedThisSweep = 0;
+    // Approved directives captured here (issue + parsed plan) for the stage 3b
+    // execution pass that runs AFTER the planning loop. Only directives whose
+    // plan comment parses to a valid plan are eligible for execution.
+    const approvedForExecution = [];
 
     for (const issue of issues) {
       if (!hasLabel(issue, "DIRECTIVE")) continue;
@@ -501,8 +585,22 @@ export async function runDirectiveSweepOnce(deps = {}) {
         summary.awaitingApproval.push({ id: issue.id, identifier: ident, lastCommentAt: cls.lastCommentAt, reason: cls.reason });
         continue;
       } else if (cls.state === "approved") {
-        // Stage 2: report only. The executor arrives in stage 3.
         summary.approved.push({ id: issue.id, identifier: ident, lastCommentAt: cls.lastCommentAt, reason: cls.reason, approvedAt: cls.approvedAt });
+        // Stage 3b: capture the parsed plan from the plan comment for the
+        // execution pass below. The plan comment body is
+        // `${PLAN_MARKER} (iso):\n[<stalled note>\n]<planText>`; we slice from
+        // the OBJECTIVE line so the stalled note (if any) is skipped.
+        if (!dryRun) {
+          const planIdx = findLastIndex(comments, isPlanComment);
+          if (planIdx >= 0) {
+            const planBody = bodyOf(comments[planIdx]);
+            const objIdx = planBody.indexOf("OBJECTIVE: ");
+            if (objIdx >= 0) {
+              const parsedPlan = parsePlan(planBody.slice(objIdx));
+              if (parsedPlan.ok) approvedForExecution.push({ issue, plan: parsedPlan, identifier: ident });
+            }
+          }
+        }
         continue;
       } else if (cls.state === "rejected") {
         summary.rejected.push({ id: issue.id, identifier: ident, lastCommentAt: cls.lastCommentAt, reason: cls.reason });
@@ -576,6 +674,90 @@ export async function runDirectiveSweepOnce(deps = {}) {
       }
       plannedThisSweep += 1;
     }
+
+    // ---- Stage 3b: execute up to MAX_EXECUTIONS_PER_SWEEP approved directives ----
+    // Runs AFTER the planning pass so a single sweep never interleaves planning
+    // and execution for the same directive. The executor (executeApprovedDirective)
+    // is fully injectable; in production it uses the real snapshot/rollback/lane
+    // mechanics. Outbound messaging (comments, Telegram, status patch, label) is
+    // owned HERE, not inside the executor.
+    if (!dryRun && approvedForExecution.length > 0) {
+      const execFn = executeDirective || executeApprovedDirective;
+      const sendOwnerMsg = sendOwnerMessage || (async () => ({ sent: false }));
+      const patchIssueFn = patchIssue || (async (iss, patch) => _post(`${base}/api/issues/${iss.id}`, patch));
+      const addLabelFn = addIssueLabel || (async (iss, label) => _post(`${base}/api/issues/${iss.id}/labels`, { label }));
+      const nowMs = asMs(now);
+      const toExecute = approvedForExecution.slice(0, MAX_EXECUTIONS_PER_SWEEP);
+      for (const item of toExecute) {
+        const { issue: exIssue, plan: exPlan, identifier: exIdent } = item;
+        let result;
+        try {
+          result = await execFn(exIssue, exPlan, executeDirectiveDeps || { now });
+        } catch (err) {
+          result = { outcome: "aborted", reason: `executor-threw: ${String((err && err.message) || err)}` };
+        }
+        if (!result || !result.outcome) {
+          summary.errors.push(`${exIdent}: execution returned no outcome`);
+          continue;
+        }
+        const outcome = result.outcome;
+
+        if (outcome === "done") {
+          const body = doneResultComment({
+            filesChanged: result.filesChanged,
+            verifyCmd: String((exPlan && exPlan.verify) || ""),
+            verifyTail: result.verifyTail,
+            outOfScope: String((exPlan && exPlan.outOfScope) || ""),
+            nowMs,
+          });
+          const dpost = await _post(`${base}/api/issues/${exIssue.id}/comments`, { body, authorType: "user" });
+          if (dpost.networkError) summary.errors.push(`${exIdent}: result comment network error: ${dpost.networkErrorMessage}`);
+          try { await patchIssueFn(exIssue, { status: "done" }); }
+          catch (e) { summary.errors.push(`${exIdent}: patch status error: ${e && e.message ? e.message : e}`); }
+          if (labelMap && labelMap.doneVerified) {
+            try { await addLabelFn(exIssue, labelMap.doneVerified); }
+            catch (e) { summary.errors.push(`${exIdent}: add label error: ${e && e.message ? e.message : e}`); }
+          }
+          summary.executed += 1;
+        } else if (outcome === "no-op") {
+          const body = noOpComment({ reason: result.reason, nowMs });
+          const npost = await _post(`${base}/api/issues/${exIssue.id}/comments`, { body, authorType: "user" });
+          if (npost.networkError) summary.errors.push(`${exIdent}: no-op comment network error: ${npost.networkErrorMessage}`);
+          // Do NOT patch the status — nothing changed.
+          summary.noop += 1;
+        } else if (outcome === "reverted" || outcome === "refused" || outcome === "aborted") {
+          const reason = Array.isArray(result.violations) && result.violations.length
+            ? result.violations.join("; ")
+            : String(result.reason || "tidak diketahui");
+          const body = failureComment({ outcome, reason, nowMs });
+          const fpost = await _post(`${base}/api/issues/${exIssue.id}/comments`, { body, authorType: "user" });
+          if (fpost.networkError) summary.errors.push(`${exIdent}: failure comment network error: ${fpost.networkErrorMessage}`);
+          // Exactly ONE Telegram message — no retry loop.
+          try {
+            await sendOwnerMsg(failureTelegramText({ identifier: exIdent, outcome, reason }));
+          } catch (e) {
+            summary.errors.push(`${exIdent}: telegram send error: ${e && e.message ? e.message : e}`);
+          }
+          // Do NOT patch the status. Count by outcome bucket.
+          if (outcome === "refused") summary.refused += 1;
+          else summary.reverted += 1; // reverted | aborted
+        } else if (outcome === "skipped") {
+          // Evidence line only: no comment, no message, no status change.
+          // executeApprovedDirective already emitted one evidence line internally.
+        } else {
+          summary.errors.push(`${exIdent}: unknown execution outcome: ${outcome}`);
+        }
+      }
+    }
+
+    // Persist the sweep timestamp so the next --once invocation within
+    // SWEEP_MIN_INTERVAL_MS is throttled. Only written for a real (non-dry,
+    // once-path) sweep that actually ran.
+    if (once && !dryRun) {
+      state.lastSweepMs = asMs(now);
+      await saveState(stateFile, state, _fs);
+    }
+
     return summary;
   } catch (err) {
     summary.errors.push(err && err.stack ? err.stack : String(err));
@@ -593,10 +775,10 @@ export async function runDirectiveSweepOnce(deps = {}) {
 // the same snapshot/rollback + two-stage-verify shape as a repair drill, just
 // triggered by an owner-approved plan instead of a fault detector.
 //
-// This module posts NO comments and sends NO Telegram in stage 3a — part 3b
+// This function posts NO comments and sends NO Telegram — the sweep (stage 3b)
 // owns all outbound messaging. The only side effect here is one evidence line
 // per outcome (injectable appendEvidence) and the snapshot/rollback/verify
-// mechanics. runDirectiveSweepOnce is NOT touched.
+// mechanics.
 // ===========================================================================
 
 // PURE. Returns the implementation prompt for the lane. Contains, in order: the
@@ -840,12 +1022,18 @@ async function main() {
     console.error("usage: node ops-watcher/directive-runner.mjs --once | --dry");
     process.exit(0);
   }
-  const summary = await runDirectiveSweepOnce({ dryRun: args.dry, log: (m) => console.log(m) });
+  const summary = await runDirectiveSweepOnce({ dryRun: args.dry, once: args.once, log: (m) => console.log(m) });
+  if (summary && summary.skipped) {
+    // Throttled: the skip reason was already logged via the log callback.
+    process.exit(0);
+  }
   console.log(
     `directive-runner ${args.dry ? "--dry" : "--once"}: ` +
     `scanned=${summary.scanned} planned=${summary.planned} refused=${summary.refused} ` +
     `stalled=${summary.stalled.length} awaiting=${summary.awaitingApproval.length} ` +
-    `approved=${summary.approved.length} rejected=${summary.rejected.length} errors=${summary.errors.length}`,
+    `approved=${summary.approved.length} rejected=${summary.rejected.length} ` +
+    `executed=${summary.executed} reverted=${summary.reverted} noop=${summary.noop} refused=${summary.refused} ` +
+    `errors=${summary.errors.length}`,
   );
   for (const s of summary.stalled) console.log(`  stalled: ${s.identifier || s.id} lastCommentAt=${s.lastCommentAt || "none"} reason=${s.reason}`);
   for (const a of summary.awaitingApproval) console.log(`  awaiting: ${a.identifier || a.id} lastCommentAt=${a.lastCommentAt || "none"}`);

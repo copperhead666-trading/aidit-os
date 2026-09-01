@@ -437,19 +437,29 @@ async function fos22_resolveLaneHonorsProbedChoiceNotFirstLane() {
 // =====================================================================
 
 async function quota_isQuotaFailureTextTruthTable() {
-  const name = "isQuotaFailureText: real 403 weekly-limit string + insufficient_quota + HTTP 429 -> true; ENOENT + '' + null -> false";
+  const name = "isQuotaFailureText: provider-shaped quota phrases -> true; prompt/editor quota noise -> false";
   try {
     // The exact real-world string observed today.
     const real = "provider.auth_error: 403 You've reached your weekly (7-day) usage limit.";
     assert.equal(isQuotaFailureText(real), true, "real weekly-limit string must be detected");
     assert.equal(isQuotaFailureText("insufficient_quota"), true);
     assert.equal(isQuotaFailureText("HTTP 429 Too Many Requests"), true);
+    assert.equal(isQuotaFailureText("status code 429"), true);
     assert.equal(isQuotaFailureText("rate limit exceeded"), true);
-    assert.equal(isQuotaFailureText("AUTH_ERROR something"), true, "case-insensitive auth_error");
-    assert.equal(isQuotaFailureText("QUOTA Exhausted"), true, "case-insensitive quota");
-    assert.equal(isQuotaFailureText("usage limit reached"), true, "case-insensitive usage limit");
+    assert.equal(isQuotaFailureText("quota exhausted"), true);
 
     // negatives
+    assert.equal(
+      isQuotaFailureText(
+        "Reading additional input from stdin...\nERROR codex_skills_extension::loader::host: skills scan reached its traversal limit\n(root: file:///C:/Users/ASUS/.codex/skills)",
+      ),
+      false,
+      "codex skills-scan traversal-limit noise is NOT quota",
+    );
+    assert.equal(isQuotaFailureText("const quotaExhausted = true"), false, "bare quota/code symbol is NOT quota");
+    assert.equal(isQuotaFailureText("AUTH_ERROR something"), false, "bare auth_error is NOT quota");
+    assert.equal(isQuotaFailureText("429"), false, "bare 429 is NOT quota");
+    assert.equal(isQuotaFailureText("usage limit reached"), false, "bare usage limit words are NOT quota");
     assert.equal(isQuotaFailureText("ENOENT: no such file"), false, "spawn error is NOT quota");
     assert.equal(isQuotaFailureText(""), false, "empty string -> false");
     assert.equal(isQuotaFailureText(null), false, "null -> false");

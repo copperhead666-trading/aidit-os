@@ -181,18 +181,26 @@ export function cooldownMsFor(count) {
 
 // ---- quota failure detection ----
 // isQuotaFailureText(text): true when the text indicates an EXHAUSTED-QUOTA /
-// usage-cap condition (NOT a transient blip). Matches any of, case-insensitive:
-//   "usage limit", "quota", "auth_error", "insufficient_quota",
-//   "rate limit exceeded", "429"
+// usage-cap condition (NOT a transient blip). Matches provider-shaped phrases,
+// never bare code/editor words such as "quota", "auth_error", "usage limit", or
+// "429".
 // Returns false for null/undefined/empty. This is the decision boundary between
 // recordQuotaExhausted (long cooldown) and recordFailure (transient backoff).
 export function isQuotaFailureText(text) {
   if (text == null) return false;
   const s = String(text);
   if (s === "") return false;
-  const lower = s.toLowerCase();
-  const patterns = ["usage limit", "quota", "auth_error", "insufficient_quota", "rate limit exceeded", "429"];
-  return patterns.some((p) => lower.includes(p));
+  const patterns = [
+    /you'?ve (hit|reached) your .{0,60}limit/i,
+    /weekly \(7-day\) usage limit/i,
+    /rate[ _-]?limit exceeded/i,
+    /insufficient_quota/i,
+    /\bHTTP 429\b/i,
+    /\bstatus(?: code)? 429\b/i,
+    /provider\.auth_error/i,
+    /quota (?:exceeded|exhausted)/i,
+  ];
+  return patterns.some((p) => p.test(s));
 }
 
 // recordFailure(lane, reason): persist an observed failure with a real

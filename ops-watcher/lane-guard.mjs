@@ -25,6 +25,13 @@ function first200(value) {
   return String(value || "").slice(0, 200);
 }
 
+function stripPromptText(text, promptText) {
+  if (promptText == null) return text;
+  const prompt = String(promptText);
+  if (prompt === "") return text;
+  return String(text).split(prompt).join("");
+}
+
 // audit-clerk.mjs#classifyDriftOutput and
 // review-runner.mjs#isUnusableReviewerReply are older, task-specific variants
 // of this same idea and are deliberately left alone for now.
@@ -61,6 +68,8 @@ export async function guardLaneStart(laneName, deps = {}) {
 export async function recordLaneOutcome(laneName, result = {}, deps = {}) {
   const laneKey = resolveLaneKey(laneName);
   try {
+    // A quota classification is only valid for failed runs. Successful runs may
+    // legitimately discuss quota-handling code and must still clear the lane.
     if (result && result.ok === true) {
       const clearFailure = deps.clearFailure || defaultClearFailure;
       await clearFailure(laneKey, deps);
@@ -70,8 +79,9 @@ export async function recordLaneOutcome(laneName, result = {}, deps = {}) {
     const stdout = result && result.stdout != null ? String(result.stdout) : "";
     const stderr = result && result.stderr != null ? String(result.stderr) : "";
     const text = `${stdout}\n${stderr}`;
+    const textForClassification = stripPromptText(text, result && result.promptText);
     const isQuotaFailureText = deps.isQuotaFailureText || defaultIsQuotaFailureText;
-    if (isQuotaFailureText(text)) {
+    if (isQuotaFailureText(textForClassification)) {
       const recordQuotaExhausted = deps.recordQuotaExhausted || defaultRecordQuotaExhausted;
       await recordQuotaExhausted(laneKey, first200(text), deps);
       return { recorded: true, kind: "quota", laneKey };
