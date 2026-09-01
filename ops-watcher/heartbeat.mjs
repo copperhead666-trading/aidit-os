@@ -146,7 +146,16 @@ import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { isPidAliveReal } from "./telegram-listener-daemon.mjs";
+import {
+  acquireLock as acquireLockReal,
+  releaseLock as releaseLockReal,
+  isPidAliveReal,
+} from "./telegram-listener-daemon.mjs";
+// checkPauseReal() calls these. They were used without being imported, so the
+// real (uninjected) pause check threw ReferenceError, failed closed as designed,
+// and halted every sweep for ~4 minutes on 2026-09-01. The tests never caught it
+// because they inject `checkPause` and so never exercise checkPauseReal.
+import { isPaused, readPause } from "./pause-gate.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // The child scripts expect to be run from the repo root (their own discovery
@@ -165,6 +174,7 @@ const STEP_TIMEOUT_MS = 10 * 60 * 1000;
 // daemon. Used by the step-5 gate so the one-shot getUpdates only runs when the
 // daemon is not confirmed healthy.
 const TELEGRAM_LISTENER_DAEMON_LOCK_FILE = path.join(__dirname, "telegram-listener-daemon.lock");
+export const HEARTBEAT_LOCK_FILE = path.join(__dirname, "heartbeat.lock");
 
 // ---- Durable step log (one JSON line per sweep) ----
 // Appended after every sweep so the self-repair layer can answer "has step X
@@ -432,7 +442,9 @@ async function getPauseState(checkPause) {
 }
 
 // Core sweep, dependency-injected for testability.
-// deps: { runStep, shouldRunTelegramListenerStep, checkPause, log, now, appendStepLog, stepLogFile }
+// deps: { runStep, shouldRunTelegramListenerStep, checkPause, log, now,
+//         appendStepLog, stepLogFile, lockFile, acquireLock, releaseLock,
+//         isAlive, lockPid, _fs }
 // runStep: async (argv) => { code, stdout, stderr, error, timedOut }
 // shouldRunTelegramListenerStep: async () => boolean (true = run fallback)
 // checkPause: async () => { paused, reason, atIso, by } | boolean
@@ -448,6 +460,12 @@ export async function runHeartbeatOnce(deps = {}) {
     now = Date.now,
     appendStepLog = appendStepLogReal,
     stepLogFile = STEP_LOG_FILE,
+    lockFile = HEARTBEAT_LOCK_FILE,
+    acquireLock: _acquireLock = acquireLockReal,
+    releaseLock: _releaseLock = releaseLockReal,
+    isAlive = isPidAliveReal,
+    lockPid = process.pid,
+    _fs = fs,
   } = deps;
 
   const startedAt = now();
@@ -491,6 +509,40 @@ export async function runHeartbeatOnce(deps = {}) {
     };
   }
 
+  let lock;
+  try {
+    lock = await _acquireLock({ lockFile, pid: lockPid, isAlive, _fs });
+  } catch (err) {
+    const finishedAt = now();
+    const msg = (err && err.stack) ? err.stack : String(err);
+    log(`heartbeat --once: lock acquire threw (${msg}) -> refusing to run (no concurrent sweep on unknown lock state)`);
+    return {
+      results: [],
+      succeeded: 0,
+      failed: 0,
+      total: STEPS.length,
+      startedAt,
+      finishedAt,
+      refused: true,
+      error: "lock-failed",
+    };
+  }
+  if (!lock.acquired) {
+    const finishedAt = now();
+    log(`heartbeat --once: REFUSING to run — another sweep is in progress (pid=${lock.pid}). Remove ${path.basename(lockFile)} only if you are sure it is stale. No heartbeat steps ran.`);
+    return {
+      results: [],
+      succeeded: 0,
+      failed: 0,
+      total: STEPS.length,
+      startedAt,
+      finishedAt,
+      refused: true,
+      pid: lock.pid,
+    };
+  }
+  log(`heartbeat --once: acquired sweep lock (pid=${lock.pid}) at ${iso()}`);
+
   log(`heartbeat --once START ${new Date(startedAt).toISOString()} (${STEPS.length} steps)`);
 
   const results = [];
@@ -500,95 +552,104 @@ export async function runHeartbeatOnce(deps = {}) {
   let succeeded = 0;
   let failed = 0;
 
-  for (const step of STEPS) {
-    let res;
-    let skippedHealthy = false;
-    const stepStart = now();
-    try {
-      if (step.name === "telegram-listener") {
-        let shouldRun = true;
-        try {
-          shouldRun = await shouldRunTelegramListenerStep();
-        } catch (err) {
-          // Uncertain health state must fail OPEN to running the fallback check.
-          log(`  [${step.name}] daemon-health check threw — ${excerpt(String(err && err.message || err))}`);
-        }
-        if (!shouldRun) {
-          skippedHealthy = true;
-          res = {
-            code: null,
-            stdout:
-              "telegram-listener --once: SKIPPED-persistent-daemon-healthy " +
-              "(lock + live pid) — one-shot getUpdates would race with the daemon's " +
-              "long-poll and could cause a Telegram 409 Conflict\n",
-            stderr: "",
-            error: null,
-            timedOut: false,
-          };
+  try {
+    for (const step of STEPS) {
+      let res;
+      let skippedHealthy = false;
+      const stepStart = now();
+      try {
+        if (step.name === "telegram-listener") {
+          let shouldRun = true;
+          try {
+            shouldRun = await shouldRunTelegramListenerStep();
+          } catch (err) {
+            // Uncertain health state must fail OPEN to running the fallback check.
+            log(`  [${step.name}] daemon-health check threw — ${excerpt(String(err && err.message || err))}`);
+          }
+          if (!shouldRun) {
+            skippedHealthy = true;
+            res = {
+              code: null,
+              stdout:
+                "telegram-listener --once: SKIPPED-persistent-daemon-healthy " +
+                "(lock + live pid) — one-shot getUpdates would race with the daemon's " +
+                "long-poll and could cause a Telegram 409 Conflict\n",
+              stderr: "",
+              error: null,
+              timedOut: false,
+            };
+          } else {
+            res = await runStep(step.argv);
+          }
         } else {
           res = await runStep(step.argv);
         }
-      } else {
-        res = await runStep(step.argv);
+      } catch (err) {
+        // Defensive: even a throwing runStep must not abort the sweep.
+        res = { code: null, stdout: "", stderr: String(err && err.stack || err), error: String(err && err.message || err) };
       }
-    } catch (err) {
-      // Defensive: even a throwing runStep must not abort the sweep.
-      res = { code: null, stdout: "", stderr: String(err && err.stack || err), error: String(err && err.message || err) };
+      const stepEnd = now();
+      const code = res.code;
+      // A healthy-daemon skip is intentional and counts as success, not failure.
+      const okStep = skippedHealthy || code === 0;
+      if (okStep) succeeded += 1; else failed += 1;
+
+      const combined = (res.stdout || "") + (res.stderr ? (res.stdout ? "\n" : "") + res.stderr : "");
+      const tag = res.timedOut ? " (timeout)" : (res.error && code === null) ? " (error)" : "";
+      log(`  [${step.name}] exit=${code === null ? "null" : code}${tag} ${okStep ? "OK" : "FAIL"} — ${excerpt(combined)}`);
+
+      results.push({
+        name: step.name,
+        argv: step.argv,
+        code,
+        ok: okStep,
+        timedOut: !!res.timedOut,
+        error: res.error || null,
+        stdout: res.stdout || "",
+        stderr: res.stderr || "",
+      });
+      stepMeta.push({ skippedHealthy, durationMs: stepEnd - stepStart });
     }
-    const stepEnd = now();
-    const code = res.code;
-    // A healthy-daemon skip is intentional and counts as success, not failure.
-    const okStep = skippedHealthy || code === 0;
-    if (okStep) succeeded += 1; else failed += 1;
 
-    const combined = (res.stdout || "") + (res.stderr ? (res.stdout ? "\n" : "") + res.stderr : "");
-    const tag = res.timedOut ? " (timeout)" : (res.error && code === null) ? " (error)" : "";
-    log(`  [${step.name}] exit=${code === null ? "null" : code}${tag} ${okStep ? "OK" : "FAIL"} — ${excerpt(combined)}`);
+    const finishedAt = now();
+    log(`heartbeat --once DONE ${new Date(finishedAt).toISOString()} — succeeded=${succeeded}/${STEPS.length} failed=${failed}/${STEPS.length} (took ${Math.round((finishedAt - startedAt) / 1000)}s)`);
 
-    results.push({
-      name: step.name,
-      argv: step.argv,
-      code,
-      ok: okStep,
-      timedOut: !!res.timedOut,
-      error: res.error || null,
-      stdout: res.stdout || "",
-      stderr: res.stderr || "",
-    });
-    stepMeta.push({ skippedHealthy, durationMs: stepEnd - stepStart });
+    // Durable, machine-readable record of every step's outcome. ONE JSON line per
+    // sweep. Best-effort: a failure here MUST NEVER fail the sweep — the sweep's
+    // return value and exit code are already determined by the steps above.
+    try {
+      const steps = results.map((r, i) =>
+        buildStepRecord(STEPS[i], { code: r.code, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut, error: r.error }, {
+          okStep: r.ok,
+          skippedHealthy: stepMeta[i].skippedHealthy,
+          durationMs: stepMeta[i].durationMs,
+          now,
+        })
+      );
+      const sweepRecord = {
+        ts: finishedAt,
+        startedAt,
+        finishedAt,
+        durationMs: finishedAt - startedAt,
+        total: STEPS.length,
+        succeeded,
+        failed,
+        steps,
+      };
+      await appendStepLog(sweepRecord, { file: stepLogFile });
+    } catch (err) {
+      log(`heartbeat: WARN could not append step log (${err && (err.code || err.message) || String(err)})`);
+    }
+
+    return { results, succeeded, failed, total: STEPS.length, startedAt, finishedAt };
+  } finally {
+    try {
+      await _releaseLock({ lockFile, _fs });
+      log(`heartbeat --once: released sweep lock (pid=${lock.pid})`);
+    } catch (err) {
+      log(`heartbeat --once: WARN lock release threw (${err && err.message}) — staleness check will recover on next start`);
+    }
   }
-
-  const finishedAt = now();
-  log(`heartbeat --once DONE ${new Date(finishedAt).toISOString()} — succeeded=${succeeded}/${STEPS.length} failed=${failed}/${STEPS.length} (took ${Math.round((finishedAt - startedAt) / 1000)}s)`);
-
-  // Durable, machine-readable record of every step's outcome. ONE JSON line per
-  // sweep. Best-effort: a failure here MUST NEVER fail the sweep — the sweep's
-  // return value and exit code are already determined by the steps above.
-  try {
-    const steps = results.map((r, i) =>
-      buildStepRecord(STEPS[i], { code: r.code, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut, error: r.error }, {
-        okStep: r.ok,
-        skippedHealthy: stepMeta[i].skippedHealthy,
-        durationMs: stepMeta[i].durationMs,
-        now,
-      })
-    );
-    const sweepRecord = {
-      ts: finishedAt,
-      startedAt,
-      finishedAt,
-      durationMs: finishedAt - startedAt,
-      total: STEPS.length,
-      succeeded,
-      failed,
-      steps,
-    };
-    await appendStepLog(sweepRecord, { file: stepLogFile });
-  } catch (err) {
-    log(`heartbeat: WARN could not append step log (${err && (err.code || err.message) || String(err)})`);
-  }
-
-  return { results, succeeded, failed, total: STEPS.length, startedAt, finishedAt };
 }
 
 // ---- CLI ----
@@ -624,3 +685,4 @@ if (isEntry) {
     process.exit(1);
   });
 }
+
