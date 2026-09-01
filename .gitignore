@@ -99,3 +99,7 @@ tmp_get_time.js
 
 # self-repair rollback snapshots (runtime artifacts, regenerated per attempt)
 ops-watcher/.self-repair-backups/
+# Cockpit (Next.js) build + deps — the source is tracked, the install is not.
+cockpit/node_modules/
+cockpit/.next/
+cockpit/tsconfig.tsbuildinfo
