@@ -128,6 +128,7 @@ import {
   probeLaneAvailability as probeLaneAvailabilityReal,
   isInCooldown as isInCooldownReal,
 } from "./routing.mjs";
+import { isUnusableModelOutput } from "./lane-guard.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -245,12 +246,21 @@ export function verdictCategory(verdict) {
   return "ambiguous";
 }
 
+// Canonical definition of "unusable model output": lane-guard.mjs#isUnusableModelOutput.
+// Thin wrapper: delegates the empty + truncation checks to the shared helper and
+// maps its reasons onto the English strings this helper has always returned.
+// isUnusableReviewerReply deliberately has NO quota/auth gate and allows any
+// short reply that contains a VERDICT marker, so those branches stay local
+// (the shared helper's 20-char threshold has no VERDICT allowance).
 export function isUnusableReviewerReply(stdout) {
-  const trimmed = String(stdout ?? "").trim();
-  if (!trimmed) return { unusable: true, reason: "empty reviewer output" };
-  if (/response truncated due to output length limit/i.test(trimmed)) {
-    return { unusable: true, reason: "reviewer output truncated" };
+  const shared = isUnusableModelOutput(stdout);
+  if (shared.unusable) {
+    if (shared.reason === "empty output") return { unusable: true, reason: "empty reviewer output" };
+    if (shared.reason === "output truncated") return { unusable: true, reason: "reviewer output truncated" };
+    // "lane quota/auth error" / "output too short": not this helper's policy —
+    // fall through to the local VERDICT-aware length check below.
   }
+  const trimmed = String(stdout ?? "").trim();
   if (trimmed.length < 20 && !/VERDICT/i.test(trimmed)) {
     return { unusable: true, reason: "reviewer output too short to be a verdict" };
   }

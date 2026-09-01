@@ -27,7 +27,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { ALLOWED_SCRIPTS } from "./ahmad-mcp-server.mjs";
-import { guardLaneStart } from "./lane-guard.mjs";
+import { guardLaneStart, isUnusableModelOutput } from "./lane-guard.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -334,11 +334,20 @@ export function buildRegistryDriftPrompt(registryRelPath, roleMapRelPath) {
   ].join("\n");
 }
 
+// Canonical definition of "unusable model output": lane-guard.mjs#isUnusableModelOutput.
+// Thin wrapper: delegates the empty + truncation checks to the shared helper and
+// maps its reasons onto the Indonesian strings this helper has always returned.
+// classifyDriftOutput deliberately has NO quota/auth gate and uses a bullet-aware
+// 40-char "tidak dikenali" threshold instead of the shared helper's 20-char
+// "output too short" one, so those branches stay local.
 export function classifyDriftOutput(stdout) {
   const text = String(stdout || "").trim();
-  if (!text) return { usable: false, reason: "output kosong" };
-  if (/response truncated due to output length limit/i.test(text)) {
-    return { usable: false, reason: "output terpotong" };
+  const shared = isUnusableModelOutput(text);
+  if (shared.unusable) {
+    if (shared.reason === "empty output") return { usable: false, reason: "output kosong" };
+    if (shared.reason === "output truncated") return { usable: false, reason: "output terpotong" };
+    // "lane quota/auth error" / "output too short": not this helper's policy —
+    // fall through to the local bullet-aware length check below.
   }
   const hasBulletLikeLine = /^\s*(?:[-*•]|\d+[.)])(?:\s|$)/m.test(text);
   if (!hasBulletLikeLine && text.length < 40) {

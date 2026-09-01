@@ -599,6 +599,26 @@ async function t29_guardLaneCooldownSkipProducesNoFinding() {
   ok("T29: guardLane cooldown skip -> dispatcher not called and NO finding at all");
 }
 
+function t30_classifyDriftOutputFourShapesViaSharedHelper() {
+  // Asserts the thin wrapper over lane-guard.mjs#isUnusableModelOutput still
+  // classifies all four shapes correctly with the original Indonesian reasons
+  // (and that the shared helper's quota gate is NOT adopted here).
+  assert.deepEqual(classifyDriftOutput(""), { usable: false, reason: "output kosong" }, "T30: empty string -> output kosong");
+  assert.deepEqual(
+    classifyDriftOutput("Response truncated due to output length limit"),
+    { usable: false, reason: "output terpotong" },
+    "T30: truncation meta output -> output terpotong",
+  );
+  // classifyDriftOutput has no quota/auth gate: a >=40-char provider auth_error
+  // string with no bullet-like line is still usable (the shared helper's quota
+  // check is deliberately not adopted here).
+  const quota = "provider.auth_error: 403 You've reached your weekly (7-day) usage limit.";
+  assert.deepEqual(classifyDriftOutput(quota), { usable: true }, "T30: quota string (>=40 chars, no bullet) -> usable");
+  const usable = "- CORLEONE: registry says resting, role map says active.";
+  assert.deepEqual(classifyDriftOutput(usable), { usable: true }, "T30: normal bullet reply -> usable");
+  ok("T30: classifyDriftOutput wrapper classifies empty/truncation/quota/usable shapes correctly");
+}
+
 async function main() {
   const tests = [
     t1_orphanedAllowlistExistingNoFinding,
@@ -634,6 +654,7 @@ async function main() {
     t27_driftCheckPastIntervalDispatchesAndRecordsLastAttemptPreservingAlerts,
     t28_guardLaneQuotaSkipDoesNotDispatchAndPreservesLastAttempt,
     t29_guardLaneCooldownSkipProducesNoFinding,
+    t30_classifyDriftOutputFourShapesViaSharedHelper,
   ];
   for (const t of tests) await t();
   console.log(`\naudit-clerk.regression.test.mjs: ${pass}/${tests.length} passed`);

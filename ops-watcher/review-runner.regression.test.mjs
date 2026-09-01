@@ -838,6 +838,25 @@ async function testInWorkspacePathNotFlagged() {
   } catch (e) { bad(name, e); } finally { await s.close(); }
 }
 
+async function testUnusableReviewerReplyFourShapesViaSharedHelper() {
+  const name = "(i8) isUnusableReviewerReply wrapper classifies empty/truncation/quota/usable shapes correctly";
+  try {
+    assert.deepEqual(isUnusableReviewerReply(""), { unusable: true, reason: "empty reviewer output" }, "empty string");
+    assert.deepEqual(
+      isUnusableReviewerReply("Response truncated due to output length limit"),
+      { unusable: true, reason: "reviewer output truncated" },
+      "truncation meta output",
+    );
+    // isUnusableReviewerReply has no quota/auth gate: a >=20-char provider
+    // auth_error string is still usable (the shared helper's quota check is
+    // deliberately not adopted here).
+    const quota = "provider.auth_error: 403 You've reached your weekly (7-day) usage limit.";
+    assert.deepEqual(isUnusableReviewerReply(quota), { unusable: false }, "quota string (>=20 chars) -> usable");
+    assert.deepEqual(isUnusableReviewerReply("Looks good.\nVERDICT: PASS"), { unusable: false }, "normal usable reply");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
 async function main() {
   console.log("# review-runner regression tests");
   await testHappyPass();
@@ -865,6 +884,7 @@ async function main() {
   await testScoopAppsPathNotWorkspaceError();
   await testKol47IncidentPathStillFlagged();
   await testInWorkspacePathNotFlagged();
+  await testUnusableReviewerReplyFourShapesViaSharedHelper();
   console.log("");
   console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
   if (failed > 0) { for (const f of failures) console.log(`  FAILED: ${f}`); process.exit(1); }
