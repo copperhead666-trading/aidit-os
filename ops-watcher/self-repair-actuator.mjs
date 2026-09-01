@@ -49,6 +49,11 @@ const NODE = process.execPath || "node";
 const ESCALATION_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const DISPATCH_TIMEOUT_MS = 12 * 60 * 1000;
 
+// The canary step used by drills. Its per-step attempt bookkeeping is cleared
+// at the start of every drill so a drill is never blocked by a previous drill's
+// recorded attempt. Production steps are NEVER cleared this way.
+const DRILL_STEP_NAME = "canary-step";
+
 function toRepoRelative(file) {
   const rel = path.relative(REPO_ROOT, file);
   // Normalize Windows backslashes to forward slashes for deterministic output.
@@ -204,6 +209,24 @@ async function writeStateRaw(state, { writeFile, stateFile }) {
   } catch {
     // Bookkeeping is best-effort; a repair decision is never blocked by it.
   }
+}
+
+// resetCanaryStepBookkeeping — DRILL PATH ONLY. Removes only the canary step's
+// attempt bookkeeping from the state file so a drill is never blocked by a
+// previous drill's recorded attempt. Every other step's bookkeeping (attempts,
+// escalations, faults) is left untouched. Does NOT change shouldAttemptRepair
+// or REPAIR_COOLDOWN_MS; production steps keep their full cooldown.
+export async function resetCanaryStepBookkeeping({ readFile, writeFile, stateFile } = {}) {
+  const state = await readStateRaw({ readFile, stateFile });
+  const attempts = (state && state.attempts && typeof state.attempts === "object") ? state.attempts : null;
+  if (attempts && Object.prototype.hasOwnProperty.call(attempts, DRILL_STEP_NAME)) {
+    const nextAttempts = { ...attempts };
+    delete nextAttempts[DRILL_STEP_NAME];
+    const next = { ...state, attempts: nextAttempts };
+    await writeStateRaw(next, { writeFile, stateFile });
+    return { cleared: true, stepName: DRILL_STEP_NAME };
+  }
+  return { cleared: false, stepName: DRILL_STEP_NAME };
 }
 
 // Default scoped-suite runner: delegates to runAllTests with --only set and
@@ -410,6 +433,48 @@ export async function escalate(fault, _evidence, deps = {}) {
 }
 
 // =====================================================================
+// evaluateDrillChecks — PURE. The dry-drill success criteria evaluator.
+//
+// A dry drill PASSES only when ALL FIVE of these hold:
+//   1. baseline suite red          (the injected logic fault is detected)
+//   2. attempt outcome             ("reverted:scoped-suite-red")
+//   3. rollback by attemptRepair   (the rollback ran inside attemptRepair,
+//                                    not only via the outer safety net)
+//   4. matchesCorrupted            (immediately after attemptRepair the canary
+//                                    is byte-identical to the CORRUPTED content
+//                                    the drill injected — the rollback restored
+//                                    the pre-repair state exactly and the
+//                                    lane's no-op changes were undone)
+//   5. matchesOriginal + finalSuiteGreen
+//                                  (after the outer try/finally restore the
+//                                    canary is byte-identical to its ORIGINAL
+//                                    content, canaryAdd(2,2)===4, and the
+//                                    canary suite is green)
+//
+// Returns { ok, checks, failedCheck }. `checks` is the five {name,pass} entries
+// in order; `failedCheck` is the name of the first failing check, or null.
+// =====================================================================
+export function evaluateDrillChecks({
+  baselineRed,
+  outcome,
+  rollbackByAttempt,
+  matchesCorrupted,
+  matchesOriginal,
+  finalSuiteGreen,
+} = {}) {
+  const checks = [
+    { name: "baseline suite red", pass: baselineRed === true },
+    { name: "attempt outcome reverted:scoped-suite-red", pass: outcome === "reverted:scoped-suite-red" },
+    { name: "rollback by attemptRepair", pass: rollbackByAttempt === true },
+    { name: "canary byte-identical to corrupted content after attemptRepair", pass: matchesCorrupted === true },
+    { name: "canary byte-identical to original and suite green after outer restore", pass: matchesOriginal === true && finalSuiteGreen === true },
+  ];
+  const failed = checks.filter((c) => !c.pass);
+  const ok = failed.length === 0;
+  return { ok, checks, failedCheck: ok ? null : failed[0].name };
+}
+
+// =====================================================================
 // The drill CLI — the proof.
 //   node ops-watcher/self-repair-actuator.mjs --drill [--dry]
 // =====================================================================
@@ -420,9 +485,13 @@ async function runDrill({ dry }) {
   const suiteBasename = path.basename(canaryTestFile);
 
   let originalBytes = null;
+  let corruptedBytes = null;
   let snapshot = null;
   let intendedExit = 1;
-  const v = {};
+  // v collects every measurement the verdict needs. `aborted` is set whenever
+  // the drill bails before reaching attemptRepair; in that case the five-check
+  // verdict is skipped (there is nothing to evaluate) and we exit 1.
+  const v = { rollbackByAttempt: false, aborted: null };
 
   try {
     // 1. Remember the canary's exact bytes.
@@ -431,11 +500,12 @@ async function runDrill({ dry }) {
     const beforeMod = await import(pathToFileURL(canaryFile) + "?before=" + Date.now());
     v.beforeAdd = beforeMod.canaryAdd(2, 2);
 
-    // 2. Snapshot the canary pair.
+    // 2. Snapshot the canary pair. This is the OUTER safety net, taken BEFORE
+    //    any corruption. It is distinct from the snapshot attemptRepair takes
+    //    (which is taken after corruption, i.e. of the corrupted file).
     snapshot = await snapshotFiles([canaryFile, canaryTestFile], { _fs: realFsApi, now: Date.now });
     if (!snapshot || snapshot.ok === false) {
-      console.log("DRILL: snapshot failed — aborting before any corruption");
-      intendedExit = 1;
+      v.aborted = "snapshot failed — aborting before any corruption";
       return;
     }
 
@@ -443,24 +513,29 @@ async function runDrill({ dry }) {
     const originalText = originalBytes.toString("utf8");
     const corruptedText = originalText.replace("return a + b;", "return a + b + 1;");
     if (corruptedText === originalText) {
-      console.log("DRILL ABORT: could not inject logic fault (canary source shape changed)");
-      intendedExit = 1;
+      v.aborted = "could not inject logic fault (canary source shape changed)";
       return;
     }
     await realFsApi.writeFile(canaryFile, corruptedText);
+    corruptedBytes = Buffer.from(corruptedText, "utf8");
 
-    // 4. Assert the scoped suite now FAILS.
+    // 4. Assert the scoped suite now FAILS (check 1).
     const scopedCheck = await defaultRunSuite(suiteBasename);
     v.baselineState = scopedCheck.ok ? "green" : "red";
     if (scopedCheck.ok) {
-      console.log("DRILL ABORT: canary test too weak to detect the injected fault (scoped suite still green after corruption)");
-      intendedExit = 1;
+      v.aborted = "canary test too weak to detect the injected fault (scoped suite still green after corruption)";
       return;
     }
 
-    // 5. Synthetic fault + attemptRepair. In --dry the dispatcher changes
-    //    nothing but reports success, so the expected outcome is `reverted`
-    //    (the rollback path). Without --dry the real CORLEONE dispatcher runs.
+    // 4b. Drill path only: clear the canary step's own attempt bookkeeping so a
+    //     previous drill's recorded attempt never blocks this one. Production
+    //     steps are untouched. (Real attemptRepair calls never do this.)
+    await resetCanaryStepBookkeeping({});
+
+    // 5. Synthetic fault + attemptRepair. In --dry the lane is simulated healthy
+    //    and the dispatcher changes nothing but reports success, so the expected
+    //    outcome is `reverted` (the rollback path inside attemptRepair). Without
+    //    --dry the real CORLEONE dispatcher and lane guard run.
     const fault = {
       name: "canary-step",
       kind: "test-red",
@@ -470,18 +545,29 @@ async function runDrill({ dry }) {
       ? {
           dispatchRepair: async () => ({ ok: true, stdout: "dry-run: no file change", stderr: "" }),
           recordOutcome: async () => ({ recorded: true }),
+          guardLane: async () => ({ skip: false, reason: null, remainingMs: 0, laneKey: "codex" }),
+          restoreFiles: async (snap, opts) => {
+            v.rollbackByAttempt = true;
+            return restoreFiles(snap, opts);
+          },
         }
       : {};
     const result = await attemptRepair(fault, attemptDeps);
     v.outcome = result.outcome + (result.reason ? ":" + result.reason : "");
 
-    // 6. Verdict measurements.
-    const finalCheck = await defaultRunSuite(suiteBasename);
-    v.finalSuiteState = finalCheck.ok ? "green" : "red";
-    const afterBytes = await realFsApi.readFile(canaryFile);
-    v.afterLen = afterBytes.length;
-    const afterMod = await import(pathToFileURL(canaryFile) + "?after=" + Date.now());
-    v.afterAdd = afterMod.canaryAdd(2, 2);
+    // 6. Immediately after attemptRepair: prove the rollback restored the
+    //    PRE-REPAIR (corrupted) state byte-for-byte. attemptRepair snapshots the
+    //    files as they are when the repair begins — which, in a drill, is the
+    //    deliberately corrupted canary — so rolling back restores the corrupted
+    //    content. That is exactly correct: a rollback undoes the repair
+    //    attempt's edits; it does not magically fix the original fault.
+    const afterAttemptBytes = await realFsApi.readFile(canaryFile);
+    v.afterAttemptLen = afterAttemptBytes.length;
+    v.matchesCorrupted = !!(corruptedBytes && afterAttemptBytes.equals(corruptedBytes));
+    const afterAttemptMod = await import(pathToFileURL(canaryFile) + "?afterattempt=" + Date.now());
+    v.afterAttemptAdd = afterAttemptMod.canaryAdd(2, 2);
+
+    // Evidence count (best-effort; the log may not exist).
     try {
       const logText = await realFsApi.readFile(EVIDENCE_LOG_FILE, "utf8");
       v.evidenceCount = String(logText || "").split(/\r?\n/)
@@ -490,38 +576,98 @@ async function runDrill({ dry }) {
       v.evidenceCount = 0;
     }
 
-    console.log("==== DRILL VERDICT ====");
-    console.log(`mode: ${dry ? "dry" : "live"}`);
-    console.log(`baseline suite: ${v.baselineState}`);
-    console.log(`attempt outcome: ${v.outcome}`);
-    console.log(`final suite: ${v.finalSuiteState}`);
-    console.log(`canary bytes before: ${v.beforeLen}, after: ${v.afterLen}`);
-    console.log(`canaryAdd(2,2) before: ${v.beforeAdd}, after: ${v.afterAdd}`);
-    console.log(`evidence entries appended: ${v.evidenceCount}`);
-    intendedExit = 0; // drill completed; finally still confirms the restore
+    // NOTE: the final suite state and original-content identity are measured
+    // AFTER the outer restore, in the finally block below. Measuring them here
+    // (before the outer restore) would read "red" / "5" because the rollback
+    // correctly left the canary in its corrupted pre-repair state.
   } catch (err) {
     console.log("DRILL ERROR:", err && err.stack ? err.stack : err);
+    v.aborted = "drill threw: " + (err && err.message ? err.message : String(err));
     intendedExit = 1;
   } finally {
-    // 7. ALWAYS restore the canary pair and verify byte-identity.
+    // 7. ALWAYS restore the canary pair via the OUTER safety net. This is
+    //    distinct from any rollback attemptRepair performed: this snapshot was
+    //    taken before corruption, so it restores the ORIGINAL content.
     if (snapshot && snapshot.ok && originalBytes) {
       try {
         await restoreFiles(snapshot, { _fs: realFsApi });
       } catch (e) {
-        console.log("DRILL: restore threw:", e && e.message);
+        console.log("DRILL: outer restore threw:", e && e.message);
       }
-      try {
-        const restored = await realFsApi.readFile(canaryFile);
-        if (restored.equals(originalBytes)) {
-          console.log(`DRILL SAFETY: canary restored byte-identical (${canaryFile}, ${restored.length} bytes)`);
-        } else {
-          console.log(`DRILL SAFETY FAILURE: could not restore ${canaryFile}`);
+    }
+
+    // Abort path: the drill bailed before attemptRepair ran. Nothing to
+    // evaluate; just confirm the outer restore (if anything was corrupted) and
+    // exit 1.
+    if (v.aborted) {
+      console.log("DRILL ABORT:", v.aborted);
+      if (snapshot && snapshot.ok && originalBytes) {
+        try {
+          const restored = await realFsApi.readFile(canaryFile);
+          if (restored.equals(originalBytes)) {
+            console.log(`DRILL SAFETY: canary restored byte-identical (${canaryFile}, ${restored.length} bytes)`);
+          } else {
+            console.log(`DRILL SAFETY FAILURE: could not restore ${canaryFile}`);
+            intendedExit = 1;
+          }
+        } catch (e) {
+          console.log(`DRILL SAFETY FAILURE: could not verify restored ${canaryFile}: ${e && e.message}`);
           intendedExit = 1;
         }
-      } catch (e) {
-        console.log(`DRILL SAFETY FAILURE: could not verify restored ${canaryFile}: ${e && e.message}`);
-        intendedExit = 1;
       }
+      return intendedExit;
+    }
+
+    // 8. After the outer restore: check 5. The canary must be byte-identical to
+    //    its ORIGINAL content, canaryAdd(2,2)===4, and the canary suite green.
+    let matchesOriginal = false;
+    let finalSuiteGreen = false;
+    let restoredLen = null;
+    let restoredAdd = null;
+    try {
+      const restoredBytes = await realFsApi.readFile(canaryFile);
+      restoredLen = restoredBytes.length;
+      matchesOriginal = !!originalBytes && restoredBytes.equals(originalBytes);
+      const restoredMod = await import(pathToFileURL(canaryFile) + "?restored=" + Date.now());
+      restoredAdd = restoredMod.canaryAdd(2, 2);
+      const finalCheck = await defaultRunSuite(suiteBasename);
+      finalSuiteGreen = !!finalCheck.ok;
+    } catch (e) {
+      console.log("DRILL: post-restore measurement threw:", e && e.message);
+    }
+
+    // 9. Evaluate the five dry-drill checks (always; for a live drill the
+    //    dry-only checks simply report their state and the verdict still drives
+    //    the exit code so a live drill must also leave the repo clean).
+    const verdict = evaluateDrillChecks({
+      baselineRed: v.baselineState === "red",
+      outcome: v.outcome,
+      rollbackByAttempt: v.rollbackByAttempt === true,
+      matchesCorrupted: v.matchesCorrupted === true,
+      matchesOriginal,
+      finalSuiteGreen,
+    });
+
+    console.log("==== DRILL VERDICT ====");
+    console.log(`mode: ${dry ? "dry" : "live"}`);
+    console.log(`baseline suite: ${v.baselineState}`);
+    console.log(`attempt outcome: ${v.outcome}`);
+    console.log(`canary bytes before: ${v.beforeLen}, after attemptRepair: ${v.afterAttemptLen}, after restore: ${restoredLen}`);
+    console.log(`canaryAdd(2,2) before: ${v.beforeAdd}, after attemptRepair: ${v.afterAttemptAdd}, after restore: ${restoredAdd}`);
+    console.log(`rollback by attempt: ${v.rollbackByAttempt ? "yes" : "no"}`);
+    console.log(`evidence entries appended: ${v.evidenceCount}`);
+    console.log(`final suite (after outer restore): ${finalSuiteGreen ? "green" : "red"}`);
+    console.log(`--- ${dry ? "dry-drill" : "drill"} checks ---`);
+    for (const c of verdict.checks) {
+      console.log(`${c.pass ? "PASS" : "FAIL"}: ${c.name}`);
+    }
+
+    if (verdict.ok) {
+      console.log("DRILL OK: all five checks passed");
+      intendedExit = 0;
+    } else {
+      console.log(`DRILL FAILURE: ${verdict.failedCheck}`);
+      intendedExit = 1;
     }
     return intendedExit;
   }

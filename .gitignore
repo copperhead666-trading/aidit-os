@@ -96,3 +96,6 @@ tmp_get_time.js
 # Zero-byte file with a mojibake name, created by a malformed shell command.
 # Matches any single-segment name made only of these mangled bytes.
 /*[ΓÜá∩╕Å]*
+
+# self-repair rollback snapshots (runtime artifacts, regenerated per attempt)
+ops-watcher/.self-repair-backups/
