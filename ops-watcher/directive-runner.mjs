@@ -1576,7 +1576,7 @@ async function main() {
     `stalled=${summary.stalled.length} awaiting=${summary.awaitingApproval.length} ` +
     `approved=${summary.approved.length} rejected=${summary.rejected.length} ` +
     `executed=${summary.executed} reverted=${summary.reverted} noop=${summary.noop} refused=${summary.refused} ` +
-    `unexecutable=${summary.unexecutable.length}`,
+    `unexecutable=${summary.unexecutable.length} cardsRetried=${summary.cardsRetried}`,
     `errors=${summary.errors.length}`,
   );
   for (const s of summary.stalled) console.log(`  stalled: ${s.identifier || s.id} lastCommentAt=${s.lastCommentAt || "none"} reason=${s.reason}`);
