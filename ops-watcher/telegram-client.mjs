@@ -28,6 +28,7 @@
 //   setMyCommands(commands, { timeoutMs, baseUrl })
 //   setChatMenuButton(menuButton, { timeoutMs, baseUrl })
 //   getMyCommands({ timeoutMs, baseUrl })  |  getChatMenuButton({ timeoutMs, baseUrl })
+//   escapeMarkdown(text)
 //   tokenStatus()
 //
 // `baseUrl` is a TEST SEAM only: it defaults to the real Telegram API base
@@ -64,6 +65,12 @@ export function redact(s) {
   str = str.replace(/\b\d{8,12}:[A-Za-z0-9_-]{30,64}\b/g, "[REDACTED_TOKEN]");
   str = str.replace(/\/bot\d{8,12}:[A-Za-z0-9_-]{30,64}\//g, "/bot[REDACTED]/");
   return str;
+}
+
+// Lives beside sendMessage/editMessageText because this module owns Telegram's
+// legacy parse_mode choice, so callers can escape against the parser in use.
+export function escapeMarkdown(text) {
+  return String(text ?? "").replace(/([\\_*`\[])/g, "\\$1");
 }
 
 // Core request. Never throws.

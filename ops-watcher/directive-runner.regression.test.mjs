@@ -1699,7 +1699,32 @@ await t("W3 judgeWrite separates a stored write from a rejected one", async () =
   assert.equal(judgeWrite(undefined).ok, false);
 });
 
-// ---- C-series: a decision card the owner never received -------------------
+// ---- C-series: decision-card delivery and Telegram Markdown safety ------
+
+await t("C0 decision card escapes Telegram Markdown entity starts from plan and issue values", () => {
+  const text = buildDecisionCardText(issue({ identifier: "KOL_36", title: "Fix owner_card [KOL_36]" }), {
+    objective: "Handle owner_card safely",
+    files: ["src/a_b.mjs"],
+    steps: ["Run `node` and inspect [payload]"],
+    outOfScope: "Do not touch .env* files",
+    verify: "node ops-watcher/run_all_tests.mjs --grep `card`",
+    risk: "low_risk",
+  });
+  assert.equal(text.includes("KOL\\_36 — Fix owner"), true, "identifier is escaped");
+  assert.equal(text.includes("Fix owner\\_card \\[KOL\\_36]"), true, "title is escaped");
+  assert.equal(text.includes("Handle owner\\_card safely"), true, "objective is escaped");
+  assert.equal(text.includes("src/a\\_b.mjs"), true, "file underscore is escaped");
+  assert.equal(text.includes("Run \\`node\\` and inspect \\[payload]"), true, "step backticks and opening bracket are escaped");
+  assert.equal(text.includes("Do not touch .env\\* files"), true, "the exact .env* production breaker is escaped");
+  assert.equal(text.includes("node ops-watcher/run\\_all\\_tests.mjs --grep \\`card\\`"), true, "verify command is escaped");
+  assert.equal(text.includes("low\\_risk"), true, "risk is escaped");
+});
+
+await t("C0 normal decision card text does not gain Markdown escape backslashes", () => {
+  const text = buildDecisionCardText(issue({ title: "Directive card" }), parsePlan(goodPlan));
+  assert.equal(text.includes("\\"), false);
+});
+
 // A plan comment that stands while its card failed leaves the directive
 // classified as awaiting-approval on a question nobody was asked. The card is
 // retried from the stored plan; planning is never repeated, because that costs

@@ -40,7 +40,7 @@ import {
 import { retrieveDispatchContext } from "./ahmad-context-retrieval.mjs";
 import { deliverAlert } from "./alert-delivery.mjs";
 import { judgeWrite } from "./write-delivery.mjs";
-import { sendMessage as telegramSendMessage } from "./telegram-client.mjs";
+import { escapeMarkdown, sendMessage as telegramSendMessage } from "./telegram-client.mjs";
 // Stage 3 reuse — import, do not rewrite. The snapshot/rollback helpers and the
 // lane registry already implement the same shape for the self-repair path; a
 // directive execution is the same shape with a different trigger. The lane
@@ -698,7 +698,8 @@ const CARD_LINE_CAP = 160;
 
 function cardLine(value) {
   const one = String(value ?? "").replace(/\s+/g, " ").trim();
-  return one.length > CARD_LINE_CAP ? one.slice(0, CARD_LINE_CAP - 1) + "…" : one;
+  const capped = one.length > CARD_LINE_CAP ? one.slice(0, CARD_LINE_CAP - 1) + "…" : one;
+  return escapeMarkdown(capped);
 }
 
 function cardList(items, cap) {
@@ -722,7 +723,7 @@ export function buildDecisionCardText(issue, plan) {
   return [
     "📋 Rencana directive butuh keputusan Anda",
     "",
-    `${ident} — ${cardLine(title)}`,
+    `${cardLine(ident)} — ${cardLine(title)}`,
     "",
     `Tujuan: ${cardLine(plan?.objective)}`,
     "",
