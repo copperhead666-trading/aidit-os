@@ -55,6 +55,7 @@ import {
   guardLaneStart as defaultGuardLaneStart,
   recordLaneOutcome as defaultRecordLaneOutcome,
 } from "./lane-guard.mjs";
+import { parseArgs as parseVerifyFileArgs, verifyFile as verifyFileReal } from "./verify-file.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -121,6 +122,7 @@ const OUTPUT_CAP = 8000;
 // with a 12-minute timeout), so the constant matches REPAIR's
 // DISPATCH_TIMEOUT_MS exactly.
 const EXECUTION_TIMEOUT_MS = 12 * 60 * 1000;
+const VERIFY_FILE_RED_WITHOUT_FILES_REASON = "verify-file-red-without-files";
 
 // The EXACT decision-comment prefixes telegram-listener.mjs writes when the
 // owner taps APPROVE / REJECT on a decision card (DECISION_COMMENT_PREFIX in
@@ -490,6 +492,18 @@ export function validateVerifyCommand(verify) {
   return { ok: true };
 }
 
+function isVerifyFileCommand(verify) {
+  const argv = nodeCommandToArgv(verify);
+  const script = String(argv[0] || "").replace(/\\/g, "/").replace(/^\.\//, "");
+  return script === "ops-watcher/verify-file.mjs";
+}
+
+export async function runVerifyFilePreApprovalReal(verify, deps = {}) {
+  const argv = nodeCommandToArgv(verify);
+  const parsed = parseVerifyFileArgs(argv.slice(1));
+  return verifyFileReal(parsed, deps);
+}
+
 // A corrupt state file is not the same event as a missing one. Missing is the
 // normal first run; corrupt means every attempt counter, plan-failure record and
 // consumed-decision marker silently reset to zero, which re-plans directives
@@ -843,6 +857,7 @@ export async function runDirectiveSweepOnce(deps = {}) {
     httpPatch: _patch = httpPatch,
     retrieveContext = retrieveDispatchContext,
     dispatchPlan = dispatchPlanReal,
+    runVerifyFilePreApproval = runVerifyFilePreApprovalReal,
     sendDecisionCard = sendDecisionCardReal,
     telegramBase,
     execute = async () => ({ ok: false, reason: "stage-2-no-execution" }),
@@ -1168,6 +1183,24 @@ export async function runDirectiveSweepOnce(deps = {}) {
         else summary.refused += 1;
         plannedThisSweep += 1;
         continue;
+      }
+      if (parsed.files.length === 0 && isVerifyFileCommand(parsed.verify)) {
+        const preApproval = await runVerifyFilePreApproval(parsed.verify, { issue, plan: parsed, now });
+        if (!preApproval || preApproval.ok !== true) {
+          const reason = VERIFY_FILE_RED_WITHOUT_FILES_REASON;
+          const detail = (preApproval && (preApproval.reason || preApproval.error)) || "verify-file returned red";
+          const attempt = recordPlanFailureAttempt(state, key, prior, { reason, detail });
+          await persistState(state);
+          const post = await _post(`${base}/api/issues/${issue.id}/comments`, {
+            body: refusalComment([`VERIFY: ${detail}`], attempt, maxPlanAttempts, reason),
+            authorType: "user",
+          });
+          const posted = judgeWrite(post);
+          if (!posted.ok) summary.errors.push(`${ident}: refusal comment NOT posted (${posted.reason})`);
+          else summary.refused += 1;
+          plannedThisSweep += 1;
+          continue;
+        }
       }
       const post = await _post(`${base}/api/issues/${issue.id}/comments`, { body: planComment(text, { stalled: stalledRePlan }), authorType: "user" });
       // A plan comment is only posted if Paperclip says it stored one. An auth

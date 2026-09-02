@@ -336,6 +336,91 @@ await t("good VERIFY plan posts the plan and sends exactly one decision card", a
   assert.equal(posts.filter((p) => /^DIRECTIVE PLAN \(/.test(p.body.body)).length, 1);
   assert.equal(cards.length, 1);
 });
+const noFilesVerifyFilePlan = goodPlan
+  .replace("FILES: ops-watcher/foo.mjs, docs/bar.md", "FILES: NONE")
+  .replace("VERIFY: node ops-watcher/foo.mjs --check", "VERIFY: node ops-watcher/verify-file.mjs --path handoffs/hermes-kimi/AHMAD-DELTA-PHASE1.md --matches \"AHMAD HEADLESS E2E PASS\"");
+
+await t("FILES NONE with red verify-file VERIFY refuses before decision card", async () => {
+  await resetTmp();
+  const comments = { i1: [] };
+  let verifyCalls = 0;
+  const { deps, posts, cards } = makeSweepDeps({
+    issues: [issue({ id: "i1", identifier: "KOL-36" })],
+    comments,
+    plan: noFilesVerifyFilePlan,
+    extra: {
+      runVerifyFilePreApproval: async (verify) => {
+        verifyCalls++;
+        assert.match(verify, /ops-watcher\/verify-file\.mjs/);
+        return { ok: false, reason: "regex did not match handoffs/hermes-kimi/AHMAD-DELTA-PHASE1.md" };
+      },
+    },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.refused, 1);
+  assert.equal(verifyCalls, 1);
+  assert.equal(cards.length, 0);
+  assert.equal(posts.length, 1);
+  assert.match(posts[0].body.body, /^PLAN_REFUSED/);
+  assert.match(posts[0].body.body, /verify-file-red-without-files/);
+  assert.match(posts[0].body.body, /regex did not match/);
+  const st = JSON.parse(await fs.readFile(TMP_STATE, "utf8"));
+  assert.equal(st.attempts.i1, 1);
+  assert.equal(st.lastPlanFailures.i1.reason, "verify-file-red-without-files");
+});
+
+await t("FILES NONE with green verify-file VERIFY still sends decision card", async () => {
+  await resetTmp();
+  const comments = { i1: [] };
+  let verifyCalls = 0;
+  const { deps, posts, cards } = makeSweepDeps({
+    issues: [issue({ id: "i1", identifier: "KOL-36" })],
+    comments,
+    plan: noFilesVerifyFilePlan,
+    extra: { runVerifyFilePreApproval: async () => { verifyCalls++; return { ok: true }; } },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.planned, 1);
+  assert.equal(verifyCalls, 1);
+  assert.equal(posts.filter((p) => /^DIRECTIVE PLAN \(/.test(p.body.body)).length, 1);
+  assert.equal(cards.length, 1);
+});
+
+await t("plan with files and red verify-file VERIFY still sends decision card", async () => {
+  await resetTmp();
+  const comments = { i1: [] };
+  let verifyCalls = 0;
+  const planWithFiles = goodPlan.replace("VERIFY: node ops-watcher/foo.mjs --check", "VERIFY: node ops-watcher/verify-file.mjs --path docs/bar.md --matches MISSING");
+  const { deps, posts, cards } = makeSweepDeps({
+    issues: [issue({ id: "i1", identifier: "KOL-37" })],
+    comments,
+    plan: planWithFiles,
+    extra: { runVerifyFilePreApproval: async () => { verifyCalls++; return { ok: false, reason: "red" }; } },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.planned, 1);
+  assert.equal(verifyCalls, 0);
+  assert.equal(posts.filter((p) => /^DIRECTIVE PLAN \(/.test(p.body.body)).length, 1);
+  assert.equal(cards.length, 1);
+});
+
+await t("FILES NONE with non verify-file VERIFY sends card without pre-approval runner", async () => {
+  await resetTmp();
+  const comments = { i1: [] };
+  let verifyCalls = 0;
+  const noFilesOtherVerifyPlan = goodPlan.replace("FILES: ops-watcher/foo.mjs, docs/bar.md", "FILES: NONE");
+  const { deps, posts, cards } = makeSweepDeps({
+    issues: [issue({ id: "i1", identifier: "KOL-38" })],
+    comments,
+    plan: noFilesOtherVerifyPlan,
+    extra: { runVerifyFilePreApproval: async () => { verifyCalls++; return { ok: false, reason: "should not run" }; } },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.planned, 1);
+  assert.equal(verifyCalls, 0);
+  assert.equal(posts.filter((p) => /^DIRECTIVE PLAN \(/.test(p.body.body)).length, 1);
+  assert.equal(cards.length, 1);
+});
 
 await t("unparseable plan increments attempt counter and stops after MAX_PLAN_ATTEMPTS", async () => {
   await resetTmp();
