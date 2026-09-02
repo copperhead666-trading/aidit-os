@@ -1397,17 +1397,55 @@ await t("K3 plan comment without an OBJECTIVE line is reported as plan-objective
 });
 
 await resetTmp();
-await t("K4 the report is posted once per approval, not once per five-minute sweep", async () => {
+await t("K4 the reported directive is returned to planning and stops being re-reported", async () => {
+  // Reporting alone would leave the owner's approval stuck forever, so the
+  // directive goes back through the ordinary planning path. The first sweep
+  // reports and re-plans; the second sweep sees the NEW plan comment with no
+  // decision after it and classifies the issue as awaiting-approval, so nothing
+  // is reported twice and nothing executes on the unreadable plan.
   const ev = evidenceSpy();
   const { issues, comments } = approved73([planComment73(kol73Plan), c(TG_APPROVE, "2026-09-01T09:30:00.000Z")]);
-  const { deps, posts } = makeSweepDeps({ issues, comments, extra: { appendEvidence: ev.appendEvidence } });
-  await runDirectiveSweepOnce(deps);
-  await runDirectiveSweepOnce(deps);
-  await runDirectiveSweepOnce(deps);
-  assert.equal(unexecutablePosts(posts).length, 1, "the owner is not told the same thing three times");
-  // Evidence is a log, not a notification: every sweep still records that the
-  // directive could not be captured, so the silence is auditable afterwards.
-  assert.equal(ev.records.filter((r) => r.type === "directive-capture-failed").length, 3);
+  const { deps, posts, cards, getExecuteCalls } = makeSweepDeps({ issues, comments, extra: { appendEvidence: ev.appendEvidence } });
+
+  const first = await runDirectiveSweepOnce(deps);
+  assert.equal(first.unexecutable.length, 1, "the first sweep reports it");
+  assert.equal(first.planned, 1, "and re-plans it in the same sweep");
+  assert.equal(getExecuteCalls(), 0, "nothing runs from the unreadable plan");
+  assert.equal(cards.length, 1, "the replacement plan goes back to the owner as a decision card");
+
+  const second = await runDirectiveSweepOnce(deps);
+  assert.equal(second.unexecutable.length, 0, "the second sweep has nothing left to report");
+  assert.equal(second.awaitingApproval.length, 1, "it now waits on the owner's decision for the new plan");
+  assert.equal(second.planned, 0, "and does not re-plan again while waiting");
+
+  const third = await runDirectiveSweepOnce(deps);
+  assert.equal(third.awaitingApproval.length, 1, "still waiting, still quiet");
+
+  assert.equal(unexecutablePosts(posts).length, 1, "the owner is told once, not once per sweep");
+  assert.equal(ev.records.filter((r) => r.type === "directive-capture-failed").length, 1);
+});
+
+await resetTmp();
+await t("K16 re-planning an unreadable approved plan counts against the attempt cap", async () => {
+  // The re-plan runs through the normal planning path, so it is bounded by
+  // maxPlanAttempts and escalates at the cap instead of burning a paid lane
+  // call every five minutes forever.
+  const ev = evidenceSpy();
+  const { issues, comments } = approved73([planComment73(kol73Plan), c(TG_APPROVE, "2026-09-01T09:30:00.000Z")]);
+  const { deps } = makeSweepDeps({
+    issues,
+    comments,
+    plan: kol73Plan, // the replacement plan is unreadable too
+    extra: { appendEvidence: ev.appendEvidence, maxPlanAttempts: 2 },
+  });
+
+  const first = await runDirectiveSweepOnce(deps);
+  assert.equal(first.unexecutable.length, 1);
+  // The capture failure is recorded as an attempt, and the replacement plan
+  // fails to parse as well, so the cap is reached without a third sweep.
+  const second = await runDirectiveSweepOnce(deps);
+  assert.equal(second.planned, 0, "at the cap the runner stops planning");
+  assert.equal(second.errors.filter((e) => /network error/.test(e)).length, 0);
 });
 
 await resetTmp();

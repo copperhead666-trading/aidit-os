@@ -885,6 +885,7 @@ export async function runDirectiveSweepOnce(deps = {}) {
         const capture = capturePlanForExecution(comments);
         if (capture.ok) {
           approvedForExecution.push({ issue, plan: capture.plan, identifier: ident });
+          continue;
         } else {
           summary.unexecutable.push({
             id: issue.id,
@@ -909,9 +910,24 @@ export async function runDirectiveSweepOnce(deps = {}) {
               });
               if (post.networkError) summary.errors.push(`${ident}: unexecutable comment network error: ${post.networkErrorMessage}`);
             }
+            // Reporting makes the failure visible; only a new plan finishes the
+            // work the owner already approved. So the directive is returned to
+            // the ordinary planning path below rather than left reported and
+            // stuck forever. That path counts the attempt against
+            // maxPlanAttempts and escalates at the cap, so this cannot loop, and
+            // the replacement plan goes back to the owner as a fresh decision
+            // card — nothing executes on an approval the owner gave to a plan
+            // that turned out to be unreadable.
+            recordPlanFailureAttempt(state, key, Number(state.attempts[key] || 0), {
+              reason: "approved-plan-unparseable",
+              detail: capture.detail || capture.reason,
+            });
+            await persistState(state);
+          } else {
+            // A dry sweep reports and stops: re-planning costs a paid lane call.
+            continue;
           }
         }
-        continue;
       } else if (cls.state === "rejected") {
         summary.rejected.push({ id: issue.id, identifier: ident, lastCommentAt: cls.lastCommentAt, reason: cls.reason });
         continue;
@@ -920,7 +936,9 @@ export async function runDirectiveSweepOnce(deps = {}) {
         continue;
       }
 
-      // Plannable: cls.state is "new" or a plannable "stalled".
+      // Plannable: cls.state is "new", a plannable "stalled", or an
+      // "approved" whose stored plan could not be read and was returned
+      // here by the branch above.
       const prior = Number(state.attempts[key] || 0);
       if (prior >= maxPlanAttempts) {
         log(`directive-runner: ${ident} reached plan attempt cap (${prior}/${maxPlanAttempts})`);
