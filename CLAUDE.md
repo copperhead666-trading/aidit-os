@@ -137,6 +137,26 @@ npx @claude-flow/cli@latest swarm init --topology hierarchical --max-agents 8 --
 
 ## Memory & Learning
 
+### Which index owns what
+
+Two indexes both claiming to be the source of truth is worse than one.
+
+- **gbrain is canonical** for FounderOS documents: the backlog, decision ledger,
+  handoffs, specs, and anything an agent must be able to quote back to the owner.
+  If a claim needs provenance, it lives in gbrain.
+- **ruflo memory is for what gbrain does not do**: cross-session hook patterns,
+  dispatch outcomes, lane behaviour, and other operational traces that are
+  useful to recall but are not canonical statements about the business.
+
+Never mirror a canonical document into ruflo memory. Recall it from gbrain.
+
+Note on writes: ruflo memory needs the native SQLite bridge on Windows
+(`CLAUDE_FLOW_ENABLE_NATIVE_BRIDGE_ON_WINDOWS=1`, already set in
+`.claude/settings.json` and `.mcp.json`). Without it every `memory store` fails.
+`memory stats` can under-report; `memory list` is the reliable reader. Semantic
+search needs the HNSW index built once via `memory search --build-hnsw`, or it
+attempts a multi-gigabyte allocation and aborts.
+
 ### Before Any Task
 ```bash
 npx @claude-flow/cli@latest memory search --query "[task keywords]" --namespace patterns
@@ -158,8 +178,13 @@ npx @claude-flow/cli@latest hooks post-task --task-id "[id]" --success true --st
 | **Swarm** | `swarm_init`, `swarm_status`, `swarm_health` |
 | **Agents** | `agent_spawn`, `agent_list`, `agent_status` |
 | **Hooks** | `hooks_route`, `hooks_post-task`, `hooks_worker-dispatch` |
-| **Security** | `aidefence_scan`, `aidefence_is_safe`, `aidefence_has_pii` |
 | **Hive-Mind** | `hive-mind_init`, `hive-mind_consensus`, `hive-mind_spawn` |
+
+> No `aidefence_*` row: `@claude-flow/aidefence` is not installed here, so
+> `aidefence_scan` / `aidefence_is_safe` / `aidefence_has_pii` return
+> `AIDefence package not available` rather than a verdict. Do not treat them as
+> an available safety check, and do not re-add them without installing the
+> package first.
 
 ### Background Workers
 
@@ -216,9 +241,17 @@ claude mcp add claude-flow -- npx -y ruflo@latest mcp start
 npx ruflo@latest doctor --fix
 ```
 
-> The background `daemon` is optional. It runs interval workers that each spawn
-> a headless `claude` session, so it consumes tokens continuously. Start it only
-> if you want those sweeps: `npx ruflo@latest daemon start` (self-stops after 12h
-> by default; `--ttl 0` to disable, `daemon status --all` to audit running daemons).
+> The background `daemon` is optional and, in the default configuration, does
+> **not** consume tokens. Its own log states `AI workers disabled (default) -
+> all workers run local-only`, and its workers run in single-digit milliseconds.
+> It only spawns headless `claude` sessions once AI workers are turned on
+> (`daemon start --headless`, `daemon.aiWorkers.enabled=true`, or
+> `RUFLO_DAEMON_AI_WORKERS=1`). Start it with `npx ruflo@latest daemon start`
+> (self-stops after 12h by default; `--ttl 0` to disable).
+>
+> Do not trust `daemon status --all` to tell you whether one is running: it has
+> reported "No ruflo daemons are running" while the process was alive and
+> writing `daemon-state.json`. Check the PID in `.claude-flow/daemon.pid`
+> against the running process instead.
 
 **Agent tool** handles execution (agents, files, code, git). **MCP tools** handle coordination (swarm, memory, hooks). **CLI** is the same via Bash.
