@@ -219,3 +219,64 @@ change stashed, the suite re-run, and the new cases confirmed to FAIL without it
   mutation-checked tests only.
 - `.mcp.json` trim still needs a Claude Code restart on ASUS.
 - `CLAUDE_FLOW_ENCRYPT_AT_REST` still off.
+
+---
+
+## 12. The retry loop, found by watching what the approval actually did
+
+Approving KOL-36 did not end at one failed execution. The directive was
+re-executed and reverted on **every** sweep afterwards:
+
+    09:22  09:38  09:54  10:10  10:32  10:48   ... every 15 minutes, unbounded
+
+The execution gate asks two things only - is the directive classified approved,
+and does its plan parse. Nothing counted failures, so a plan that had already
+failed identically was dispatched again, at the cost of a real execution lane
+each time. This was live and spending the owner's quota while it was being
+diagnosed.
+
+`f25f782` splits approved directives into under-cap and at-cap **before** the
+`MAX_EXECUTIONS_PER_SWEEP` slice, so a capped directive does not occupy the
+sweep's single execution slot while doing nothing with it. At the cap it is
+reported once - a comment naming the failure count and the last reason, plus
+OWNER_REQUIRED so the decision returns to the owner - and marked `capReportedAt`
+so later sweeps only log. An escalation repeated every fifteen minutes would
+have been the same defect in a different coat.
+
+Failures are keyed to `planIdentityKey(plan)`, a content hash, so re-planning
+resets the count while re-running the identical plan does not. A successful
+execution clears the record.
+
+**`f25f782` was committed without tests, deliberately and stated as such in its
+own message**, because it stopped an active loop and the lane had run out of
+time. `1dfa398` paid that back with the four cases; three of them fail against
+the pre-wiring source.
+
+Live state at 10:48, after the fix went in:
+
+    "25897740-...": { planKey: "a20cb81f...", reason: "reverted: verify-red", count: 1 }
+
+The count starts from when the code went live, so the cap trips two sweeps
+later and KOL-36 then stops for good.
+
+## 13. Commits, second half
+
+| | |
+|---|---|
+| `0ccfad3` | a message Telegram cannot parse is retried once as plain text |
+| `7dde0fd` | execution-cap helpers, as pure functions, no behaviour change |
+| `f25f782` | the cap wired in - untested at commit time, by explicit decision |
+| `1dfa398` | the four cases that commit owed |
+
+## 14. How the lanes actually behaved
+
+CORLEONE hit its 8-minute cap on **six** of nine dispatches. The pattern is
+legible: `directive-runner.mjs` is 84KB, and a task that has to find its way
+around the file spends the whole budget reading. What worked was splitting a
+change into pure helpers first, then wiring, then tests, and naming exact
+anchors - "the block that begins `if (!dryRun && approvedForExecution.length`"
+- instead of describing the goal. Tasks shaped that way finished inside the cap.
+
+One dispatch left the file with a duplicate `import { createHash }`, breaking
+nine suites, and delivered nothing else. Always run `node --check` and the suite
+after a capped lane before believing anything about the worktree.
