@@ -465,6 +465,17 @@ export function validateVerifyCommand(verify) {
   return { ok: true };
 }
 
+// A corrupt state file is not the same event as a missing one. Missing is the
+// normal first run; corrupt means every attempt counter, plan-failure record and
+// consumed-decision marker silently reset to zero, which re-plans directives
+// that had already hit their cap and re-fires escalations that were already
+// answered. The reset still has to happen — the file is unusable — but it is
+// reported now instead of looking like a fresh start.
+export function readStateOutcome(err) {
+  if (!err) return null;
+  if (err.code === "ENOENT") return null;
+  return String(err.code || err.message || err);
+}
 async function loadState(file, _fs) {
   try {
     const st = JSON.parse(await _fs.readFile(file, "utf8"));
@@ -476,10 +487,26 @@ async function loadState(file, _fs) {
         lastSweepMs: Number(st.lastSweepMs) || 0,
       }
       : { attempts: {}, lastPlanFailures: {}, attemptCapDecisionResets: {}, lastSweepMs: 0 };
-  } catch { return { attempts: {}, lastPlanFailures: {}, attemptCapDecisionResets: {}, lastSweepMs: 0 }; }
+  } catch (err) {
+    const empty = { attempts: {}, lastPlanFailures: {}, attemptCapDecisionResets: {}, lastSweepMs: 0 };
+    const problem = readStateOutcome(err);
+    if (problem) empty.readError = problem;
+    return empty;
+  }
 }
+// A swallowed write here is expensive, not merely untidy: attempts[] never
+// advances so a directive that has hit maxPlanAttempts is re-planned on every
+// sweep — one paid lane call each time — lastSweepMs never persists so the
+// --once throttle stops throttling, and attemptCapDecisionResets never persists
+// so the escalation idempotency scoping stops working. It reports now, the same
+// way the listener surfaces persistError.
 async function saveState(file, st, _fs) {
-  try { await _fs.writeFile(file, JSON.stringify(st, null, 2), "utf8"); } catch { /* best-effort */ }
+  try {
+    await _fs.writeFile(file, JSON.stringify(st, null, 2), "utf8");
+    return { ok: true, error: null };
+  } catch (err) {
+    return { ok: false, error: String((err && (err.code || err.message)) || err) };
+  }
 }
 function attemptsKey(issue) { return String(issue?.id || issue?.identifier || "unknown"); }
 function recordPlanFailureAttempt(state, key, prior, failure) {
@@ -694,6 +721,7 @@ export async function runDirectiveSweepOnce(deps = {}) {
   const summary = {
     scanned: 0, planned: 0, refused: 0,
     stalled: [], awaitingApproval: [], approved: [], rejected: [], unexecutable: [],
+    persistError: null, stateReadError: null,
     executed: 0, reverted: 0, noop: 0, refused: 0,
     errors: [],
   };
@@ -738,6 +766,19 @@ export async function runDirectiveSweepOnce(deps = {}) {
     catch { /* evidence is best-effort; never let it surface */ }
   }
 
+  // Persist and say so if it did not stick. Reported once per sweep: a failing
+  // disk fails every write in the same sweep, and ten identical lines say
+  // nothing the first one did not.
+  async function persistState(st) {
+    const r = await saveState(stateFile, st, _fs);
+    if (!r.ok && !summary.persistError) {
+      summary.persistError = r.error;
+      summary.errors.push(`state write failed: ${r.error} — attempt caps, sweep throttle and escalation dedupe will not persist`);
+      log(`directive-runner: STATE WRITE FAILED (${r.error}) — attempt caps and sweep throttle will not persist`);
+    }
+    return r;
+  }
+
   // Sweep throttle for the --once path: planning and executing each cost a real
   // lane call while the heartbeat fires every five minutes, so a back-to-back
   // invocation within SWEEP_MIN_INTERVAL_MS is a no-op that touches no lane.
@@ -772,6 +813,11 @@ export async function runDirectiveSweepOnce(deps = {}) {
     }
     const issues = Array.isArray(issuesRes.issues) ? issuesRes.issues : [];
     const state = dryRun ? { attempts: {}, lastPlanFailures: {} } : await loadState(stateFile, _fs);
+    if (state.readError) {
+      summary.stateReadError = state.readError;
+      summary.errors.push(`state read failed: ${state.readError} — attempt counters and escalation dedupe restarted from empty`);
+      log(`directive-runner: STATE READ FAILED (${state.readError}) — counters restarted from empty`);
+    }
     const addOwnerRequiredLabelFn = addIssueLabel || (async (iss, label) => addIssueLabelReal(base, companyId, iss, label, "#b91c1c"));
     let plannedThisSweep = 0;
     // Approved directives captured here (issue + parsed plan) for the stage 3b
@@ -801,7 +847,7 @@ export async function runDirectiveSweepOnce(deps = {}) {
         if (capDecision.decision && !consumedAttemptCapDecision(state, key, capDecision)) {
           state.attempts[key] = 0;
           recordAttemptCapDecisionReset(state, key, capDecision);
-          await saveState(stateFile, state, _fs);
+          await persistState(state);
           log(`directive-runner: ${ident} owner ${capDecision.decision} after attempt-cap escalation; reset plan attempts`);
         }
       }
@@ -939,7 +985,7 @@ export async function runDirectiveSweepOnce(deps = {}) {
       const parsed = parsePlan(text);
       if (!parsed.ok) {
         const attempt = recordPlanFailureAttempt(state, key, prior, { reason: "parse-failed", detail: parsed.error });
-        await saveState(stateFile, state, _fs);
+        await persistState(state);
         const post = await _post(`${base}/api/issues/${issue.id}/comments`, { body: parseFailureComment(parsed.error, attempt, maxPlanAttempts), authorType: "user" });
         if (post.networkError) summary.errors.push(`${ident}: parse-failure comment network error: ${post.networkErrorMessage}`);
         plannedThisSweep += 1;
@@ -949,7 +995,7 @@ export async function runDirectiveSweepOnce(deps = {}) {
       if (!scope.ok) {
         const reason = "file-scope-out-of-scope";
         const attempt = recordPlanFailureAttempt(state, key, prior, { reason, violations: scope.violations });
-        await saveState(stateFile, state, _fs);
+        await persistState(state);
         const post = await _post(`${base}/api/issues/${issue.id}/comments`, { body: refusalComment(scope.violations, attempt, maxPlanAttempts, reason), authorType: "user" });
         if (post.networkError) summary.errors.push(`${ident}: refusal comment network error: ${post.networkErrorMessage}`);
         else summary.refused += 1;
@@ -960,7 +1006,7 @@ export async function runDirectiveSweepOnce(deps = {}) {
       if (!verifyScope.ok) {
         const reason = "verify-out-of-scope";
         const attempt = recordPlanFailureAttempt(state, key, prior, { reason, detail: verifyScope.reason });
-        await saveState(stateFile, state, _fs);
+        await persistState(state);
         const post = await _post(`${base}/api/issues/${issue.id}/comments`, { body: refusalComment([`VERIFY: ${verifyScope.reason}`], attempt, maxPlanAttempts, reason), authorType: "user" });
         if (post.networkError) summary.errors.push(`${ident}: refusal comment network error: ${post.networkErrorMessage}`);
         else summary.refused += 1;
@@ -973,7 +1019,7 @@ export async function runDirectiveSweepOnce(deps = {}) {
       } else {
         summary.planned += 1;
         state.attempts[key] = 0;
-        await saveState(stateFile, state, _fs);
+        await persistState(state);
         // Deliver the plan to the owner as a decision card. If the card cannot
         // be sent, the plan comment still stands and the sweep records
         // `card-failed` — never leave the owner with an approved-looking state
@@ -1074,7 +1120,7 @@ export async function runDirectiveSweepOnce(deps = {}) {
     // once-path) sweep that actually ran.
     if (once && !dryRun) {
       state.lastSweepMs = asMs(now);
-      await saveState(stateFile, state, _fs);
+      await persistState(state);
     }
 
     return summary;
@@ -1360,6 +1406,8 @@ async function main() {
   for (const a of summary.approved) console.log(`  approved: ${a.identifier || a.id} approvedAt=${a.approvedAt || "none"}`);
   for (const r of summary.rejected) console.log(`  rejected: ${r.identifier || r.id}`);
   for (const u of summary.unexecutable) console.log(`  unexecutable: ${u.identifier || u.id} reason=${u.reason}${u.detail ? " detail=" + u.detail : ""} approvedAt=${u.approvedAt || "none"}`);
+  if (summary.stateReadError) console.log(`  stateReadError: ${summary.stateReadError}`);
+  if (summary.persistError) console.log(`  persistError: ${summary.persistError}`);
   for (const e of summary.errors) console.log(`  error: ${e}`);
   process.exit(0);
 }

@@ -17,6 +17,7 @@ import {
   validateVerifyCommand,
   runDirectiveSweepOnce,
   capturePlanForExecution,
+  readStateOutcome,
   UNEXECUTABLE_MARKER,
   buildExecutionPrompt,
   executeApprovedDirective,
@@ -1488,6 +1489,92 @@ await t("K10 a delivered Telegram send records no error", async () => {
   const summary = await runDirectiveSweepOnce(deps);
   assert.equal(messages.length, 1);
   assert.equal(summary.errors.filter((e) => /telegram/.test(e)).length, 0);
+});
+
+// -- state persistence is not silent ----------------------------------------
+// A swallowed state write is expensive rather than untidy: attempts[] never
+// advances, so a directive that has already hit maxPlanAttempts is re-planned
+// on every sweep at one paid lane call each; lastSweepMs never persists, so the
+// --once throttle stops throttling; attemptCapDecisionResets never persists, so
+// the escalation idempotency scoping stops working. The listener already
+// surfaces this class as persistError, and the sweep now does too.
+function plannableIssue() {
+  return { issues: [issue({ id: "iss-s1", identifier: "KOL-S1", status: "todo" })], comments: { "iss-s1": [] } };
+}
+
+await resetTmp();
+await t("K11 a state write failure is reported once, with its reason", async () => {
+  const { issues, comments } = plannableIssue();
+  let writes = 0;
+  const { deps } = makeSweepDeps({
+    issues,
+    comments,
+    extra: {
+      _fs: {
+        readFile: async () => "{}",
+        writeFile: async () => { writes++; const e = new Error("no space left on device"); e.code = "ENOSPC"; throw e; },
+      },
+    },
+  });
+  const summary = await runDirectiveSweepOnce(deps);
+  assert.equal(summary.planned, 1, "the sweep still does its work");
+  assert.ok(writes >= 1, "a write was attempted");
+  assert.equal(summary.persistError, "ENOSPC");
+  const reported = summary.errors.filter((e) => /state write failed/.test(e));
+  assert.equal(reported.length, 1, "reported once, not once per write");
+  assert.match(reported[0], /attempt caps/);
+});
+
+await resetTmp();
+await t("K12 a successful state write reports nothing", async () => {
+  const { issues, comments } = plannableIssue();
+  const { deps } = makeSweepDeps({
+    issues,
+    comments,
+    extra: { _fs: { readFile: async () => "{}", writeFile: async () => {} } },
+  });
+  const summary = await runDirectiveSweepOnce(deps);
+  assert.equal(summary.planned, 1);
+  assert.equal(summary.persistError, null);
+  assert.equal(summary.errors.filter((e) => /state write failed/.test(e)).length, 0);
+});
+
+await resetTmp();
+await t("K13 a corrupt state file is surfaced; a missing one stays silent", async () => {
+  const { issues, comments } = plannableIssue();
+  const corrupt = makeSweepDeps({
+    issues,
+    comments,
+    extra: { _fs: { readFile: async () => "{ this is not json", writeFile: async () => {} } },
+  });
+  const s1 = await runDirectiveSweepOnce(corrupt.deps);
+  assert.ok(s1.stateReadError, "a corrupt read is named");
+  assert.equal(s1.errors.filter((e) => /state read failed/.test(e)).length, 1);
+
+  // ENOENT is the normal first run and must not look like a fault.
+  const fresh = makeSweepDeps({
+    issues: plannableIssue().issues,
+    comments: plannableIssue().comments,
+    extra: {
+      _fs: {
+        readFile: async () => { const e = new Error("missing"); e.code = "ENOENT"; throw e; },
+        writeFile: async () => {},
+      },
+    },
+  });
+  const s2 = await runDirectiveSweepOnce(fresh.deps);
+  assert.equal(s2.stateReadError, null, "a first run is not an error");
+  assert.equal(s2.errors.filter((e) => /state read failed/.test(e)).length, 0);
+});
+
+await t("K14 readStateOutcome separates a missing file from a corrupt one", () => {
+  const enoent = new Error("missing"); enoent.code = "ENOENT";
+  assert.equal(readStateOutcome(enoent), null);
+  assert.equal(readStateOutcome(null), null);
+  const corrupt = new SyntaxError("Unexpected token t in JSON at position 2");
+  assert.match(String(readStateOutcome(corrupt)), /Unexpected token/);
+  const denied = new Error("denied"); denied.code = "EACCES";
+  assert.equal(readStateOutcome(denied), "EACCES");
 });
 
 await t("K8 capturePlanForExecution names each failure without running a sweep", () => {
