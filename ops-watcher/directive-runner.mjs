@@ -1291,9 +1291,45 @@ export async function runDirectiveSweepOnce(deps = {}) {
       const patchIssueFn = patchIssue || (async (iss, patch) => _patch(`${base}/api/issues/${iss.id}`, patch));
       const addLabelFn = addIssueLabel || (async (iss, label) => addIssueLabelReal(base, companyId, iss, label, "#b91c1c"));
       const nowMs = asMs(now);
-      const toExecute = approvedForExecution.slice(0, MAX_EXECUTIONS_PER_SWEEP);
+      const executable = [];
+      const capped = [];
+      for (const item of approvedForExecution) {
+        const issueKey = attemptsKey(item.issue);
+        const planKey = planIdentityKey(item.plan);
+        const enriched = { ...item, issueKey, planKey };
+        if (executionCapReached(state, issueKey, planKey, MAX_EXECUTION_ATTEMPTS)) capped.push(enriched);
+        else executable.push(enriched);
+      }
+      for (const item of capped) {
+        const { issue: exIssue, identifier: exIdent, issueKey, planKey } = item;
+        const record = state.executionFailures && typeof state.executionFailures === "object" ? state.executionFailures[issueKey] : null;
+        if (record && record.planKey === planKey && record.capReportedAt) {
+          log(`directive-runner: ${exIdent} execution cap already reported (${record.count}/${MAX_EXECUTION_ATTEMPTS})`);
+          continue;
+        }
+        const reason = record && record.reason ? record.reason : "unknown";
+        const cpost = await _post(`${base}/api/issues/${exIssue.id}/comments`, {
+          body: [
+            `DIRECTIVE OWNER REQUIRED (${iso(nowMs)}): directive dihentikan setelah ${MAX_EXECUTION_ATTEMPTS} eksekusi gagal identik.`,
+            `Alasan terakhir: ${reason}.`,
+            "OWNER_REQUIRED ditambahkan agar owner memilih rencana baru, mengubah scope, atau menutup issue.",
+          ].join("\n"),
+          authorType: "user",
+        });
+        const cposted = judgeWrite(cpost);
+        if (!cposted.ok) summary.errors.push(`${exIdent}: execution-cap comment NOT posted (${cposted.reason})`);
+        try {
+          const labelAdd = await addLabelFn(exIssue, OWNER_REQUIRED_LABEL);
+          if (labelAdd && labelAdd.ok === false) {
+            summary.errors.push(`${exIdent}: OWNER_REQUIRED label NOT added (${labelAdd.reason || "unknown"})`);
+          }
+        } catch (e) { summary.errors.push(`${exIdent}: add owner-required label error: ${e && e.message ? e.message : e}`); }
+        if (record && record.planKey === planKey) record.capReportedAt = iso(nowMs);
+        await persistState(state);
+      }
+      const toExecute = executable.slice(0, MAX_EXECUTIONS_PER_SWEEP);
       for (const item of toExecute) {
-        const { issue: exIssue, plan: exPlan, identifier: exIdent } = item;
+        const { issue: exIssue, plan: exPlan, identifier: exIdent, issueKey, planKey } = item;
         let result;
         try {
           result = await execFn(exIssue, exPlan, executeDirectiveDeps || { now });
@@ -1305,8 +1341,17 @@ export async function runDirectiveSweepOnce(deps = {}) {
           continue;
         }
         const outcome = result.outcome;
+        if (outcome !== "done") {
+          recordExecutionFailure(state, issueKey, planKey, {
+            reason: `${outcome}${result.reason ? `: ${result.reason}` : ""}`,
+            at: iso(nowMs),
+          });
+          await persistState(state);
+        }
 
         if (outcome === "done") {
+          clearExecutionFailures(state, issueKey);
+          await persistState(state);
           const body = doneResultComment({
             filesChanged: result.filesChanged,
             verifyCmd: String((exPlan && exPlan.verify) || ""),
