@@ -688,6 +688,63 @@ async function t18_laneMenuCarriesMeasuredReliability() {
 }
 
 
+// ---- T19: Paperclip REJECTED the dispatch marker (401) ----
+// networkError is false on a rejected write, so this shape used to read as a
+// stored marker: AHMAD was spawned and the marker was not there, which means
+// the next sweep sees no marker and wakes AHMAD a second time on the same
+// issue. The marker is the entire idempotency guard.
+async function t19_rejectedMarkerDoesNotSpawn() {
+  await fs.unlink(TMP_LOCK).catch(() => {});
+  let spawned = false;
+  const r = await runAhmadDispatchOnce(withRealLock({
+    base: "http://127.0.0.1:9999",
+    httpGet: async (url) => {
+      if (url.endsWith("/issues")) return { networkError: false, body: [issue()] };
+      if (url.includes("/comments")) return { networkError: false, body: [] };
+      throw new Error("unexpected GET " + url);
+    },
+    httpPost: async () => ({ networkError: false, authRequired: true, status: 401, body: null }),
+    httpPatch: async () => ({ networkError: false, status: 200, body: {} }),
+    spawnAhmad: () => { spawned = true; return { pid: 1 }; },
+    log: () => {},
+  }));
+  assert.equal(spawned, false, "T19: spawnAhmad must NOT run when the marker was rejected");
+  assert.equal(r.results[0].outcome, "marker-failed", "T19: outcome=marker-failed");
+  ok("T19: rejected dispatch marker (401) -> no spawn, marker-failed");
+}
+
+// ---- T20: a 5xx on the stuck-recovery marker does not spawn either ----
+async function t20_rejectedStuckMarkerDoesNotSpawn() {
+  await fs.unlink(TMP_LOCK).catch(() => {});
+  let spawned = false;
+  const stale = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const stuck = issue({
+    identifier: "KOL-200",
+    status: "in_progress",
+    executionLockedAt: stale,
+    labels: [],
+    labelIds: [],
+  });
+  const r = await runAhmadDispatchOnce(withRealLock({
+    base: "http://127.0.0.1:9999",
+    httpGet: async (url) => {
+      if (url.endsWith("/issues")) return { networkError: false, body: [stuck] };
+      if (url.includes("/comments")) return { networkError: false, body: [] };
+      throw new Error("unexpected GET " + url);
+    },
+    httpPost: async () => ({ networkError: false, status: 503, body: null }),
+    httpPatch: async () => ({ networkError: false, status: 200, body: {} }),
+    spawnAhmad: () => { spawned = true; return { pid: 1 }; },
+    log: () => {},
+  }));
+  assert.equal(spawned, false, "T20: no stuck-recovery spawn on a rejected marker");
+  assert.ok(
+    r.results.every((x) => x.outcome !== "dispatched"),
+    "T20: nothing may report itself as dispatched",
+  );
+  ok("T20: rejected stuck-recovery marker (503) -> no spawn");
+}
+
 async function main() {
   const tests = [
     t1_dispatchesUnmarkedAssignedDirective, t2_skipsAlreadyDispatched,
@@ -706,6 +763,8 @@ async function main() {
     t16_stuckRecoveryMarkerAlreadyPresentSkips,
     t17_missingExecutionLockedAtNotDispatched,
     t18_laneMenuCarriesMeasuredReliability,
+    t19_rejectedMarkerDoesNotSpawn,
+    t20_rejectedStuckMarkerDoesNotSpawn,
   ];
   for (const t of tests) await t();
   await fs.unlink(TMP_LOCK).catch(() => {});

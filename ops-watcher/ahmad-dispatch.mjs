@@ -115,6 +115,7 @@ import {
 import { AHMAD_AGENT_ID } from "./telegram-listener.mjs";
 import { retrieveDispatchContext as retrieveDispatchContextReal } from "./ahmad-context-retrieval.mjs";
 import { readLaneHealth } from "./lane-usage.mjs";
+import { judgeWrite } from "./write-delivery.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -544,8 +545,13 @@ export async function runAhmadDispatchOnce(deps) {
             body: `${DISPATCH_MARKER} (ops-watcher/ahmad-dispatch — ${iso()}): waking headless AHMAD for ${ident}.`,
             authorType: "user",
           });
-          if (mc.networkError) {
-            log(`ahmad-dispatch: ${ident} marker comment network error (${mc.networkErrorMessage}) -> NOT spawning (would risk an unmarked duplicate)`);
+          // The marker is the whole idempotency guard: if it is not stored,
+          // the next sweep sees no marker and wakes AHMAD again. A rejected
+          // write (401/403, 4xx) arrives with networkError false, so testing
+          // that flag alone let an unmarked dispatch through.
+          const marked = judgeWrite(mc);
+          if (!marked.ok) {
+            log(`ahmad-dispatch: ${ident} marker comment NOT posted (${marked.reason}) -> NOT spawning (would risk an unmarked duplicate)`);
             results.push({ id, identifier: ident, outcome: "marker-failed" });
             continue;
           }
@@ -593,8 +599,9 @@ export async function runAhmadDispatchOnce(deps) {
             body: `${STUCK_RECOVERY_MARKER} (ops-watcher/ahmad-dispatch — ${iso()}): waking headless AHMAD for stuck recovery on ${ident}.`,
             authorType: "user",
           });
-          if (mc.networkError) {
-            log(`ahmad-dispatch: ${ident} stuck-recovery marker comment network error (${mc.networkErrorMessage}) -> NOT spawning (would risk an unmarked duplicate)`);
+          const marked = judgeWrite(mc);
+          if (!marked.ok) {
+            log(`ahmad-dispatch: ${ident} stuck-recovery marker comment NOT posted (${marked.reason}) -> NOT spawning (would risk an unmarked duplicate)`);
             results.push({ id, identifier: ident, outcome: "marker-failed" });
             continue;
           }

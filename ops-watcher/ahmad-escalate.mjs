@@ -21,6 +21,7 @@ import {
   postComment,
   patchIssue,
 } from "./paperclip-write-client.mjs";
+import { judgeWrite } from "./write-delivery.mjs";
 
 export const COMPANY_ID = "a7011f31-8891-4581-b8fb-bbda8ac6a890";
 const OWNER_REQUIRED_COLOR = "#b91c1c";
@@ -91,8 +92,12 @@ export async function runEscalateOnce(deps) {
   if (!existingLabelIds.includes(labelId)) {
     const merged = Array.from(new Set([...existingLabelIds, labelId]));
     const patchRes = await _patchIssue(base, it.id, { labelIds: merged });
-    if (patchRes.networkError) {
-      const out = { ok: false, reason: `patchIssue network error: ${patchRes.networkErrorMessage}` };
+    // A 401/403 or a 4xx from Paperclip arrives with networkError false. Read
+    // only that flag and an escalation the owner never sees reports itself as
+    // escalated — the KOL-68 shape: an escalation comment with no label.
+    const patched = judgeWrite(patchRes);
+    if (!patched.ok) {
+      const out = { ok: false, reason: `patchIssue did not land (${patched.reason})` };
       log(`ahmad-escalate: ${out.reason}`);
       return out;
     }
@@ -106,8 +111,9 @@ export async function runEscalateOnce(deps) {
   //    translate or modify the reason).
   const commentBody = `AHMAD ESCALATION: ${reason}`;
   const commentRes = await _postComment(base, it.id, commentBody, { authorType: "user" });
-  if (commentRes.networkError) {
-    const out = { ok: false, reason: `postComment network error: ${commentRes.networkErrorMessage}` };
+  const commented = judgeWrite(commentRes);
+  if (!commented.ok) {
+    const out = { ok: false, reason: `postComment did not land (${commented.reason})` };
     log(`ahmad-escalate: ${out.reason}`);
     return out;
   }

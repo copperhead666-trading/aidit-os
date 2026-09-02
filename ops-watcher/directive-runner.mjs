@@ -38,6 +38,7 @@ import {
 } from "./paperclip-write-client.mjs";
 import { retrieveDispatchContext } from "./ahmad-context-retrieval.mjs";
 import { deliverAlert } from "./alert-delivery.mjs";
+import { judgeWrite } from "./write-delivery.mjs";
 import { sendMessage as telegramSendMessage } from "./telegram-client.mjs";
 // Stage 3 reuse — import, do not rewrite. The snapshot/rollback helpers and the
 // lane registry already implement the same shape for the self-repair path; a
@@ -486,11 +487,12 @@ async function loadState(file, _fs) {
         attempts: st.attempts || {},
         lastPlanFailures: st.lastPlanFailures && typeof st.lastPlanFailures === "object" ? st.lastPlanFailures : {},
         attemptCapDecisionResets: st.attemptCapDecisionResets && typeof st.attemptCapDecisionResets === "object" ? st.attemptCapDecisionResets : {},
+        pendingCards: st.pendingCards && typeof st.pendingCards === "object" ? st.pendingCards : {},
         lastSweepMs: Number(st.lastSweepMs) || 0,
       }
-      : { attempts: {}, lastPlanFailures: {}, attemptCapDecisionResets: {}, lastSweepMs: 0 };
+      : { attempts: {}, lastPlanFailures: {}, attemptCapDecisionResets: {}, pendingCards: {}, lastSweepMs: 0 };
   } catch (err) {
-    const empty = { attempts: {}, lastPlanFailures: {}, attemptCapDecisionResets: {}, lastSweepMs: 0 };
+    const empty = { attempts: {}, lastPlanFailures: {}, attemptCapDecisionResets: {}, pendingCards: {}, lastSweepMs: 0 };
     const problem = readStateOutcome(err);
     if (problem) empty.readError = problem;
     return empty;
@@ -511,6 +513,45 @@ async function saveState(file, st, _fs) {
   }
 }
 function attemptsKey(issue) { return String(issue?.id || issue?.identifier || "unknown"); }
+
+// ---- Undelivered decision cards -------------------------------------------
+// A plan comment that Paperclip stored but whose decision card never reached
+// Telegram leaves the directive classified as awaiting-approval while the owner
+// has been asked nothing. These three helpers record that gap so a later sweep
+// can close it by re-sending the card — the plan is already written, so the
+// retry costs no lane call.
+function recordPendingCard(state, key, { reason, atMs } = {}) {
+  state.pendingCards = state.pendingCards && typeof state.pendingCards === "object" ? state.pendingCards : {};
+  const prior = state.pendingCards[key];
+  state.pendingCards[key] = {
+    reason: reason || "unknown",
+    since: prior && prior.since ? prior.since : iso(atMs),
+    lastAttemptAt: iso(atMs),
+    attempts: (prior && Number(prior.attempts)) ? Number(prior.attempts) + 1 : 1,
+  };
+  return state.pendingCards[key];
+}
+function clearPendingCard(state, key) {
+  if (state.pendingCards && typeof state.pendingCards === "object") delete state.pendingCards[key];
+}
+function pendingCardFor(state, key) {
+  return state.pendingCards && typeof state.pendingCards === "object" ? state.pendingCards[key] || null : null;
+}
+
+// Send a decision card and judge the result in one step. sendDecisionCard is
+// crash-proof by contract, but an injected or future sender may still throw,
+// and a thrown card must not read differently from a refused one.
+async function deliverCard(send) {
+  let card;
+  try {
+    card = await send();
+  } catch (err) {
+    return { sent: false, reason: String((err && err.message) || err) };
+  }
+  if (card && card.sent) return { sent: true, reason: null };
+  const reason = (card && (card.reason || card.error)) || "sender reported no delivery";
+  return { sent: false, reason: String(reason) };
+}
 function recordPlanFailureAttempt(state, key, prior, failure) {
   const attempt = prior + 1;
   state.attempts[key] = attempt;
@@ -725,6 +766,7 @@ export async function runDirectiveSweepOnce(deps = {}) {
     stalled: [], awaitingApproval: [], approved: [], rejected: [], unexecutable: [],
     persistError: null, stateReadError: null,
     executed: 0, reverted: 0, noop: 0, refused: 0,
+    cardsRetried: 0,
     errors: [],
   };
   const {
@@ -867,6 +909,29 @@ export async function runDirectiveSweepOnce(deps = {}) {
         }
       } else if (cls.state === "awaiting-approval") {
         summary.awaitingApproval.push({ id: issue.id, identifier: ident, lastCommentAt: cls.lastCommentAt, reason: cls.reason });
+        // "Awaiting the owner's approval" is only true if the owner was ever
+        // shown the plan. When a previous sweep's decision card did not go out,
+        // this directive is not waiting on him — it is stranded. Re-send the
+        // card from the plan comment that already exists. No lane call, no new
+        // plan, and the retry stops as soon as one card is delivered.
+        if (!dryRun && pendingCardFor(state, key)) {
+          const capture = capturePlanForExecution(comments);
+          if (!capture.ok) {
+            log(`directive-runner: ${ident} card retry skipped — stored plan unreadable (${capture.reason})`);
+          } else {
+            const retry = await deliverCard(() => sendDecisionCard({ issue, plan: capture.plan, telegramBase }));
+            if (retry.sent) {
+              clearPendingCard(state, key);
+              summary.cardsRetried += 1;
+              log(`directive-runner: ${ident} decision card re-sent after an earlier delivery failure`);
+            } else {
+              recordPendingCard(state, key, { reason: retry.reason, atMs: asMs(now) });
+              summary.errors.push(`${ident}: card-retry-failed (${retry.reason})`);
+              log(`directive-runner: ${ident} decision card retry failed (${retry.reason}) — still queued`);
+            }
+            await persistState(state);
+          }
+        }
         continue;
       } else if (cls.state === "approved") {
         summary.approved.push({ id: issue.id, identifier: ident, lastCommentAt: cls.lastCommentAt, reason: cls.reason, approvedAt: cls.approvedAt });
@@ -908,7 +973,8 @@ export async function runDirectiveSweepOnce(deps = {}) {
                 body: unexecutableComment({ reason: capture.reason, detail: capture.detail, nowMs: asMs(now) }),
                 authorType: "user",
               });
-              if (post.networkError) summary.errors.push(`${ident}: unexecutable comment network error: ${post.networkErrorMessage}`);
+              const posted = judgeWrite(post);
+              if (!posted.ok) summary.errors.push(`${ident}: unexecutable comment NOT posted (${posted.reason})`);
             }
             // Reporting makes the failure visible; only a new plan finishes the
             // work the owner already approved. So the directive is returned to
@@ -980,7 +1046,8 @@ export async function runDirectiveSweepOnce(deps = {}) {
               body: attemptCapComment({ attempts: prior, failure, nowMs: asMs(now) }),
               authorType: "user",
             });
-            if (post.networkError) summary.errors.push(`${ident}: owner-required comment network error: ${post.networkErrorMessage}`);
+            const posted = judgeWrite(post);
+            if (!posted.ok) summary.errors.push(`${ident}: owner-required comment NOT posted (${posted.reason})`);
           }
         }
         continue;
@@ -1007,7 +1074,8 @@ export async function runDirectiveSweepOnce(deps = {}) {
         const attempt = recordPlanFailureAttempt(state, key, prior, { reason: "parse-failed", detail: parsed.error });
         await persistState(state);
         const post = await _post(`${base}/api/issues/${issue.id}/comments`, { body: parseFailureComment(parsed.error, attempt, maxPlanAttempts), authorType: "user" });
-        if (post.networkError) summary.errors.push(`${ident}: parse-failure comment network error: ${post.networkErrorMessage}`);
+        const posted = judgeWrite(post);
+        if (!posted.ok) summary.errors.push(`${ident}: parse-failure comment NOT posted (${posted.reason})`);
         plannedThisSweep += 1;
         continue;
       }
@@ -1017,7 +1085,8 @@ export async function runDirectiveSweepOnce(deps = {}) {
         const attempt = recordPlanFailureAttempt(state, key, prior, { reason, violations: scope.violations });
         await persistState(state);
         const post = await _post(`${base}/api/issues/${issue.id}/comments`, { body: refusalComment(scope.violations, attempt, maxPlanAttempts, reason), authorType: "user" });
-        if (post.networkError) summary.errors.push(`${ident}: refusal comment network error: ${post.networkErrorMessage}`);
+        const posted = judgeWrite(post);
+        if (!posted.ok) summary.errors.push(`${ident}: refusal comment NOT posted (${posted.reason})`);
         else summary.refused += 1;
         plannedThisSweep += 1;
         continue;
@@ -1028,14 +1097,21 @@ export async function runDirectiveSweepOnce(deps = {}) {
         const attempt = recordPlanFailureAttempt(state, key, prior, { reason, detail: verifyScope.reason });
         await persistState(state);
         const post = await _post(`${base}/api/issues/${issue.id}/comments`, { body: refusalComment([`VERIFY: ${verifyScope.reason}`], attempt, maxPlanAttempts, reason), authorType: "user" });
-        if (post.networkError) summary.errors.push(`${ident}: refusal comment network error: ${post.networkErrorMessage}`);
+        const posted = judgeWrite(post);
+        if (!posted.ok) summary.errors.push(`${ident}: refusal comment NOT posted (${posted.reason})`);
         else summary.refused += 1;
         plannedThisSweep += 1;
         continue;
       }
       const post = await _post(`${base}/api/issues/${issue.id}/comments`, { body: planComment(text, { stalled: stalledRePlan }), authorType: "user" });
-      if (post.networkError) {
-        summary.errors.push(`${ident}: plan comment network error: ${post.networkErrorMessage}`);
+      // A plan comment is only posted if Paperclip says it stored one. An auth
+      // rejection or a 5xx used to read as success here, and everything below
+      // — the attempt reset, the decision card, the owner's whole view of this
+      // directive — assumed a comment that does not exist.
+      const posted = judgeWrite(post);
+      if (!posted.ok) {
+        summary.errors.push(`${ident}: plan comment NOT posted (${posted.reason})`);
+        log(`directive-runner: ${ident} plan comment NOT posted (${posted.reason}) — no card sent, attempt not reset`);
       } else {
         summary.planned += 1;
         state.attempts[key] = 0;
@@ -1044,17 +1120,20 @@ export async function runDirectiveSweepOnce(deps = {}) {
         // be sent, the plan comment still stands and the sweep records
         // `card-failed` — never leave the owner with an approved-looking state
         // that was never actually shown to them.
-        let card;
-        try {
-          card = await sendDecisionCard({ issue, plan: parsed, telegramBase });
-        } catch (err) {
-          card = { sent: false, error: err && err.message ? err.message : String(err) };
+        const delivery = await deliverCard(() => sendDecisionCard({ issue, plan: parsed, telegramBase }));
+        if (delivery.sent) {
+          clearPendingCard(state, key);
+        } else {
+          // The directive now classifies as awaiting-approval on a plan the
+          // owner never received. Remember that, so the NEXT sweep re-sends the
+          // card from the stored plan comment instead of waiting forever for a
+          // decision on a question that was never asked. Re-sending costs
+          // nothing; re-planning would cost a lane call, so it is not redone.
+          recordPendingCard(state, key, { reason: delivery.reason, atMs: asMs(now) });
+          summary.errors.push(`${ident}: card-failed (${delivery.reason})`);
+          log(`directive-runner: ${ident} decision card failed to send (${delivery.reason}) — plan comment stands, card queued for retry`);
         }
-        if (!card || !card.sent) {
-          const why = card && (card.reason || card.error) ? ` (${card.reason || card.error})` : "";
-          summary.errors.push(`${ident}: card-failed${why}`);
-          log(`directive-runner: ${ident} decision card failed to send${why} — plan comment still stands`);
-        }
+        await persistState(state);
       }
       plannedThisSweep += 1;
     }
@@ -1095,7 +1174,8 @@ export async function runDirectiveSweepOnce(deps = {}) {
             nowMs,
           });
           const dpost = await _post(`${base}/api/issues/${exIssue.id}/comments`, { body, authorType: "user" });
-          if (dpost.networkError) summary.errors.push(`${exIdent}: result comment network error: ${dpost.networkErrorMessage}`);
+          const dposted = judgeWrite(dpost);
+          if (!dposted.ok) summary.errors.push(`${exIdent}: result comment NOT posted (${dposted.reason})`);
           try { await patchIssueFn(exIssue, { status: "done" }); }
           catch (e) { summary.errors.push(`${exIdent}: patch status error: ${e && e.message ? e.message : e}`); }
           if (labelMap && labelMap.doneVerified) {
@@ -1106,7 +1186,8 @@ export async function runDirectiveSweepOnce(deps = {}) {
         } else if (outcome === "no-op") {
           const body = noOpComment({ reason: result.reason, nowMs });
           const npost = await _post(`${base}/api/issues/${exIssue.id}/comments`, { body, authorType: "user" });
-          if (npost.networkError) summary.errors.push(`${exIdent}: no-op comment network error: ${npost.networkErrorMessage}`);
+          const nposted = judgeWrite(npost);
+          if (!nposted.ok) summary.errors.push(`${exIdent}: no-op comment NOT posted (${nposted.reason})`);
           // Do NOT patch the status — nothing changed.
           summary.noop += 1;
         } else if (outcome === "reverted" || outcome === "refused" || outcome === "aborted") {
@@ -1115,7 +1196,8 @@ export async function runDirectiveSweepOnce(deps = {}) {
             : String(result.reason || "tidak diketahui");
           const body = failureComment({ outcome, reason, nowMs });
           const fpost = await _post(`${base}/api/issues/${exIssue.id}/comments`, { body, authorType: "user" });
-          if (fpost.networkError) summary.errors.push(`${exIdent}: failure comment network error: ${fpost.networkErrorMessage}`);
+          const fposted = judgeWrite(fpost);
+          if (!fposted.ok) summary.errors.push(`${exIdent}: failure comment NOT posted (${fposted.reason})`);
           // Exactly ONE Telegram message — no retry loop. sendMessage reports
           // a refused send as { sent: false, reason } instead of throwing, so
           // the catch this replaces covered only a thrown error and a message

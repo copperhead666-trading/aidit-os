@@ -220,6 +220,51 @@ async function t8_noBase() {
   ok("T8: no Paperclip base -> ok:false, no network calls attempted");
 }
 
+// ---- T9: Paperclip REJECTED the label PATCH (401) — networkError is false ----
+// This is the shape that used to pass: a rejected write reports no network
+// error, so the escalation would go on to post a comment while the
+// OWNER_REQUIRED label was never applied — an escalation nobody is routed to.
+async function t9_rejectedPatchIsNotAnEscalation() {
+  const calls = { comment: [] };
+  const r = await runEscalateOnce({
+    base: BASE,
+    companyId: COMPANY_ID,
+    issueIdentifier: "KOL-42",
+    reason: "some reason",
+    httpGet: async () => ({ networkError: false, body: [ISSUE] }),
+    ensureLabel: async () => ({ id: "lbl-owner-required" }),
+    patchIssue: async () => ({ networkError: false, authRequired: true, status: 401, body: null }),
+    postComment: async () => { calls.comment.push({}); return { networkError: false, status: 201 }; },
+    log: () => {},
+  });
+
+  assert.equal(r.ok, false, "T9: a 401 on the label PATCH is not a successful escalation");
+  assert.ok(/did not land/.test(r.reason), "T9: reason says the write did not land");
+  assert.ok(/401/.test(r.reason), "T9: reason names the status");
+  assert.equal(calls.comment.length, 0, "T9: no comment when the label was not actually applied");
+  ok("T9: rejected label PATCH (401) -> ok:false, no comment");
+}
+
+// ---- T10: Paperclip REJECTED the escalation comment (5xx) ----
+async function t10_rejectedCommentIsNotAnEscalation() {
+  const r = await runEscalateOnce({
+    base: BASE,
+    companyId: COMPANY_ID,
+    issueIdentifier: "KOL-42",
+    reason: "some reason",
+    httpGet: async () => ({ networkError: false, body: [ISSUE] }),
+    ensureLabel: async () => ({ id: "lbl-owner-required" }),
+    patchIssue: async () => ({ networkError: false, status: 200 }),
+    postComment: async () => ({ networkError: false, status: 500, body: null }),
+    log: () => {},
+  });
+
+  assert.equal(r.ok, false, "T10: a 500 on the comment is not a recorded escalation");
+  assert.ok(/did not land/.test(r.reason), "T10: reason says the write did not land");
+  assert.ok(/500/.test(r.reason), "T10: reason names the status");
+  ok("T10: rejected escalation comment (500) -> ok:false");
+}
+
 async function main() {
   const tests = [
     t1_addsLabelAndPostsComment,
@@ -230,6 +275,8 @@ async function main() {
     t6_networkErrorOnPatchIssue,
     t7_networkErrorOnPostComment,
     t8_noBase,
+    t9_rejectedPatchIsNotAnEscalation,
+    t10_rejectedCommentIsNotAnEscalation,
   ];
   for (const t of tests) await t();
   console.log(`\nahmad-escalate.regression.test.mjs: ${pass}/${tests.length} passed`);

@@ -1643,6 +1643,192 @@ await t("K8 capturePlanForExecution names each failure without running a sweep",
   assert.equal(good.plan.risk, "low");
 });
 
+// ---- W-series: a Paperclip write that was rejected is not a write ----------
+// Every one of these used to count as a successful post, because the caller
+// tested only `r.networkError`. W1 is the exact shape that made KOL-73's plan
+// comment vanish on 2026-09-02T04:58Z while the sweep sent a decision card.
+
+await t("W1 a rejected plan comment posts no card, resets no attempt, and says so", async () => {
+  const state = { attempts: { i1: 1 }, lastPlanFailures: {}, lastSweepMs: 0 };
+  const comments = { i1: [] };
+  const { deps, cards } = makeSweepDeps({
+    issues: [issue({ id: "i1", identifier: "KOL-401" })],
+    comments,
+    stateFile: "memory-state-w1",
+    extra: {
+      _fs: memoryStateFs(state),
+      // Paperclip refused the write. networkError is false: this is the shape
+      // that used to read as success.
+      httpPost: async () => ({ status: 401, body: null, authRequired: true, networkError: false }),
+    },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.planned, 0);
+  assert.equal(cards.length, 0, "no decision card may be sent for a comment that was never stored");
+  assert.equal(res.errors.some((e) => /plan comment NOT posted/.test(e)), true);
+  assert.equal(res.errors.some((e) => /auth required/.test(e)), true);
+});
+
+await t("W2 a 500 on the plan comment is a failure, not a plan", async () => {
+  const state = { attempts: {}, lastPlanFailures: {}, lastSweepMs: 0 };
+  const { deps, cards } = makeSweepDeps({
+    issues: [issue({ id: "i1" })],
+    comments: { i1: [] },
+    stateFile: "memory-state-w2",
+    extra: {
+      _fs: memoryStateFs(state),
+      httpPost: async () => ({ status: 500, body: "boom", networkError: false }),
+    },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.planned, 0);
+  assert.equal(cards.length, 0);
+  assert.equal(res.errors.some((e) => /plan comment NOT posted \(rejected \(status 500\)\)/.test(e)), true);
+});
+
+await t("W3 judgeWrite separates a stored write from a rejected one", async () => {
+  const { judgeWrite } = await import("./write-delivery.mjs");
+  assert.equal(judgeWrite({ status: 201, body: {} }).ok, true);
+  assert.equal(judgeWrite({ status: 401, authRequired: true, body: null }).ok, false);
+  assert.equal(judgeWrite({ status: 503, body: null }).ok, false);
+  assert.equal(judgeWrite({ networkError: true, networkErrorMessage: "ECONNREFUSED" }).ok, false);
+  assert.equal(judgeWrite({ comment: null }).ok, false);
+  assert.equal(judgeWrite({ comment: { id: "c1" } }).ok, true);
+  assert.equal(judgeWrite(undefined).ok, false);
+});
+
+// ---- C-series: a decision card the owner never received -------------------
+// A plan comment that stands while its card failed leaves the directive
+// classified as awaiting-approval on a question nobody was asked. The card is
+// retried from the stored plan; planning is never repeated, because that costs
+// a lane call and the plan already exists.
+
+await t("C1 a failed decision card is recorded as pending, not silently dropped", async () => {
+  const state = { attempts: {}, lastPlanFailures: {}, pendingCards: {}, lastSweepMs: 0 };
+  const stateFs = memoryStateFs(state);
+  const { deps, posts } = makeSweepDeps({
+    issues: [issue({ id: "i1", identifier: "KOL-77" })],
+    comments: { i1: [] },
+    stateFile: "memory-state-c1",
+    extra: {
+      _fs: stateFs,
+      sendDecisionCard: async () => ({ sent: false, reason: '{"ok":false,"error_code":401}' }),
+    },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.planned, 1);
+  assert.equal(posts.length, 1, "the plan comment still stands");
+  assert.equal(res.errors.some((e) => /card-failed/.test(e)), true);
+  const saved = JSON.parse(await stateFs.readFile());
+  assert.equal(!!saved.pendingCards.i1, true, "the undelivered card must be remembered");
+  assert.equal(saved.pendingCards.i1.attempts, 1);
+});
+
+await t("C2 a card that threw is judged the same as one that was refused", async () => {
+  const state = { attempts: {}, lastPlanFailures: {}, pendingCards: {}, lastSweepMs: 0 };
+  const stateFs = memoryStateFs(state);
+  const { deps } = makeSweepDeps({
+    issues: [issue({ id: "i1" })],
+    comments: { i1: [] },
+    stateFile: "memory-state-c2",
+    extra: {
+      _fs: stateFs,
+      sendDecisionCard: async () => { throw new Error("socket hang up"); },
+    },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.errors.some((e) => /card-failed \(socket hang up\)/.test(e)), true);
+  const saved = JSON.parse(await stateFs.readFile());
+  assert.equal(!!saved.pendingCards.i1, true);
+});
+
+await t("C3 the next sweep re-sends the pending card from the stored plan, without re-planning", async () => {
+  const state = {
+    attempts: {},
+    lastPlanFailures: {},
+    pendingCards: { i1: { reason: "401", since: "2026-09-01T09:40:00.000Z", lastAttemptAt: "2026-09-01T09:40:00.000Z", attempts: 1 } },
+    lastSweepMs: 0,
+  };
+  const stateFs = memoryStateFs(state);
+  let planned = 0;
+  const { deps, cards, posts } = makeSweepDeps({
+    issues: [issue({ id: "i1", identifier: "KOL-77" })],
+    comments: { i1: [c(`${PLAN_MARKER} (iso):\n${goodPlan}`)] },
+    stateFile: "memory-state-c3",
+    extra: {
+      _fs: stateFs,
+      dispatchPlan: async () => { planned += 1; return { ok: true, stdout: goodPlan, stderr: "", timedOut: false }; },
+    },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(planned, 0, "a retry must not cost a lane call");
+  assert.equal(posts.length, 0, "a retry must not post a second plan comment");
+  assert.equal(cards.length, 1, "the owner finally gets the card");
+  assert.equal(res.cardsRetried, 1);
+  const saved = JSON.parse(await stateFs.readFile());
+  assert.equal(saved.pendingCards.i1, undefined, "a delivered card clears the pending marker");
+});
+
+await t("C4 a retry that fails again stays queued and says why", async () => {
+  const state = {
+    attempts: {},
+    lastPlanFailures: {},
+    pendingCards: { i1: { reason: "401", since: "2026-09-01T09:40:00.000Z", lastAttemptAt: "2026-09-01T09:40:00.000Z", attempts: 1 } },
+    lastSweepMs: 0,
+  };
+  const stateFs = memoryStateFs(state);
+  const { deps } = makeSweepDeps({
+    issues: [issue({ id: "i1" })],
+    comments: { i1: [c(`${PLAN_MARKER} (iso):\n${goodPlan}`)] },
+    stateFile: "memory-state-c4",
+    extra: {
+      _fs: stateFs,
+      sendDecisionCard: async () => ({ sent: false, reason: "still unauthorized" }),
+    },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.cardsRetried, 0);
+  assert.equal(res.errors.some((e) => /card-retry-failed \(still unauthorized\)/.test(e)), true);
+  const saved = JSON.parse(await stateFs.readFile());
+  assert.equal(!!saved.pendingCards.i1, true, "an undelivered card stays queued");
+  assert.equal(saved.pendingCards.i1.attempts, 2, "the retry counts");
+});
+
+await t("C5 an ordinary awaiting-approval directive sends no card at all", async () => {
+  const state = { attempts: {}, lastPlanFailures: {}, pendingCards: {}, lastSweepMs: 0 };
+  const { deps, cards, posts } = makeSweepDeps({
+    issues: [issue({ id: "i1" })],
+    comments: { i1: [c(`${PLAN_MARKER} (iso):\n${goodPlan}`)] },
+    stateFile: "memory-state-c5",
+    extra: { _fs: memoryStateFs(state) },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(cards.length, 0, "no pending marker means the owner already has the card");
+  assert.equal(posts.length, 0);
+  assert.equal(res.cardsRetried, 0);
+});
+
+await t("C6 a pending card whose stored plan is unreadable is reported, not retried blindly", async () => {
+  const state = {
+    attempts: {},
+    lastPlanFailures: {},
+    pendingCards: { i1: { reason: "401", since: "2026-09-01T09:40:00.000Z", lastAttemptAt: "2026-09-01T09:40:00.000Z", attempts: 1 } },
+    lastSweepMs: 0,
+  };
+  const brokenPlan = goodPlan.replace(/^OUT OF SCOPE: .+$/m, "");
+  const logs = [];
+  const { deps, cards } = makeSweepDeps({
+    issues: [issue({ id: "i1" })],
+    comments: { i1: [c(`${PLAN_MARKER} (iso):\n${brokenPlan}`)] },
+    stateFile: "memory-state-c6",
+    extra: { _fs: memoryStateFs(state), log: (m) => logs.push(m) },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(cards.length, 0);
+  assert.equal(res.cardsRetried, 0);
+  assert.equal(logs.some((l) => /card retry skipped/.test(l)), true);
+});
+
 await resetTmp();
 console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);
