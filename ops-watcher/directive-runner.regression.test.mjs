@@ -28,6 +28,7 @@ import {
   REJECTED_MARKER,
   RESULT_MARKER,
   DISPATCH_MARKER,
+  EXECUTION_CAP_MARKER,
   DEFAULT_STALLED_AFTER_MS,
   DEFAULT_MAX_PLAN_ATTEMPTS,
   MAX_EXECUTIONS_PER_SWEEP,
@@ -219,6 +220,68 @@ await t("classifyDirective covers new, awaiting-approval, approved, rejected, do
   const kol69 = issue({ id: "kol-69", identifier: "KOL-69", title: "/pause" });
   const cls = classifyDirective(kol69, [c(`${DISPATCH_MARKER} (ops-watcher/ahmad-dispatch): waking headless AHMAD for KOL-69.`, sixHoursAgo)], { now: NOW });
   assert.equal(cls.state, "stalled");
+});
+
+await t("classifyDirective keeps ordinary plan approval approved when no execution-cap report is between them", () => {
+  const planAt = "2026-09-01T09:00:00.000Z";
+  const approvalAt = "2026-09-01T09:30:00.000Z";
+  const cls = classifyDirective(issue(), [
+    c(`${PLAN_MARKER} (iso):\n${goodPlan}`, planAt),
+    c(TG_APPROVE, approvalAt),
+  ], { now: NOW });
+  assert.equal(cls.state, "approved");
+  assert.equal(cls.reason, "owner approved via Telegram after plan");
+});
+
+await t("classifyDirective stalls a capped directive when owner approves a re-plan after the execution cap", () => {
+  const planAt = "2026-09-01T09:00:00.000Z";
+  const capAt = "2026-09-01T09:20:00.000Z";
+  const approvalAt = "2026-09-01T09:30:00.000Z";
+  const cls = classifyDirective(issue(), [
+    c(`${PLAN_MARKER} (iso):\n${goodPlan}`, planAt),
+    c(`${EXECUTION_CAP_MARKER} (${capAt}): directive dihentikan setelah 2 eksekusi gagal identik.`, capAt),
+    c(TG_APPROVE, approvalAt),
+  ], { now: NOW });
+  assert.equal(cls.state, "stalled");
+  assert.equal(cls.reason, "owner approved a re-plan after the execution cap");
+  assert.equal(isPlannable(issue({ status: "todo" }), cls.state), true);
+});
+
+await t("classifyDirective keeps approved when execution-cap report is after the approval", () => {
+  const planAt = "2026-09-01T09:00:00.000Z";
+  const approvalAt = "2026-09-01T09:30:00.000Z";
+  const capAt = "2026-09-01T09:40:00.000Z";
+  const cls = classifyDirective(issue(), [
+    c(`${PLAN_MARKER} (iso):\n${goodPlan}`, planAt),
+    c(TG_APPROVE, approvalAt),
+    c(`${EXECUTION_CAP_MARKER} (${capAt}): directive dihentikan setelah 2 eksekusi gagal identik.`, capAt),
+  ], { now: NOW });
+  assert.equal(cls.state, "approved");
+});
+
+await t("classifyDirective recognises legacy execution-cap report before re-plan approval", () => {
+  const planAt = "2026-09-01T09:00:00.000Z";
+  const capAt = "2026-09-01T09:20:00.000Z";
+  const approvalAt = "2026-09-01T09:30:00.000Z";
+  const cls = classifyDirective(issue(), [
+    c(`${PLAN_MARKER} (iso):\n${goodPlan}`, planAt),
+    c(`DIRECTIVE OWNER REQUIRED (${capAt}): directive dihentikan setelah 2 eksekusi gagal identik.`, capAt),
+    c(TG_APPROVE, approvalAt),
+  ], { now: NOW });
+  assert.equal(cls.state, "stalled");
+  assert.equal(cls.reason, "owner approved a re-plan after the execution cap");
+});
+
+await t("classifyDirective does not treat planning-cap approval as execution-cap re-plan", () => {
+  const planAt = "2026-09-01T09:00:00.000Z";
+  const capAt = "2026-09-01T09:20:00.000Z";
+  const approvalAt = "2026-09-01T09:30:00.000Z";
+  const cls = classifyDirective(issue(), [
+    c(`${PLAN_MARKER} (iso):\n${goodPlan}`, planAt),
+    c(`DIRECTIVE OWNER REQUIRED (${capAt}): directive perlu keputusan owner.`, capAt),
+    c(TG_APPROVE, approvalAt),
+  ], { now: NOW });
+  assert.equal(cls.state, "approved");
 });
 
 await t("wake marker only 10 minutes old is not stalled", () => {
@@ -1250,10 +1313,10 @@ await t("sweep execution cap: two failures cap the third sweep and request OWNER
   await runDirectiveSweepOnce(deps);
   await runDirectiveSweepOnce(deps);
 
-  const ownerRequiredPosts = posts.filter((p) => /^DIRECTIVE OWNER REQUIRED/.test(p.body.body));
+  const ownerRequiredPosts = posts.filter((p) => p.body.body.startsWith(EXECUTION_CAP_MARKER));
   assert.equal(executeCalls, 2);
   assert.equal(ownerRequiredPosts.length, 1);
-  assert.match(ownerRequiredPosts[0].body.body, /^DIRECTIVE OWNER REQUIRED/);
+  assert.match(ownerRequiredPosts[0].body.body, new RegExp(`^${EXECUTION_CAP_MARKER}`));
   assert.match(ownerRequiredPosts[0].body.body, /verify-red-two/);
   assert.deepEqual(labels.map((x) => `${x.issue.identifier}:${x.label}`), ["KOL-76:OWNER_REQUIRED"]);
 });
@@ -1283,12 +1346,12 @@ await t("sweep execution cap: fourth capped sweep posts no duplicate owner reque
   await runDirectiveSweepOnce(deps);
   await runDirectiveSweepOnce(deps);
   await runDirectiveSweepOnce(deps);
-  const commentsAfterThird = posts.filter((p) => /^DIRECTIVE OWNER REQUIRED/.test(p.body.body)).length;
+  const commentsAfterThird = posts.filter((p) => p.body.body.startsWith(EXECUTION_CAP_MARKER)).length;
   const labelsAfterThird = labels.length;
   await runDirectiveSweepOnce(deps);
 
   assert.equal(executeCalls, 2);
-  assert.equal(posts.filter((p) => /^DIRECTIVE OWNER REQUIRED/.test(p.body.body)).length, commentsAfterThird);
+  assert.equal(posts.filter((p) => p.body.body.startsWith(EXECUTION_CAP_MARKER)).length, commentsAfterThird);
   assert.equal(commentsAfterThird, 1);
   assert.equal(labels.length, labelsAfterThird);
   assert.deepEqual(labels.map((x) => `${x.issue.identifier}:${x.label}`), ["KOL-77:OWNER_REQUIRED"]);
@@ -1320,7 +1383,7 @@ await t("sweep execution cap: replacing plan content after cap allows execution 
   await runDirectiveSweepOnce(deps);
   await runDirectiveSweepOnce(deps);
   assert.equal(executeCalls, 2);
-  assert.equal(posts.filter((p) => /^DIRECTIVE OWNER REQUIRED/.test(p.body.body)).length, 1);
+  assert.equal(posts.filter((p) => p.body.body.startsWith(EXECUTION_CAP_MARKER)).length, 1);
 
   const replacementPlan = goodPlan.replace(
     "Menyiapkan perubahan kecil yang diminta owner.",
@@ -1330,7 +1393,7 @@ await t("sweep execution cap: replacing plan content after cap allows execution 
   await runDirectiveSweepOnce(deps);
 
   assert.equal(executeCalls, 3);
-  assert.equal(posts.filter((p) => /^DIRECTIVE OWNER REQUIRED/.test(p.body.body)).length, 1);
+  assert.equal(posts.filter((p) => p.body.body.startsWith(EXECUTION_CAP_MARKER)).length, 1);
 });
 
 await t("sweep execution cap: done then one failure still executes on the following sweep", async () => {

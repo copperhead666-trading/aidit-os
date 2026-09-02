@@ -102,6 +102,7 @@ export const RESULT_MARKER = "DIRECTIVE RESULT";
 export const REFUSED_MARKER = "PLAN_REFUSED";
 export const DISPATCH_MARKER = "AHMAD DISPATCH";
 const ATTEMPT_CAP_MARKER = "DIRECTIVE OWNER REQUIRED";
+export const EXECUTION_CAP_MARKER = "DIRECTIVE EXECUTION CAP OWNER REQUIRED";
 export const UNEXECUTABLE_MARKER = "DIRECTIVE TIDAK DAPAT DIJALANKAN";
 const OWNER_REQUIRED_LABEL = "OWNER_REQUIRED";
 export const DEFAULT_STALLED_AFTER_MS = 6 * 60 * 60 * 1000;
@@ -187,6 +188,12 @@ function isPlanComment(c) {
 }
 function isAttemptCapEscalationComment(c) {
   return bodyOf(c).trim().startsWith(ATTEMPT_CAP_MARKER);
+}
+function isExecutionCapEscalationComment(c) {
+  const b = bodyOf(c).trim();
+  return b.startsWith(EXECUTION_CAP_MARKER) ||
+    // One-time bridge for execution-cap reports posted before this marker was split.
+    (b.startsWith(ATTEMPT_CAP_MARKER) && b.includes("eksekusi gagal identik"));
 }
 function isUnexecutableComment(c) {
   return bodyOf(c).trim().startsWith(UNEXECUTABLE_MARKER);
@@ -307,6 +314,17 @@ function recordAttemptCapDecisionReset(state, key, decision) {
     escalationAt: decision.escalationAt || null,
   };
 }
+function hasExecutionCapReportBetween(comments, planCommentAt, approvedAtIso) {
+  const planMs = planCommentAt != null ? asMs(planCommentAt) : NaN;
+  const approvedMs = approvedAtIso ? Date.parse(approvedAtIso) : NaN;
+  if (!Number.isFinite(planMs) || !Number.isFinite(approvedMs)) return false;
+  for (const c of Array.isArray(comments) ? comments : []) {
+    if (!isExecutionCapEscalationComment(c)) continue;
+    const t = commentTime(c);
+    if (t != null && t > planMs && t < approvedMs) return true;
+  }
+  return false;
+}
 
 // ---- Stage 2: eligibility -------------------------------------------------
 // PURE. A directive is eligible for (re-)planning when its classification state
@@ -362,6 +380,9 @@ export function classifyDirective(issue, comments, { now = Date.now, stalledAfte
     const planCommentAt = commentTime(cmts[planIdx]);
     const decision = findPlanDecision(cmts, planCommentAt);
     if (decision.decision === "approved") {
+      if (hasExecutionCapReportBetween(cmts, planCommentAt, decision.at)) {
+        return { state: "stalled", reason: "owner approved a re-plan after the execution cap", lastCommentAt, approvedAt: decision.at };
+      }
       return { state: "approved", reason: "owner approved via Telegram after plan", lastCommentAt, approvedAt: decision.at };
     }
     if (decision.decision === "rejected") {
@@ -1310,7 +1331,7 @@ export async function runDirectiveSweepOnce(deps = {}) {
         const reason = record && record.reason ? record.reason : "unknown";
         const cpost = await _post(`${base}/api/issues/${exIssue.id}/comments`, {
           body: [
-            `DIRECTIVE OWNER REQUIRED (${iso(nowMs)}): directive dihentikan setelah ${MAX_EXECUTION_ATTEMPTS} eksekusi gagal identik.`,
+            `${EXECUTION_CAP_MARKER} (${iso(nowMs)}): directive dihentikan setelah ${MAX_EXECUTION_ATTEMPTS} eksekusi gagal identik.`,
             `Alasan terakhir: ${reason}.`,
             "OWNER_REQUIRED ditambahkan agar owner memilih rencana baru, mengubah scope, atau menutup issue.",
           ].join("\n"),
