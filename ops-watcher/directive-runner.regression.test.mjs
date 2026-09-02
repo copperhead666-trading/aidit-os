@@ -1219,6 +1219,156 @@ await t("sweep execution: two approved directives execute only MAX_EXECUTIONS_PE
   assert.equal(res.approved.length, 2);
   assert.equal(executeCalls, MAX_EXECUTIONS_PER_SWEEP);
 });
+await t("sweep execution cap: two failures cap the third sweep and request OWNER_REQUIRED once", async () => {
+  await resetTmp();
+  const planAt = "2026-09-01T09:00:00.000Z";
+  const after = "2026-09-01T09:30:00.000Z";
+  const state = { attempts: {}, lastPlanFailures: {}, pendingCards: {}, lastSweepMs: 0 };
+  const stateFs = memoryStateFs(state);
+  const issues = [issue({ id: "kol76", identifier: "KOL-76" })];
+  const comments = { kol76: [c(`${PLAN_MARKER} (iso):\n${goodPlan}`, planAt), c(TG_APPROVE, after)] };
+  const outcomes = [
+    { outcome: "reverted", reason: "verify-red-one" },
+    { outcome: "reverted", reason: "verify-red-two" },
+    { outcome: "reverted", reason: "should-not-run" },
+  ];
+  let executeCalls = 0;
+  const { deps, posts, labels } = makeSweepDeps({
+    issues,
+    comments,
+    stateFile: "memory-state-execution-cap-1",
+    extra: {
+      _fs: stateFs,
+      executeDirective: async () => {
+        executeCalls += 1;
+        return outcomes.shift();
+      },
+    },
+  });
+
+  await runDirectiveSweepOnce(deps);
+  await runDirectiveSweepOnce(deps);
+  await runDirectiveSweepOnce(deps);
+
+  const ownerRequiredPosts = posts.filter((p) => /^DIRECTIVE OWNER REQUIRED/.test(p.body.body));
+  assert.equal(executeCalls, 2);
+  assert.equal(ownerRequiredPosts.length, 1);
+  assert.match(ownerRequiredPosts[0].body.body, /^DIRECTIVE OWNER REQUIRED/);
+  assert.match(ownerRequiredPosts[0].body.body, /verify-red-two/);
+  assert.deepEqual(labels.map((x) => `${x.issue.identifier}:${x.label}`), ["KOL-76:OWNER_REQUIRED"]);
+});
+
+await t("sweep execution cap: fourth capped sweep posts no duplicate owner request or label", async () => {
+  await resetTmp();
+  const planAt = "2026-09-01T09:00:00.000Z";
+  const after = "2026-09-01T09:30:00.000Z";
+  const state = { attempts: {}, lastPlanFailures: {}, pendingCards: {}, lastSweepMs: 0 };
+  const stateFs = memoryStateFs(state);
+  const issues = [issue({ id: "kol77", identifier: "KOL-77" })];
+  const comments = { kol77: [c(`${PLAN_MARKER} (iso):\n${goodPlan}`, planAt), c(TG_APPROVE, after)] };
+  let executeCalls = 0;
+  const { deps, posts, labels } = makeSweepDeps({
+    issues,
+    comments,
+    stateFile: "memory-state-execution-cap-2",
+    extra: {
+      _fs: stateFs,
+      executeDirective: async () => {
+        executeCalls += 1;
+        return { outcome: "reverted", reason: `verify-red-${executeCalls}` };
+      },
+    },
+  });
+
+  await runDirectiveSweepOnce(deps);
+  await runDirectiveSweepOnce(deps);
+  await runDirectiveSweepOnce(deps);
+  const commentsAfterThird = posts.filter((p) => /^DIRECTIVE OWNER REQUIRED/.test(p.body.body)).length;
+  const labelsAfterThird = labels.length;
+  await runDirectiveSweepOnce(deps);
+
+  assert.equal(executeCalls, 2);
+  assert.equal(posts.filter((p) => /^DIRECTIVE OWNER REQUIRED/.test(p.body.body)).length, commentsAfterThird);
+  assert.equal(commentsAfterThird, 1);
+  assert.equal(labels.length, labelsAfterThird);
+  assert.deepEqual(labels.map((x) => `${x.issue.identifier}:${x.label}`), ["KOL-77:OWNER_REQUIRED"]);
+});
+
+await t("sweep execution cap: replacing plan content after cap allows execution again", async () => {
+  await resetTmp();
+  const planAt = "2026-09-01T09:00:00.000Z";
+  const after = "2026-09-01T09:30:00.000Z";
+  const state = { attempts: {}, lastPlanFailures: {}, pendingCards: {}, lastSweepMs: 0 };
+  const stateFs = memoryStateFs(state);
+  const issues = [issue({ id: "kol78", identifier: "KOL-78" })];
+  const comments = { kol78: [c(`${PLAN_MARKER} (iso):\n${goodPlan}`, planAt), c(TG_APPROVE, after)] };
+  let executeCalls = 0;
+  const { deps, posts } = makeSweepDeps({
+    issues,
+    comments,
+    stateFile: "memory-state-execution-cap-3",
+    extra: {
+      _fs: stateFs,
+      executeDirective: async () => {
+        executeCalls += 1;
+        return { outcome: "reverted", reason: `verify-red-${executeCalls}` };
+      },
+    },
+  });
+
+  await runDirectiveSweepOnce(deps);
+  await runDirectiveSweepOnce(deps);
+  await runDirectiveSweepOnce(deps);
+  assert.equal(executeCalls, 2);
+  assert.equal(posts.filter((p) => /^DIRECTIVE OWNER REQUIRED/.test(p.body.body)).length, 1);
+
+  const replacementPlan = goodPlan.replace(
+    "Menyiapkan perubahan kecil yang diminta owner.",
+    "Menjalankan rencana pengganti setelah cap eksekusi.",
+  );
+  comments.kol78.find((x) => x.body.startsWith(`${PLAN_MARKER} `)).body = `${PLAN_MARKER} (iso):\n${replacementPlan}`;
+  await runDirectiveSweepOnce(deps);
+
+  assert.equal(executeCalls, 3);
+  assert.equal(posts.filter((p) => /^DIRECTIVE OWNER REQUIRED/.test(p.body.body)).length, 1);
+});
+
+await t("sweep execution cap: done then one failure still executes on the following sweep", async () => {
+  await resetTmp();
+  const planAt = "2026-09-01T09:00:00.000Z";
+  const after = "2026-09-01T09:30:00.000Z";
+  const state = { attempts: {}, lastPlanFailures: {}, pendingCards: {}, lastSweepMs: 0 };
+  const stateFs = memoryStateFs(state);
+  const issues = [issue({ id: "kol79", identifier: "KOL-79" })];
+  const comments = { kol79: [c(`${PLAN_MARKER} (iso):\n${goodPlan}`, planAt), c(TG_APPROVE, after)] };
+  const outcomes = [
+    { outcome: "done", filesChanged: ["ops-watcher/foo.mjs"], verifyTail: "ok" },
+    { outcome: "reverted", reason: "verify-red-after-green" },
+    { outcome: "reverted", reason: "verify-red-still-under-cap" },
+  ];
+  let executeCalls = 0;
+  const { deps, posts, labels } = makeSweepDeps({
+    issues,
+    comments,
+    stateFile: "memory-state-execution-cap-4",
+    extra: {
+      _fs: stateFs,
+      executeDirective: async () => {
+        executeCalls += 1;
+        return outcomes.shift();
+      },
+    },
+  });
+
+  await runDirectiveSweepOnce(deps);
+  comments.kol79 = comments.kol79.filter((x) => !/^DIRECTIVE RESULT/.test(x.body));
+  await runDirectiveSweepOnce(deps);
+  await runDirectiveSweepOnce(deps);
+
+  assert.equal(executeCalls, 3);
+  assert.equal(posts.filter((p) => /^DIRECTIVE OWNER REQUIRED/.test(p.body.body)).length, 0);
+  assert.equal(labels.filter((x) => x.label === "OWNER_REQUIRED").length, 0);
+});
 // ===========================================================================
 // Stage 3a — buildExecutionPrompt + executeApprovedDirective
 // ===========================================================================
