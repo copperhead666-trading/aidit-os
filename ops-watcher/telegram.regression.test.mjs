@@ -36,7 +36,7 @@ import path from "node:path";
 import { promises as fs } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
-  sendMessage, answerCallbackQuery, editMessageText, getUpdates, tokenStatus, redact,
+  OWNER_CHAT_ID, sendMessage, answerCallbackQuery, editMessageText, getUpdates, tokenStatus, redact,
 } from "./telegram-client.mjs";
 import { runNotifyOnce } from "./telegram-notify.mjs";
 import { runListenerOnce, parseCallbackData, processUpdateForCallback } from "./telegram-listener.mjs";
@@ -55,6 +55,8 @@ const COMPANY = "a7011f31-8891-4581-b8fb-bbda8ac6a890";
 const OWNER_REQUIRED_LABEL_ID = "lbl-OR";
 const OWNER_REJECTED_LABEL_ID = "lbl-ORJ";
 const ESCALATED_LABEL_ID = "lbl-ESC";
+const PARSE_ENTITY_FALLBACK_TEXT = "plain fallback .env* OWNER_REQUIRED";
+const NON_PARSE_400_TEXT = "ordinary bad request";
 
 let passed = 0, failed = 0;
 const failures = [];
@@ -78,9 +80,15 @@ function mockTelegram({ updatesByOffset = () => [], failGetUpdates = false, fail
         res.end(JSON.stringify(obj));
       };
       if (failGetUpdates && url.endsWith("/getUpdates")) return respond(500, { ok: false, description: "internal" });
-      if (failSend && url.endsWith("/sendMessage")) return respond(400, { ok: false, description: "bad request" });
       if (url.endsWith("/sendMessage")) {
         calls.sendMessage.push(body);
+        if (failSend) return respond(400, { ok: false, description: "bad request" });
+        if (body.text === PARSE_ENTITY_FALLBACK_TEXT && body.parse_mode === "Markdown") {
+          return respond(400, { ok: false, description: "Bad Request: cant parse entities: Cant find end of the entity starting at byte offset 624" });
+        }
+        if (body.text === NON_PARSE_400_TEXT) {
+          return respond(400, { ok: false, description: "Bad Request: chat not found" });
+        }
         return respond(200, { ok: true, result: { message_id: nextMsgId++, date: 1, chat: { id: 8987077084 }, text: body.text } });
       }
       if (url.endsWith("/answerCallbackQuery")) {
@@ -344,6 +352,58 @@ async function testTokenStatusNoLeak() {
     ok(name);
   } catch (e) { bad(name, e); }
 }
+
+async function testSendMessageParseEntityFallback() {
+  const name = "(0a) sendMessage parse-entity 400 retries once without parse_mode and preserves text";
+  const tg = mockTelegram();
+  const tgS = await tg.start();
+  const buttons = [[{ text: "DETAILS", callback_data: "d:KOL-1" }]];
+  try {
+    const r = await sendMessage(PARSE_ENTITY_FALLBACK_TEXT, { buttons, baseUrl: tgS.base, timeoutMs: 3000 });
+    assert.equal(r.sent, true);
+    assert.equal(r.ok, true);
+    assert.equal(r.status, 200);
+    assert.equal(r.parseModeFallback, true);
+    assert.equal(tgS.calls.sendMessage.length, 2, "retry is exactly one extra request");
+    assert.equal(tgS.calls.sendMessage[0].parse_mode, "Markdown");
+    assert.equal(tgS.calls.sendMessage[1].parse_mode, undefined);
+    assert.equal(Buffer.compare(Buffer.from(tgS.calls.sendMessage[1].text, "utf8"), Buffer.from(PARSE_ENTITY_FALLBACK_TEXT, "utf8")), 0);
+    assert.equal(tgS.calls.sendMessage[1].chat_id, OWNER_CHAT_ID);
+    assert.deepEqual(tgS.calls.sendMessage[1].reply_markup, { inline_keyboard: buttons });
+    ok(name);
+  } catch (e) { bad(name, e); } finally { await tgS.close(); }
+}
+
+async function testSendMessageNonParse400NoFallback() {
+  const name = "(0b) sendMessage non-parse 400 is not retried";
+  const tg = mockTelegram();
+  const tgS = await tg.start();
+  try {
+    const r = await sendMessage(NON_PARSE_400_TEXT, { baseUrl: tgS.base, timeoutMs: 3000 });
+    assert.equal(r.sent, false);
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 400);
+    assert.equal(r.parseModeFallback, undefined);
+    assert.equal(tgS.calls.sendMessage.length, 1, "non-parse 400 sends exactly one request");
+    ok(name);
+  } catch (e) { bad(name, e); } finally { await tgS.close(); }
+}
+
+async function testSendMessageSuccessNoFallback() {
+  const name = "(0c) sendMessage successful first attempt is not retried and has no fallback flag";
+  const tg = mockTelegram();
+  const tgS = await tg.start();
+  try {
+    const r = await sendMessage("hello *owner*", { baseUrl: tgS.base, timeoutMs: 3000 });
+    assert.equal(r.sent, true);
+    assert.equal(r.ok, true);
+    assert.equal(r.parseModeFallback, undefined);
+    assert.equal(tgS.calls.sendMessage.length, 1, "happy path sends exactly one request");
+    assert.equal(tgS.calls.sendMessage[0].parse_mode, "Markdown");
+    ok(name);
+  } catch (e) { bad(name, e); } finally { await tgS.close(); }
+}
+
 
 async function testNotifySendsAndMarks() {
   const name = "(1) telegram-notify: sends for OWNER_REQUIRED w/o marker, posts marker, skips already-sent";
@@ -1252,6 +1312,9 @@ async function main() {
   process.env.TELEGRAM_BOT_TOKEN_AHMAD = FAKE_TOKEN;
   try {
     await testTokenStatusNoLeak();
+    await testSendMessageParseEntityFallback();
+    await testSendMessageNonParse400NoFallback();
+    await testSendMessageSuccessNoFallback();
     await testNotifySendsAndMarks();
     await testNotifyTelegramFailureNoCrash();
     await testApprove();

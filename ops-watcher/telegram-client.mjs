@@ -126,12 +126,32 @@ async function tgFetch(method, payload, { timeoutMs = 20000, baseUrl = TG_BASE }
   return { sent: true, ok: true, status: res.status, result: body.result };
 }
 
+function isMarkdownEntityParseFailure(result) {
+  return Boolean(
+    result &&
+    result.status === 400 &&
+    typeof result.error === "string" &&
+    /can(?:\x27)?t parse entities/i.test(result.error),
+  );
+}
+
+async function tgFetchWithMarkdownFallback(method, payload, opts) {
+  const first = await tgFetch(method, payload, opts);
+  if (!isMarkdownEntityParseFailure(first)) return first;
+
+  console.log(`[telegram-client] ${method} Markdown parse entities failed; retrying without parse_mode`);
+  const plainPayload = { ...payload };
+  delete plainPayload.parse_mode;
+  const second = await tgFetch(method, plainPayload, opts);
+  return { ...second, parseModeFallback: true };
+}
+
 // Send a Markdown message to the OWNER. `buttons` is an inline_keyboard array
 // (array of rows, each row an array of { text, callback_data }).
 export async function sendMessage(text, { buttons, timeoutMs, baseUrl } = {}) {
   const payload = { chat_id: OWNER_CHAT_ID, text, parse_mode: "Markdown" };
   if (buttons) payload.reply_markup = { inline_keyboard: buttons };
-  return tgFetch("sendMessage", payload, { timeoutMs, baseUrl });
+  return tgFetchWithMarkdownFallback("sendMessage", payload, { timeoutMs, baseUrl });
 }
 
 // Answer a callback query (shows a small toast to the OWNER who tapped a button).
@@ -154,7 +174,7 @@ export async function editMessageText(messageId, newText, { buttons, timeoutMs, 
   };
   if (buttons) payload.reply_markup = { inline_keyboard: buttons };
   else if (removeKeyboard) payload.reply_markup = { inline_keyboard: [] };
-  return tgFetch("editMessageText", payload, { timeoutMs, baseUrl });
+  return tgFetchWithMarkdownFallback("editMessageText", payload, { timeoutMs, baseUrl });
 }
 
 // Long-poll for updates. `offset` is the last processed update_id + 1 (Telegram
@@ -236,6 +256,17 @@ async function runSelftest() {
       received.push({ method: req.method, url: req.url, body });
       res.setHeader("content-type", "application/json");
       if (req.url.endsWith("/sendMessage")) {
+        if (body.text === "plain fallback .env* OWNER_REQUIRED") {
+          if (body.parse_mode === "Markdown") {
+            res.statusCode = 400;
+            return res.end(JSON.stringify({ ok: false, description: "Bad Request: cant parse entities: Cant find end of the entity starting at byte offset 624" }));
+          }
+          return res.end(JSON.stringify({ ok: true, result: { message_id: 624, date: 1, chat: { id: 8987077084 }, text: body.text } }));
+        }
+        if (body.text === "ordinary bad request") {
+          res.statusCode = 400;
+          return res.end(JSON.stringify({ ok: false, description: "Bad Request: chat not found" }));
+        }
         return res.end(JSON.stringify({ ok: true, result: { message_id: 42, date: 1, chat: { id: 8987077084 }, text: body.text } }));
       }
       if (req.url.endsWith("/answerCallbackQuery")) {
@@ -263,6 +294,8 @@ async function runSelftest() {
     const s = await sendMessage("hello *owner*", { buttons: [[{ text: "APPROVE", callback_data: "a:KOL-1" }]], baseUrl, timeoutMs: 3000 });
     assert.equal(s.sent, true);
     assert.equal(s.result.message_id, 42);
+    assert.equal(received.filter((r) => r.url.endsWith("/sendMessage")).length, 1);
+    assert.equal(s.parseModeFallback, undefined);
     ok("(a) sendMessage happy path returns message_id");
 
     // (b) token redaction: the mock sees the token in the URL (API contract), but
@@ -322,6 +355,33 @@ async function runSelftest() {
     assert.equal(btnCall.body.chat_id, OWNER_CHAT_ID);
     assert.equal(btnCall.body.menu_button.type, "web_app");
     ok("(h) setMyCommands + setChatMenuButton send documented payloads, button scoped to OWNER");
+
+    // (i) Markdown entity parse failure retries exactly once as plain text,
+    // preserving the text bytes and all non-parse-mode payload fields.
+    received.length = 0;
+    const fallbackText = "plain fallback .env* OWNER_REQUIRED";
+    const fallbackButtons = [[{ text: "DETAILS", callback_data: "d:KOL-1" }]];
+    const sf = await sendMessage(fallbackText, { buttons: fallbackButtons, baseUrl, timeoutMs: 3000 });
+    const fallbackCalls = received.filter((r) => r.url.endsWith("/sendMessage"));
+    assert.equal(sf.sent, true);
+    assert.equal(sf.result.message_id, 624);
+    assert.equal(sf.parseModeFallback, true);
+    assert.equal(fallbackCalls.length, 2);
+    assert.equal(fallbackCalls[0].body.parse_mode, "Markdown");
+    assert.equal(fallbackCalls[1].body.parse_mode, undefined);
+    assert.equal(Buffer.compare(Buffer.from(fallbackCalls[1].body.text, "utf8"), Buffer.from(fallbackText, "utf8")), 0);
+    assert.equal(fallbackCalls[1].body.chat_id, OWNER_CHAT_ID);
+    assert.deepEqual(fallbackCalls[1].body.reply_markup, { inline_keyboard: fallbackButtons });
+    ok("(i) sendMessage parse-entity 400 retries once without parse_mode and preserves text");
+
+    // (j) Other Telegram 400s do not retry.
+    received.length = 0;
+    const bad400 = await sendMessage("ordinary bad request", { baseUrl, timeoutMs: 3000 });
+    assert.equal(bad400.sent, false);
+    assert.equal(bad400.status, 400);
+    assert.equal(bad400.parseModeFallback, undefined);
+    assert.equal(received.filter((r) => r.url.endsWith("/sendMessage")).length, 1);
+    ok("(j) sendMessage non-parse 400 does not retry");
   } catch (e) {
     bad("selftest", e);
   } finally {
