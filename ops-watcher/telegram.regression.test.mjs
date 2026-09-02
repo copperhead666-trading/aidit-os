@@ -763,6 +763,68 @@ async function testStandaloneTextStillCreatesDirectiveIssue() {
     ok(name);
   } catch (e) { bad(name, e); }
 }
+// (23b/23c/23d) The SAME rule as the callback path below, applied to the text
+// ingress path: directive-runner skips any issue without the DIRECTIVE label,
+// so the patch that adds the label and assigns AHMAD is what makes a directive
+// real. Its result used to be dropped via `.catch(() => {})` — which catches
+// nothing, since patchIssue reports failure in its return value — and the owner
+// was told "executing" regardless. The issue then sat unlabelled forever.
+async function testTextIngressPatchNetworkFailureNotFalsified() {
+  const name = "(23b) text ingress PATCH network-error -> owner is told it is NOT running";
+  const { calls, ctx } = commandCtx({
+    _patchIssue: async (base, issueId, patch) => {
+      calls.patchIssue.push({ issueId, patch });
+      return { issue: null, networkError: true, networkErrorMessage: "ECONNREFUSED" };
+    },
+  });
+  try {
+    const r = await processUpdateForCallback(textUpdate(8171, "Beresin Barrier saya"), ctx);
+    assert.equal(r.outcome, "text-ingressed-unwired", "the outcome names the failure");
+    assert.match(String(r.wiringFailure), /ECONNREFUSED/);
+    assert.equal(calls.patchIssue.length, 1, "the patch was attempted");
+    assert.equal(calls.sendMessage.length, 1, "the owner still gets exactly one receipt");
+    assert.match(calls.sendMessage[0].text, /GAGAL disiapkan untuk eksekusi/);
+    assert.match(calls.sendMessage[0].text, /TIDAK berjalan/);
+    assert.doesNotMatch(calls.sendMessage[0].text, /\u2014 executing\./);
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testTextIngressPatchNon2xxNotFalsified() {
+  const name = "(23c) text ingress PATCH non-2xx -> owner is told it is NOT running";
+  const { calls, ctx } = commandCtx({
+    _patchIssue: async (base, issueId, patch) => {
+      calls.patchIssue.push({ issueId, patch });
+      return { issue: { id: issueId }, status: 500, networkError: false };
+    },
+  });
+  try {
+    const r = await processUpdateForCallback(textUpdate(8172, "Beresin Barrier saya"), ctx);
+    assert.equal(r.outcome, "text-ingressed-unwired");
+    assert.match(String(r.wiringFailure), /status 500/);
+    assert.match(calls.sendMessage[0].text, /GAGAL disiapkan untuk eksekusi/);
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testTextIngressMissingDirectiveLabelNotFalsified() {
+  const name = "(23d) text ingress with no DIRECTIVE label -> not patched, owner is told it is NOT running";
+  const { calls, ctx } = commandCtx({
+    labelMap: { OWNER_REQUIRED: OWNER_REQUIRED_LABEL_ID },
+    _ensureLabel: async () => ({ networkError: true, networkErrorMessage: "label service down" }),
+  });
+  try {
+    const r = await processUpdateForCallback(textUpdate(8173, "Beresin Barrier saya"), ctx);
+    assert.equal(r.outcome, "text-ingressed-unwired");
+    assert.match(String(r.wiringFailure), /label DIRECTIVE tidak tersedia/);
+    // No label means the patch is pointless: the pipeline would ignore the issue
+    // either way, and a half-applied patch would only hide that.
+    assert.equal(calls.patchIssue.length, 0, "no patch is attempted without the label");
+    assert.match(calls.sendMessage[0].text, /GAGAL disiapkan untuk eksekusi/);
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
 // ===========================================================================
 // P0 FIX regression tests: PATCH failure must NOT be falsified as success, and
 // state persistence must NOT be silently swallowed.
@@ -1008,6 +1070,9 @@ async function main() {
     await testOptionCurrentMetadataMalformedFailsSafely();
     await testOptionPatchFailureNotFalsified();
     await testStandaloneTextStillCreatesDirectiveIssue();
+    await testTextIngressPatchNetworkFailureNotFalsified();
+    await testTextIngressPatchNon2xxNotFalsified();
+    await testTextIngressMissingDirectiveLabelNotFalsified();
     await testApprovePatchNetworkFailureNotFalsified();
     await testRejectPatchStatusFailureNotFalsified();
     await testStateWriteFailureSurfaced();

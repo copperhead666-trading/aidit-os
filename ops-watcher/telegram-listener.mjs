@@ -706,15 +706,43 @@ export async function processUpdateForCallback(upd, ctx) {
       // hand (see AHMAD_AGENT_ID doc comment above for what this id is/is not).
       const assignPatch = { status: "todo", assigneeAgentId: AHMAD_AGENT_ID };
       if (labels.length > 0) assignPatch.labelIds = labels;
-      await _patchIssue(base, issueRes.body.id, assignPatch, upOpts).catch(() => {});
-      log(`telegram-listener: update ${uid} created issue ${issueRes.body.identifier || issueRes.body.id} — DIRECTIVE, auto-assigned to AHMAD (${AHMAD_AGENT_ID})`);
+      // This patch is what makes the directive real: directive-runner skips any
+      // issue without the DIRECTIVE label, so a created issue that never gets
+      // patched is invisible to the pipeline forever. The result used to be
+      // discarded through `.catch(() => {})`, which catches nothing — patchIssue
+      // reports a network error, an auth refusal and a non-2xx status in its
+      // RETURN value — and the ACK below told the owner "executing" either way.
+      const identifier = issueRes.body.identifier || issueRes.body.id;
+      let wiringFailure = null;
+      if (!directiveLabelId) {
+        wiringFailure = "label DIRECTIVE tidak tersedia";
+      } else {
+        const patched = await _patchIssue(base, issueRes.body.id, assignPatch, upOpts)
+          .catch((err) => ({ networkError: true, networkErrorMessage: String((err && err.message) || err) }));
+        if (!patched) wiringFailure = "patch tidak mengembalikan hasil";
+        else if (patched.networkError) wiringFailure = `patch gagal (${patched.networkErrorMessage || "network error"})`;
+        else if (patched.authRequired) wiringFailure = "patch ditolak (auth required)";
+        else if (typeof patched.status === "number" && (patched.status < 200 || patched.status >= 300)) wiringFailure = `patch gagal (status ${patched.status})`;
+        else if (!patched.issue) wiringFailure = "patch tidak mengembalikan issue";
+      }
+      if (wiringFailure) {
+        log(`telegram-listener: update ${uid} created issue ${identifier} but NOT wired for execution — ${wiringFailure}`);
+      } else {
+        log(`telegram-listener: update ${uid} created issue ${identifier} — DIRECTIVE, auto-assigned to AHMAD (${AHMAD_AGENT_ID})`);
+      }
 
       // ---- Immediate ACK to OWNER (<5s target) ----
       // Send a receipt confirmation so the OWNER knows the message was received
       // without waiting for the heartbeat -> telegram-notify cycle (which can take
       // up to 5 minutes). This is a fire-and-forget; failure is logged but never
       // blocks the ingress path.
-      const ackText = `Received: "${msgText.slice(0, 60)}${msgText.length > 60 ? "\u2026" : ""}"\nCreated ${issueRes.body.identifier || "issue"} — executing.`;
+      // The receipt reports what the writes actually did. Telling the owner a
+      // directive is executing when it was never wired up is the failure mode
+      // the pause reply was deliberately built to avoid.
+      const received = `Received: "${msgText.slice(0, 60)}${msgText.length > 60 ? "\u2026" : ""}"`;
+      const ackText = wiringFailure
+        ? `${received}\nCreated ${identifier}, tetapi GAGAL disiapkan untuk eksekusi (${wiringFailure}). Directive TIDAK berjalan — periksa Paperclip.`
+        : `${received}\nCreated ${identifier} — executing.`;
       await _sendMessage(ackText, upOpts).catch(() => {});
       log(`telegram-listener: update ${uid} ACK sent to OWNER`);
 
@@ -729,7 +757,13 @@ export async function processUpdateForCallback(upd, ctx) {
         log(`telegram-listener: update ${uid} heartbeat spawn failed (non-fatal): ${e && e.message}`);
       }
 
-      return { update_id: uid, outcome: "text-ingressed", issueId: issueRes.body.id, identifier: issueRes.body.identifier };
+      return {
+        update_id: uid,
+        outcome: wiringFailure ? "text-ingressed-unwired" : "text-ingressed",
+        issueId: issueRes.body.id,
+        identifier: issueRes.body.identifier,
+        wiringFailure,
+      };
     } catch (err) {
       log(`telegram-listener: update ${uid} text ingress threw (suppressed): ${err && err.message}`);
       return { update_id: uid, outcome: "text-ingress-error", error: String(err && err.message) };
