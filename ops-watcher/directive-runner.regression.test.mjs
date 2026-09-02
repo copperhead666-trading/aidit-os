@@ -31,7 +31,12 @@ import {
   DEFAULT_STALLED_AFTER_MS,
   DEFAULT_MAX_PLAN_ATTEMPTS,
   MAX_EXECUTIONS_PER_SWEEP,
+  MAX_EXECUTION_ATTEMPTS,
   SWEEP_MIN_INTERVAL_MS,
+  planIdentityKey,
+  recordExecutionFailure,
+  clearExecutionFailures,
+  executionCapReached,
 } from "./directive-runner.mjs";
 import { verifyFile } from "./verify-file.mjs";
 
@@ -131,6 +136,77 @@ async function t(name, fn) {
 }
 
 await resetTmp();
+
+await t("E1 planIdentityKey is stable and changes when objective, files, steps, verify, or outOfScope changes", () => {
+  const base = parsePlan(goodPlan);
+  const same = parsePlan(goodPlan);
+  assert.equal(base.ok, true);
+  assert.equal(same.ok, true);
+  const key = planIdentityKey(base);
+  assert.equal(planIdentityKey(same), key);
+  const cases = [
+    { ...base, objective: base.objective + " v2" },
+    { ...base, files: [...base.files, "ops-watcher/baz.mjs"] },
+    { ...base, steps: [...base.steps, "Catat hasil verifikasi."] },
+    { ...base, verify: "node ops-watcher/foo.mjs --check --strict" },
+    { ...base, outOfScope: base.outOfScope + " Tidak menyentuh secrets." },
+  ];
+  for (const changed of cases) assert.notEqual(planIdentityKey(changed), key);
+});
+
+await t("E2 recordExecutionFailure counts identical plan failures and executionCapReached trips at two", () => {
+  assert.equal(MAX_EXECUTION_ATTEMPTS, 2);
+  const state = {};
+  const planKey = "plan-a";
+  const first = recordExecutionFailure(state, "i1", planKey, { reason: "verify-red", at: "2026-09-02T09:22:00.000Z" });
+  assert.equal(first.count, 1);
+  assert.equal(executionCapReached(state, "i1", planKey), false);
+  const second = recordExecutionFailure(state, "i1", planKey, { reason: "verify-red", at: "2026-09-02T09:38:00.000Z" });
+  assert.equal(second.count, 2);
+  assert.equal(executionCapReached(state, "i1", planKey), true);
+});
+
+await t("E3 recordExecutionFailure resets when the planKey changes", () => {
+  const state = {};
+  recordExecutionFailure(state, "i1", "plan-a", { reason: "verify-red" });
+  recordExecutionFailure(state, "i1", "plan-a", { reason: "verify-red" });
+  const reset = recordExecutionFailure(state, "i1", "plan-b", { reason: "full-suite-red" });
+  assert.equal(reset.count, 1);
+  assert.equal(reset.planKey, "plan-b");
+  assert.equal(executionCapReached(state, "i1", "plan-b"), false);
+});
+
+await t("E4 clearExecutionFailures removes the stored record and the next failure starts at one", () => {
+  const state = {};
+  recordExecutionFailure(state, "i1", "plan-a", { reason: "verify-red" });
+  recordExecutionFailure(state, "i1", "plan-a", { reason: "verify-red" });
+  clearExecutionFailures(state, "i1");
+  assert.equal(executionCapReached(state, "i1", "plan-a"), false);
+  const next = recordExecutionFailure(state, "i1", "plan-a", { reason: "verify-red" });
+  assert.equal(next.count, 1);
+});
+
+await t("E5 state loader round-trip preserves executionFailures", async () => {
+  const initial = {
+    attempts: {},
+    lastPlanFailures: {},
+    executionFailures: { i1: { planKey: "plan-a", reason: "verify-red", count: 2, at: "2026-09-02T09:38:00.000Z" } },
+    attemptCapDecisionResets: {},
+    pendingCards: {},
+    lastSweepMs: 0,
+  };
+  let data = JSON.stringify(initial);
+  let writes = 0;
+  const stateFs = {
+    readFile: async () => data,
+    writeFile: async (_file, body) => { writes += 1; data = String(body); },
+  };
+  const { deps } = makeSweepDeps({ issues: [], comments: {}, stateFile: "memory-state-e5", extra: { _fs: stateFs, once: true } });
+  await runDirectiveSweepOnce(deps);
+  const saved = JSON.parse(data);
+  assert.equal(writes >= 1, true, "the loaded state must be written back");
+  assert.deepEqual(saved.executionFailures, initial.executionFailures);
+});
 
 await t("classifyDirective covers new, awaiting-approval, approved, rejected, done, stalled including KOL-69 shape", () => {
   assert.equal(classifyDirective(issue(), [], { now: NOW }).state, "new");

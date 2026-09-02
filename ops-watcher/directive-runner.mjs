@@ -27,6 +27,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   discoverPaperclipPort,
   httpGet,
@@ -110,6 +111,7 @@ export const DEFAULT_MAX_PLAN_ATTEMPTS = 2;
 // directive execution is one real lane dispatch (same cost shape as a repair
 // drill), so the cap stays at 1 to keep the sweep bounded and auditable.
 export const MAX_EXECUTIONS_PER_SWEEP = 1;
+export const MAX_EXECUTION_ATTEMPTS = 2;
 // Sweep throttle for the --once path: planning and executing each cost a real
 // lane call while the heartbeat fires every five minutes, so bound back-to-back
 // invocations to one sweep per SWEEP_MIN_INTERVAL_MS window.
@@ -464,6 +466,17 @@ export function parsePlan(text) {
   return { ok: true, objective, files, steps: stepLines.map((l) => l.slice(2).trim()), verify, outOfScope, risk };
 }
 
+export function planIdentityKey(plan) {
+  const identity = {
+    objective: String(plan?.objective || ""),
+    files: Array.isArray(plan?.files) ? plan.files.map((f) => String(f)) : [],
+    steps: Array.isArray(plan?.steps) ? plan.steps.map((st) => String(st)) : [],
+    verify: String(plan?.verify || ""),
+    outOfScope: String(plan?.outOfScope || ""),
+  };
+  return createHash("sha256").update(JSON.stringify(identity)).digest("hex").slice(0, 16);
+}
+
 export function validatePlanScope(plan) {
   const violations = [];
   for (const raw of Array.isArray(plan?.files) ? plan.files : []) {
@@ -522,13 +535,14 @@ async function loadState(file, _fs) {
       ? {
         attempts: st.attempts || {},
         lastPlanFailures: st.lastPlanFailures && typeof st.lastPlanFailures === "object" ? st.lastPlanFailures : {},
+        executionFailures: st.executionFailures && typeof st.executionFailures === "object" ? st.executionFailures : {},
         attemptCapDecisionResets: st.attemptCapDecisionResets && typeof st.attemptCapDecisionResets === "object" ? st.attemptCapDecisionResets : {},
         pendingCards: st.pendingCards && typeof st.pendingCards === "object" ? st.pendingCards : {},
         lastSweepMs: Number(st.lastSweepMs) || 0,
       }
-      : { attempts: {}, lastPlanFailures: {}, attemptCapDecisionResets: {}, pendingCards: {}, lastSweepMs: 0 };
+      : { attempts: {}, lastPlanFailures: {}, executionFailures: {}, attemptCapDecisionResets: {}, pendingCards: {}, lastSweepMs: 0 };
   } catch (err) {
-    const empty = { attempts: {}, lastPlanFailures: {}, attemptCapDecisionResets: {}, pendingCards: {}, lastSweepMs: 0 };
+    const empty = { attempts: {}, lastPlanFailures: {}, executionFailures: {}, attemptCapDecisionResets: {}, pendingCards: {}, lastSweepMs: 0 };
     const problem = readStateOutcome(err);
     if (problem) empty.readError = problem;
     return empty;
@@ -594,6 +608,27 @@ function recordPlanFailureAttempt(state, key, prior, failure) {
   state.lastPlanFailures = state.lastPlanFailures && typeof state.lastPlanFailures === "object" ? state.lastPlanFailures : {};
   state.lastPlanFailures[key] = { ...failure, attempt, at: iso() };
   return attempt;
+}
+export function recordExecutionFailure(state, issueKey, planKey, { reason, at } = {}) {
+  state.executionFailures = state.executionFailures && typeof state.executionFailures === "object" ? state.executionFailures : {};
+  const prior = state.executionFailures[issueKey];
+  const count = prior && prior.planKey === planKey && Number(prior.count) ? Number(prior.count) + 1 : 1;
+  state.executionFailures[issueKey] = {
+    planKey,
+    reason: reason || "unknown",
+    count,
+    at: at || iso(),
+  };
+  return state.executionFailures[issueKey];
+}
+
+export function clearExecutionFailures(state, issueKey) {
+  if (state.executionFailures && typeof state.executionFailures === "object") delete state.executionFailures[issueKey];
+}
+
+export function executionCapReached(state, issueKey, planKey, max = MAX_EXECUTION_ATTEMPTS) {
+  const record = state.executionFailures && typeof state.executionFailures === "object" ? state.executionFailures[issueKey] : null;
+  return !!record && record.planKey === planKey && Number(record.count) >= max;
 }
 function cap(s, n = OUTPUT_CAP) {
   s = String(s || "");
