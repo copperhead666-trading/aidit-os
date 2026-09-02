@@ -13,12 +13,18 @@
 //        resolves normally even on failure.
 //   (U4) Malformed existing content in the target file doesn't matter — the
 //        function only appends, never reads.
+//   (U7) logLaneUsage persists `timedOut` as a first-class boolean.
+//   (H1-H6) readLaneHealth turns the log into measured per-lane reliability.
+//
+// WHY readLaneHealth exists: 24% of recorded dispatches ran the full 8-minute
+// wrapper cap and then failed — 64% of all failures. Availability says a lane
+// answers; this says whether its answers are worth waiting for.
 
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { logLaneUsage } from "./lane-usage.mjs";
+import { logLaneUsage, readLaneHealth } from "./lane-usage.mjs";
 
 let passed = 0;
 let failed = 0;
@@ -164,6 +170,150 @@ async function testNullFieldsStored() {
   } catch (err) { bad(name, err); }
 }
 
+// =====================================================================
+// U7: timedOut is persisted as a first-class boolean. It used to be only
+// INFERRABLE by comparing durationMs against the wrapper cap, which silently
+// mislabels a timeout as an ordinary failure the moment a cap changes.
+// =====================================================================
+async function testTimedOutPersisted() {
+  const name = "U7 timedOut is persisted as a boolean, defaulting to false";
+  const file = await makeTempFile();
+  try {
+    await logLaneUsage({ lane: "hatta", promptLength: 1, ok: false, timedOut: true, exitCode: 1, durationMs: 480000, file });
+    await logLaneUsage({ lane: "hatta", promptLength: 1, ok: false, timedOut: false, exitCode: 1, durationMs: 3000, file });
+    await logLaneUsage({ lane: "hatta", promptLength: 1, ok: true, exitCode: 0, durationMs: 2000, file });
+    const lines = (await fs.readFile(file, "utf8")).split("\n").filter((l) => l.trim());
+    const recs = lines.map((l) => JSON.parse(l));
+    assert.equal(recs[0].timedOut, true);
+    assert.equal(recs[1].timedOut, false);
+    assert.equal(recs[2].timedOut, false, "omitting timedOut must record false, never undefined");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function writeRecords(file, records) {
+  await fs.writeFile(file, records.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+}
+
+// =====================================================================
+// H1: counts and both percentages are computed from the log.
+// =====================================================================
+async function testHealthCounts() {
+  const name = "H1 readLaneHealth computes n/ok/failed/timedOut and both rates";
+  const file = await makeTempFile();
+  try {
+    await writeRecords(file, [
+      { ts: "t", lane: "corleone", ok: true, timedOut: false, durationMs: 100 },
+      { ts: "t", lane: "corleone", ok: true, timedOut: false, durationMs: 100 },
+      { ts: "t", lane: "corleone", ok: false, timedOut: true, durationMs: 480000 },
+      { ts: "t", lane: "corleone", ok: false, timedOut: false, durationMs: 500 },
+      { ts: "t", lane: "hatta", ok: false, timedOut: true, durationMs: 480000 },
+    ]);
+    const h = await readLaneHealth({ file });
+    assert.equal(h.corleone.n, 4);
+    assert.equal(h.corleone.ok, 2);
+    assert.equal(h.corleone.failed, 2);
+    assert.equal(h.corleone.timedOut, 1);
+    assert.equal(h.corleone.successRate, 50);
+    assert.equal(h.corleone.timeoutRate, 25);
+    assert.equal(h.hatta.timeoutRate, 100);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// H2: records written before the timedOut field existed are still usable —
+// a run that burned the whole cap counts as a timeout, not a plain failure.
+// =====================================================================
+async function testHealthLegacyRecordsCountAsTimeout() {
+  const name = "H2 a legacy record with no timedOut field counts as a timeout at/over capMs";
+  const file = await makeTempFile();
+  try {
+    await writeRecords(file, [
+      { ts: "t", lane: "hatta", ok: false, durationMs: 480000 },
+      { ts: "t", lane: "hatta", ok: false, durationMs: 469999 },
+    ]);
+    const h = await readLaneHealth({ file });
+    assert.equal(h.hatta.timedOut, 1, "only the run at/over the cap is a timeout");
+    assert.equal(h.hatta.timeoutRate, 50);
+    const strict = await readLaneHealth({ file, capMs: 469000 });
+    assert.equal(strict.hatta.timedOut, 2, "capMs is honoured");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// H3: an explicit timedOut:false is trusted over the duration heuristic — a
+// long-but-completed run must not be counted as a timeout.
+// =====================================================================
+async function testHealthExplicitFlagWins() {
+  const name = "H3 explicit timedOut:false beats the duration fallback";
+  const file = await makeTempFile();
+  try {
+    await writeRecords(file, [{ ts: "t", lane: "corleone", ok: true, timedOut: false, durationMs: 999999 }]);
+    const h = await readLaneHealth({ file });
+    assert.equal(h.corleone.timedOut, 0);
+    assert.equal(h.corleone.timeoutRate, 0);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// H4: a lane is judged on recent behaviour, not its whole history.
+// =====================================================================
+async function testHealthLimit() {
+  const name = "H4 readLaneHealth honours limit (most recent N per lane)";
+  const file = await makeTempFile();
+  try {
+    const recs = [];
+    for (let i = 0; i < 10; i++) recs.push({ ts: "t", lane: "hatta", ok: false, timedOut: true, durationMs: 480000 });
+    for (let i = 0; i < 5; i++) recs.push({ ts: "t", lane: "hatta", ok: true, timedOut: false, durationMs: 100 });
+    await writeRecords(file, recs);
+    const h = await readLaneHealth({ file, limit: 5 });
+    assert.equal(h.hatta.n, 5);
+    assert.equal(h.hatta.successRate, 100, "only the 5 most recent records are considered");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// H5: a missing log is not an error. Routing must degrade to "unmeasured",
+// never crash the dispatch path that asks for health.
+// =====================================================================
+async function testHealthMissingFile() {
+  const name = "H5 readLaneHealth on a missing file returns {} and does not throw";
+  try {
+    const h = await readLaneHealth({ file: path.join(os.tmpdir(), `no-such-lane-usage-${Date.now()}.jsonl`) });
+    assert.deepEqual(h, {});
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// H6: one corrupt line must not blind the whole measurement.
+// =====================================================================
+async function testHealthSkipsCorruptLines() {
+  const name = "H6 readLaneHealth skips a corrupt line and still reports the good ones";
+  const file = await makeTempFile();
+  try {
+    await fs.writeFile(
+      file,
+      [
+        JSON.stringify({ ts: "t", lane: "corleone", ok: true, timedOut: false, durationMs: 10 }),
+        "{ this is not json",
+        JSON.stringify({ ts: "t", lane: "corleone", ok: false, timedOut: true, durationMs: 480000 }),
+        JSON.stringify({ ts: "t", ok: true, durationMs: 1 }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const h = await readLaneHealth({ file });
+    assert.equal(h.corleone.n, 2, "the corrupt line and the lane-less record are skipped");
+    assert.equal(h.corleone.successRate, 50);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+
 async function main() {
   console.log("# ops-watcher lane-usage regression tests");
   await testAppendsValidJsonLine();
@@ -172,6 +322,13 @@ async function main() {
   await testMalformedExistingContentIgnored();
   await testExtraMetadataIncluded();
   await testNullFieldsStored();
+  await testTimedOutPersisted();
+  await testHealthCounts();
+  await testHealthLegacyRecordsCountAsTimeout();
+  await testHealthExplicitFlagWins();
+  await testHealthLimit();
+  await testHealthMissingFile();
+  await testHealthSkipsCorruptLines();
   console.log("");
   console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
   if (failed > 0) { for (const f of failures) console.log(`  FAILED: ${f}`); process.exit(1); }

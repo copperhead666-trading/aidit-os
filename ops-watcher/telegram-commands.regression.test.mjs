@@ -1,5 +1,5 @@
 // ops-watcher/telegram-commands.regression.test.mjs
-// Offline regression tests for the OWNER's read-only slash commands.
+// Offline regression tests for the OWNER's slash commands.
 //
 //   node ops-watcher/telegram-commands.regression.test.mjs
 //
@@ -9,6 +9,7 @@
 // "REGRESSION RESULT: N passed, M failed", non-zero exit on failure).
 
 import assert from "node:assert/strict";
+import fsSync from "node:fs";
 import {
   COMMANDS,
   isValidBotCommand,
@@ -20,6 +21,7 @@ import {
   parseCommand,
 } from "./telegram-commands.mjs";
 import { setMyCommands } from "./telegram-client.mjs";
+import { PAUSE_FILE } from "./pause-gate.mjs";
 
 let passed = 0, failed = 0;
 const failures = [];
@@ -57,17 +59,17 @@ function depsWith() {
 }
 
 async function testCommandsValid() {
-  const name = "(1) every COMMANDS entry satisfies the documented rules (<=32, lowercase Latin/digits/underscore)";
+  const name = "(1, 17) every COMMANDS entry satisfies the documented rules (<=32, lowercase Latin/digits/underscore)";
   try {
     assert.equal(Array.isArray(COMMANDS), true, "COMMANDS is an array");
-    assert.equal(COMMANDS.length, 4, "exactly four commands");
+    assert.equal(COMMANDS.length, 6, "exactly six commands");
     for (const entry of COMMANDS) {
       assert.equal(isValidBotCommand(entry), true, `invalid command entry: ${JSON.stringify(entry)}`);
       assert.ok(entry.command.length <= 32, `command too long: ${entry.command}`);
       assert.ok(/^[a-z0-9_]{1,32}$/.test(entry.command), `command chars invalid: ${entry.command}`);
     }
-    // the four documented names, in this order
-    assert.deepEqual(COMMANDS.map((c) => c.command), ["status", "inbox", "cockpit", "help"]);
+    // the documented names, in this order
+    assert.deepEqual(COMMANDS.map((c) => c.command), ["status", "inbox", "cockpit", "help", "pause", "resume"]);
     // descriptions are non-empty Indonesian strings
     for (const c of COMMANDS) assert.ok(c.description.trim().length > 0, `empty description for ${c.command}`);
     ok(name);
@@ -258,13 +260,118 @@ async function testCockpitAndHelpReplies() {
   } catch (e) { bad(name, e); }
 }
 
-async function testNoStateChangingCommands() {
-  const name = "(10) no /pause, /stop, or any state-changing command is implemented";
+async function testStopStillNotImplemented() {
+  const name = "(10) /stop, /kill and /restart remain unhandled; /pause and /resume are handled";
   try {
-    for (const danger of ["/pause", "/stop", "/resume", "/kill", "/restart"]) {
+    for (const danger of ["/stop", "/kill", "/restart"]) {
       const r = await handleCommand(danger, depsWith());
-      assert.equal(r.handled, false, `${danger} must NOT be handled (no state changes)`);
+      assert.equal(r.handled, false, `${danger} must keep falling through to fallback`);
     }
+    const pause = await handleCommand("/pause", {
+      ...depsWith(),
+      readPause: () => ({ paused: false }),
+      setPaused: () => ({ ok: true, wrote: true, state: { paused: true, reason: "r", atIso: "2026-09-02T00:00:00.000Z", by: "owner" } }),
+    });
+    assert.equal(pause.handled, true, "/pause is now handled");
+    const resume = await handleCommand("/resume", {
+      ...depsWith(),
+      clearPause: () => ({ ok: true, cleared: false }),
+    });
+    assert.equal(resume.handled, true, "/resume is now handled");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testPauseWhenNotPausedWritesOnce() {
+  const name = "(11) /pause when not paused writes the pause flag once and reports DIJEDA";
+  try {
+    const calls = [];
+    const r = await handleCommand("/pause", {
+      ...depsWith(),
+      readPause: () => ({ paused: false }),
+      setPaused: (payload) => {
+        calls.push(payload);
+        return { ok: true, wrote: true, state: { paused: true, reason: "r", atIso: "2026-09-02T00:00:00.000Z", by: "owner" } };
+      },
+    });
+    assert.equal(r.handled, true);
+    assert.equal(calls.length, 1, "setPaused called exactly once");
+    assert.ok(/DIJEDA/.test(r.reply), "reply reports paused state");
+    assert.ok(/\/resume/.test(r.reply), "reply mentions /resume");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testPauseWhenAlreadyPausedDoesNotWrite() {
+  const name = "(12) /pause when already paused does not write and says it is already paused";
+  try {
+    let calls = 0;
+    const r = await handleCommand("/pause", {
+      ...depsWith(),
+      readPause: () => ({ paused: true, reason: "r", atIso: "2026-09-02T00:00:00.000Z", by: "owner" }),
+      setPaused: () => { calls++; return { ok: true }; },
+    });
+    assert.equal(r.handled, true);
+    assert.equal(calls, 0, "setPaused must not be called when already paused");
+    assert.ok(/sudah dijeda/.test(r.reply), "reply says it is already paused");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testPauseWriteFailureDoesNotClaimSuccess() {
+  const name = "(13) /pause write failure says GAGAL and FounderOS is still running";
+  try {
+    const r = await handleCommand("/pause", {
+      ...depsWith(),
+      readPause: () => ({ paused: false }),
+      setPaused: () => ({ ok: false, error: "disk penuh" }),
+    });
+    assert.equal(r.handled, true);
+    assert.ok(/GAGAL/.test(r.reply), "reply reports failure");
+    assert.ok(/MASIH BERJALAN/.test(r.reply), "reply says FounderOS is still running");
+    assert.ok(!/\*FounderOS DIJEDA\*/.test(r.reply), "reply must not claim success");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testResumeWhenNothingPaused() {
+  const name = "(14) /resume when nothing is paused says nothing changed";
+  try {
+    const r = await handleCommand("/resume", {
+      ...depsWith(),
+      clearPause: () => ({ ok: true, cleared: false }),
+    });
+    assert.equal(r.handled, true);
+    assert.ok(/tidak sedang dijeda/.test(r.reply), "reply says it was not paused");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testResumeClearFailureDoesNotClaimSuccess() {
+  const name = "(15) /resume clear failure says FounderOS is still paused";
+  try {
+    const r = await handleCommand("/resume", {
+      ...depsWith(),
+      clearPause: () => ({ ok: false, error: "x" }),
+    });
+    assert.equal(r.handled, true);
+    assert.ok(/MASIH DIJEDA/.test(r.reply), "reply says FounderOS is still paused");
+    assert.ok(!/DILANJUTKAN/.test(r.reply), "reply must not claim success");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testResumeDefaultPathRealImportWhenFlagAbsent() {
+  const name = "(16) /resume default path uses real imported pause-gate function when PAUSE_FILE is absent";
+  try {
+    if (fsSync.existsSync(PAUSE_FILE)) {
+      console.log(`SKIP: ${name} (real pause flag exists at ${PAUSE_FILE})`);
+      ok(name);
+      return;
+    }
+    const r = await handleCommand("/resume");
+    assert.equal(r.handled, true);
+    assert.equal(typeof r.reply, "string");
     ok(name);
   } catch (e) { bad(name, e); }
 }
@@ -280,7 +387,13 @@ async function main() {
   await testSetMyCommandsWrapperShape();
   await testInboxRendersStuckItems();
   await testCockpitAndHelpReplies();
-  await testNoStateChangingCommands();
+  await testStopStillNotImplemented();
+  await testPauseWhenNotPausedWritesOnce();
+  await testPauseWhenAlreadyPausedDoesNotWrite();
+  await testPauseWriteFailureDoesNotClaimSuccess();
+  await testResumeWhenNothingPaused();
+  await testResumeClearFailureDoesNotClaimSuccess();
+  await testResumeDefaultPathRealImportWhenFlagAbsent();
   console.log("");
   console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
   if (failed > 0) { for (const f of failures) console.log(`  FAILED: ${f}`); process.exit(1); }

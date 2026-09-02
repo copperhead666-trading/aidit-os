@@ -61,7 +61,17 @@ function stuckIssue(overrides = {}) {
   });
 }
 
-function coldPacketFor(it) {
+// Mirrors ahmad-dispatch.mjs#laneHealthSuffix. The packet's lane menu now
+// carries MEASURED reliability instead of a hand-written claim, because the old
+// hard-coded "Good default for ordinary implementation work" was advertising
+// HATTA while HATTA was timing out on ~44% of its runs.
+function laneHealthSuffix(health, laneName) {
+  const h = health && health[laneName];
+  if (!h || !Number.isFinite(h.n)) return " (keandalan terukur: belum ada data)";
+  return ` (keandalan terukur: ${h.successRate}% sukses, ${h.timeoutRate}% timeout, n=${h.n})`;
+}
+
+function coldPacketFor(it, health = null) {
   const ident = it.identifier || it.id;
   return [
     `You are AHMAD, the primary owner-facing orchestrator for Active FounderOS-Aidit, running headless (spawned by ops-watcher/ahmad-dispatch.mjs from an OWNER Telegram directive).`,
@@ -74,12 +84,12 @@ function coldPacketFor(it) {
     ``,
     `Your tools are scoped to a single run_command MCP tool (Bash/Write/Edit are disallowed for this session) — see its description for exactly what it accepts. You cannot edit files directly; when implementation is needed, delegate it via run_command to one of the implementation lanes below, then independently re-verify the result from canonical sources (re-read the file/output) rather than trusting its own stdout claim, per this org's orchestration/recovery skills.`,
     ``,
-    `Implementation lanes available to you via run_command (pick the one that fits the task; you may run 'node ops-watcher/routing.mjs --probe-all' via run_command BEFORE picking a lane to see live availability, and you should prefer a lane reported available over one reported unavailable/in cooldown):`,
+    `Implementation lanes available to you via run_command (pick the one that fits the task; you may run 'node ops-watcher/routing.mjs --probe-all' via run_command BEFORE picking a lane to see live availability AND measured reliability. Availability only means a lane answers. Prefer a lane that is both available and reliable, and do not send a large or multi-file task to a lane with a high measured timeout rate.)`,
     `COST NOTE: HATTA, HATTA-FLASH, SJAHRIR, and CORLEONE are ALL paid flat-rate subscriptions the OWNER already pays for regardless of usage (Ollama Cloud Pro, Kimi Code, and ChatGPT Plus respectively — none of them are free). There is no per-call cost difference between them, so never pick one because it seems "cheaper" — none is. Pick based on which lane genuinely fits the task. The OWNER has specifically said CORLEONE has been sitting underused relative to what is being paid for and wants it used MORE — treat CORLEONE as a first-class choice for a fair share of tasks, not only as a fallback when HATTA/SJAHRIR are unavailable.`,
-    `  - HATTA: 'node ops-watcher/hatta-dispatch.mjs "<prompt>"' — a strong general-purpose implementation lane (Ollama Cloud Pro). Good default for ordinary implementation work.`,
-    `  - HATTA-FLASH: 'node ops-watcher/hatta-flash-dispatch.mjs "<prompt>"' — the same paid lane, using a smaller/faster model (glm-5.3-flash:cloud). Prefer this over plain HATTA for trivial, low-risk, low-context tasks (a one-line text edit, a quick lookup/summary, a short throwaway script) where speed matters more than depth — not because it is cheaper (it is the same subscription), simply faster for light work.`,
-    `  - SJAHRIR: 'node ops-watcher/sjahrir-dispatch.mjs "<prompt>"' — prefer when the task needs heavy context, deep research, or synthesis. This project's own routing.mjs (resolveSjahrirModel) documents the split: synthesis/research -> use the K3-256K model; bounded coding -> K2.7 Code; escalation -> full K3. Pick SJAHRIR when the work is context-heavy rather than for ordinary implementation.`,
-    `  - CORLEONE: 'node ops-watcher/corleone-dispatch.mjs "<prompt>"' — a strong implementation lane via the Codex CLI (ChatGPT Plus). The OWNER wants this lane used more, not just as a fallback — actively consider it for a reasonable share of ordinary implementation tasks, the same way you would consider HATTA, rather than reaching for it only when other lanes are in cooldown.`,
+    `  - HATTA: 'node ops-watcher/hatta-dispatch.mjs "<prompt>"' — a general-purpose implementation lane (Ollama Cloud Pro).${laneHealthSuffix(health, "hatta")}`,
+    `  - HATTA-FLASH: 'node ops-watcher/hatta-flash-dispatch.mjs "<prompt>"' — the same paid lane, using a smaller/faster model (glm-5.3-flash:cloud). Prefer this over plain HATTA for trivial, low-risk, low-context tasks (a one-line text edit, a quick lookup/summary, a short throwaway script) where speed matters more than depth — not because it is cheaper (it is the same subscription), simply faster for light work.${laneHealthSuffix(health, "hatta-flash")}`,
+    `  - SJAHRIR: 'node ops-watcher/sjahrir-dispatch.mjs "<prompt>"' — prefer when the task needs heavy context, deep research, or synthesis. This project's own routing.mjs (resolveSjahrirModel) documents the split: synthesis/research -> use the K3-256K model; bounded coding -> K2.7 Code; escalation -> full K3. Pick SJAHRIR when the work is context-heavy rather than for ordinary implementation.${laneHealthSuffix(health, "sjahrir")}`,
+    `  - CORLEONE: 'node ops-watcher/corleone-dispatch.mjs "<prompt>"' — a strong implementation lane via the Codex CLI (ChatGPT Plus). The OWNER wants this lane used more, not just as a fallback — actively consider it for a reasonable share of ordinary implementation tasks, the same way you would consider HATTA, rather than reaching for it only when other lanes are in cooldown.${laneHealthSuffix(health, "corleone")}`,
     `  - GRAPHIFY-ANALYST: 'node ops-watcher/graphify-analyst.mjs "<structural question>"' — NOT an implementation lane; use this when you need to answer a structural/multi-hop question about how code relates across files (e.g. "what calls X", "what depends on Y") using the existing code graph, before deciding how to implement something. It discloses if the graph is stale rather than answering silently on outdated structure.`,
     ``,
     `LANGUAGE: the OWNER is an Indonesian speaker. Every message you send the OWNER — the Paperclip comment in step 1 below AND the ahmad-notify.mjs message in step 2 — MUST be written in professional Bahasa Indonesia, not English. Keep code, file paths, commands, and technical identifiers verbatim (untranslated); translate only the surrounding prose.`,
@@ -375,6 +385,7 @@ async function t8_contextBundleWithEvidenceIsInjectedCompactly() {
   const it = issue();
   const calls = [];
   const packet = await buildTaskPacket(it, {
+    laneHealth: null, // hermetic: assert the unmeasured rendering, never the real log
     env: { GBRAIN_HOME: "X:\\brain" },
     now: () => 12345,
     retrieveContext: async (query, deps) => {
@@ -420,6 +431,7 @@ async function t9_retrieveThrowsColdPacketAndDispatchStillSucceeds() {
     },
     httpPost: async () => ({ networkError: false, status: 201, body: { id: "cmt-throw" } }),
     httpPatch: async () => ({ networkError: false, status: 200, body: {} }),
+    laneHealth: null, // hermetic: assert the unmeasured rendering, never the real log
     retrieveContext: async () => { throw new Error("simulated retrieval failure"); },
     spawnAhmad: (packet) => { spawned = packet; return { pid: 5150 }; },
     log: () => {},
@@ -433,6 +445,7 @@ async function t9_retrieveThrowsColdPacketAndDispatchStillSucceeds() {
 async function t10_emptyContextBundleKeepsColdPacketByteForByte() {
   const it = issue();
   const packet = await buildTaskPacket(it, {
+    laneHealth: null, // hermetic: assert the unmeasured rendering, never the real log
     retrieveContext: async () => ({
       status: "empty",
       evidence: [{ title: "Ignored", canonical_pointer: "ignored" }],
@@ -448,6 +461,7 @@ async function t10_emptyContextBundleKeepsColdPacketByteForByte() {
 
 async function t11_conflictedBundleInstructsAhmadToFlagConflict() {
   const packet = await buildTaskPacket(issue(), {
+    laneHealth: null, // hermetic: assert the unmeasured rendering, never the real log
     retrieveContext: async () => ({
       status: "conflicted",
       evidence: [{ title: "Agent Registry", canonical_pointer: "config/agent-registry.json:/p0" }],
@@ -483,6 +497,7 @@ async function t12_slowRetrieveContextIsBoundedAndSweepStillDispatches() {
     httpPost: async () => ({ networkError: false, status: 201, body: { id: "cmt-slow" } }),
     httpPatch: async () => ({ networkError: false, status: 200, body: {} }),
     retrieveContext: async () => new Promise(() => {}),
+    laneHealth: null, // hermetic: assert the unmeasured rendering, never the real log
     spawnAhmad: (packet) => { spawned = packet; return { pid: 6161 }; },
     log: () => {},
   }));
@@ -616,6 +631,63 @@ async function t17_missingExecutionLockedAtNotDispatched() {
   ok("T17: in_progress but executionLockedAt missing/null -> NOT dispatched (can't tell if actually stale)");
 }
 
+// =====================================================================
+// T18: the lane menu carries MEASURED reliability, not a hand-written claim.
+// The old menu told headless AHMAD that HATTA was "a strong general-purpose
+// implementation lane ... Good default for ordinary implementation work" while
+// HATTA was in fact timing out on ~44% of its runs (24% of ALL dispatches
+// burned the full 8-minute cap and then failed — 64% of every failure). The
+// numbers must come from the log so the sentence cannot go stale again.
+// =====================================================================
+async function t18_laneMenuCarriesMeasuredReliability() {
+  const health = {
+    hatta: { n: 50, ok: 24, failed: 26, timedOut: 22, successRate: 48, timeoutRate: 44 },
+    corleone: { n: 50, ok: 33, failed: 17, timedOut: 8, successRate: 66, timeoutRate: 16 },
+  };
+  const packet = await buildTaskPacket(issue(), {
+    laneHealth: health,
+    retrieveContext: async () => null,
+    now: () => NOW,
+  });
+
+  assert.ok(
+    packet.includes("(keandalan terukur: 48% sukses, 44% timeout, n=50)"),
+    "T18: the HATTA line carries its measured numbers",
+  );
+  assert.ok(
+    packet.includes("(keandalan terukur: 66% sukses, 16% timeout, n=50)"),
+    "T18: the CORLEONE line carries its measured numbers",
+  );
+  assert.ok(
+    packet.includes("(keandalan terukur: belum ada data)"),
+    "T18: an unmeasured lane says so rather than inventing a number",
+  );
+  assert.ok(
+    !packet.includes("Good default for ordinary implementation work"),
+    "T18: the stale hand-written claim about HATTA is gone",
+  );
+  assert.ok(
+    packet.includes("Availability only means a lane answers."),
+    "T18: the guidance tells AHMAD to weigh reliability, not just availability",
+  );
+  for (const lane of ["HATTA:", "HATTA-FLASH:", "SJAHRIR:", "CORLEONE:", "GRAPHIFY-ANALYST:"]) {
+    assert.ok(packet.includes(lane), `T18: ${lane} still listed`);
+  }
+
+  const unmeasured = await buildTaskPacket(issue(), {
+    laneHealth: null,
+    retrieveContext: async () => null,
+    now: () => NOW,
+  });
+  assert.equal(
+    (unmeasured.match(/keandalan terukur: belum ada data/g) || []).length,
+    4,
+    "T18: with no measurement every one of the four dispatch lanes says 'belum ada data'",
+  );
+  ok("T18: lane menu carries measured reliability and never a stale hand-written default");
+}
+
+
 async function main() {
   const tests = [
     t1_dispatchesUnmarkedAssignedDirective, t2_skipsAlreadyDispatched,
@@ -633,6 +705,7 @@ async function main() {
     t15_ownerRequiredBlocksStuckRecovery,
     t16_stuckRecoveryMarkerAlreadyPresentSkips,
     t17_missingExecutionLockedAtNotDispatched,
+    t18_laneMenuCarriesMeasuredReliability,
   ];
   for (const t of tests) await t();
   await fs.unlink(TMP_LOCK).catch(() => {});

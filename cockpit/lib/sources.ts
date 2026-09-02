@@ -32,6 +32,14 @@ export interface ExternalAgentEntry {
   [key: string]: unknown;
 }
 
+export interface PauseState {
+  paused: boolean;
+  reason: string | null;
+  atIso: string | null;
+  by: string | null;
+  unreadable: boolean;
+}
+
 function getRepoRoot(): string {
   const currentFile = fileURLToPath(import.meta.url);
   return path.resolve(path.dirname(currentFile), '..', '..');
@@ -332,5 +340,45 @@ export async function readGbrain(): Promise<GbrainSource[] | null> {
     return results;
   } catch {
     return null;
+  }
+}
+
+// The emergency-stop flag, written by ops-watcher/pause-gate.mjs.
+// Deliberately NOT nullable like the other readers here: every other source may
+// come back null and render as "unavailable", but a pause that fails to render
+// looks exactly like a healthy system. So this one fails CLOSED — if the flag
+// cannot be read or parsed we report paused with unreadable:true, matching
+// pause-gate.mjs's own contract.
+export async function readPauseState(): Promise<PauseState> {
+  const notPaused: PauseState = {
+    paused: false, reason: null, atIso: null, by: null, unreadable: false,
+  };
+  try {
+    const pausePath = path.join(getRepoRoot(), 'ops-watcher', 'PAUSED');
+    let raw: string;
+    try {
+      raw = await fs.readFile(pausePath, 'utf8');
+    } catch (err) {
+      // Absent file is the normal, running state — not a failure.
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return notPaused;
+      return { paused: true, reason: 'Status pause tidak bisa dibaca.', atIso: null, by: null, unreadable: true };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return { paused: true, reason: 'Berkas pause ada tapi tidak bisa dibaca.', atIso: null, by: null, unreadable: true };
+    }
+    const rec = isRecord(parsed) ? parsed : {};
+    const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
+    return {
+      paused: true,
+      reason: str(rec.reason) ?? 'Tanpa alasan tertulis.',
+      atIso: str(rec.atIso),
+      by: str(rec.by),
+      unreadable: false,
+    };
+  } catch {
+    return { paused: true, reason: 'Status pause tidak bisa dibaca.', atIso: null, by: null, unreadable: true };
   }
 }

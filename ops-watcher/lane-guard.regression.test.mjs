@@ -347,6 +347,33 @@ async function testRecordOutcomeTimedOutSuccessStillClears() {
   } catch (err) { bad(name, err); }
 }
 
+// =====================================================================
+// G15: the quota path must hand recordQuotaExhausted the FULL text. It used to
+// pass first200(text), and the provider states its reset time at the END of the
+// transcript, so the hint was thrown away and the lane was parked for the flat
+// 6h quota cooldown instead of the ~45 minutes it needed. Verified live on
+// 2026-09-02 against the CORLEONE lane.
+// =====================================================================
+async function testQuotaPathReceivesFullText() {
+  const name = "G15 quota classification passes the full text so the retry hint survives";
+  try {
+    const captured = [];
+    const stdout = "transcript line\n".repeat(400)
+      + "ERROR: You've hit your usage limit. Upgrade to Pro or try again at 9:03 AM.";
+    const res = await recordLaneOutcome("corleone", { ok: false, stdout, stderr: "" }, {
+      recordQuotaExhausted: async (lane, reason) => { captured.push({ lane, reason }); },
+      recordFailure: async () => { throw new Error("must not be classified as an ordinary failure"); },
+      clearFailure: async () => { throw new Error("must not clear the lane"); },
+    });
+    assert.equal(res.kind, "quota");
+    assert.equal(captured.length, 1);
+    assert.ok(captured[0].reason.length > 200, "the reason must not be pre-truncated to 200 chars");
+    assert.ok(/try again at 9:03 AM/i.test(captured[0].reason), "the retry hint must reach recordQuotaExhausted");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+
 async function main() {
   console.log("# ops-watcher lane-guard regression tests");
   await testLaneKeysMapping();
@@ -363,6 +390,7 @@ async function main() {
   await testRecordOutcomeTimedOutFalseStillClassifiesQuota();
   await testRecordOutcomeTimedOutAbsentStillClassifiesQuota();
   await testRecordOutcomeTimedOutSuccessStillClears();
+  await testQuotaPathReceivesFullText();
   console.log("");
   console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
   if (failed > 0) { for (const f of failures) console.log(`  FAILED: ${f}`); process.exit(1); }

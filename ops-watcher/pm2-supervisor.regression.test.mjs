@@ -6,6 +6,7 @@
 //   node ops-watcher/pm2-supervisor.regression.test.mjs
 
 import assert from "node:assert/strict";
+import fsSync from "node:fs";
 import path from "node:path";
 import {
   EXPECTED_PROCESSES,
@@ -16,6 +17,7 @@ import {
   runSupervisorOnce,
   resolvePm2Entry,
 } from "./pm2-supervisor.mjs";
+import { PAUSE_FILE } from "./pause-gate.mjs";
 
 let passed = 0;
 let failed = 0;
@@ -28,6 +30,9 @@ function bad(name, err) {
 }
 
 const NOW = 2_000_000_000;
+function notPaused() {
+  return { paused: false, reason: "", atIso: null, by: null };
+}
 
 // ---- fixtures ----
 // Raw jlist shape (as pm2 actually emits): name/pid at top level, status in pm2_env.
@@ -133,6 +138,7 @@ function makeDeps(overrides = {}) {
     log: () => {},
     now: overrides.now || (() => NOW),
     sleep: overrides.sleep || (async () => {}),
+    checkPause: Object.prototype.hasOwnProperty.call(overrides, "checkPause") ? overrides.checkPause : notPaused,
   };
   return { deps, evidenceLines, alertCalls, getState: () => state };
 }
@@ -428,6 +434,67 @@ async function testSupervisorUnknownNoResurrect() {
 }
 
 // =====================================================================
+// P13a: paused supervisor -> no resurrect, no alert
+// =====================================================================
+async function testSupervisorPausedNoResurrectNoAlert() {
+  const name = "P13a paused runSupervisorOnce -> no resurrect, no alert";
+  try {
+    const { runCommand, calls } = seqRunCommand([jlistResult(MISSING_JLIST)]);
+    const { deps, alertCalls } = makeDeps({
+      runCommand,
+      checkPause: () => ({ paused: true, reason: "owner", atIso: "2026-09-02T00:00:00.000Z", by: "owner" }),
+    });
+    const r = await runSupervisorOnce(deps);
+    assert.equal(r.outcome, "paused");
+    assert.equal(alertCalls.length, 0);
+    assert.equal(calls.filter((c) => (c.args || []).includes("resurrect")).length, 0);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// P13b: paused supervisor -> exactly one paused evidence line
+// =====================================================================
+async function testSupervisorPausedEvidenceLine() {
+  const name = "P13b paused runSupervisorOnce -> exactly one evidence line with outcome paused";
+  try {
+    const { runCommand } = seqRunCommand([jlistResult(MISSING_JLIST)]);
+    const { deps, evidenceLines } = makeDeps({
+      runCommand,
+      checkPause: () => ({ paused: true, reason: "owner", atIso: "2026-09-02T00:00:00.000Z", by: "owner" }),
+    });
+    const r = await runSupervisorOnce(deps);
+    assert.equal(r.outcome, "paused");
+    assert.equal(evidenceLines.length, 1);
+    const ev = JSON.parse(evidenceLines[0]);
+    assert.equal(ev.outcome, "paused");
+    assert.equal(ev.severity, "paused");
+    assert.equal(ev.reason, "owner");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// P13c: default checkPause path is real and not injected
+// =====================================================================
+async function testSupervisorDefaultPausePathNotInjected() {
+  const name = "P13c default checkPause import path runs when PAUSE_FILE is absent";
+  try {
+    assert.equal(fsSync.existsSync(PAUSE_FILE), false, `real pause flag exists at ${PAUSE_FILE}; test will not delete an owner PAUSED file`);
+    const { runCommand, calls } = seqRunCommand([jlistResult(HEALTHY_JLIST)]);
+    const { deps, evidenceLines, alertCalls } = makeDeps({ runCommand });
+    delete deps.checkPause;
+    const r = await runSupervisorOnce(deps);
+    assert.notEqual(r.outcome, "paused");
+    assert.equal(r.outcome, "healthy");
+    assert.equal(alertCalls.length, 0);
+    assert.equal(evidenceLines.length, 1);
+    assert.equal(calls.filter((c) => c.args[1] === "jlist").length, 1);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
 // P14: resurrect issues exactly `pm2 resurrect` then `pm2 save`, in that order
 // =====================================================================
 async function testResurrectOnlyResurrectThenSave() {
@@ -534,6 +601,9 @@ async function main() {
     testSupervisorCriticalUnrecovered,
     testSupervisorCriticalInsideCooldown,
     testSupervisorUnknownNoResurrect,
+    testSupervisorPausedNoResurrectNoAlert,
+    testSupervisorPausedEvidenceLine,
+    testSupervisorDefaultPausePathNotInjected,
     testResurrectOnlyResurrectThenSave,
     testExpectedIncludesCockpit,
     testDiagnoseCockpitMissing,

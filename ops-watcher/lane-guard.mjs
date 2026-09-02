@@ -97,7 +97,12 @@ export async function recordLaneOutcome(laneName, result = {}, deps = {}) {
     const timedOut = result && result.timedOut === true;
     if (!timedOut && isQuotaFailureText(textForClassification)) {
       const recordQuotaExhausted = deps.recordQuotaExhausted || defaultRecordQuotaExhausted;
-      await recordQuotaExhausted(laneKey, first200(text), deps);
+      // Pass the FULL text, not first200(). The provider states its reset time
+      // at the end of the transcript ("...or try again at 9:03 AM."), and
+      // recordQuotaExhausted parses that to size the cooldown before it stores a
+      // bounded excerpt. Truncating here threw the hint away and parked the lane
+      // for the flat 6h quota cooldown instead of the ~45 minutes it needed.
+      await recordQuotaExhausted(laneKey, text, deps);
       return { recorded: true, kind: "quota", laneKey };
     }
 

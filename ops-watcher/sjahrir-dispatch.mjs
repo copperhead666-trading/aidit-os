@@ -63,7 +63,7 @@ async function main() {
     // spawnSync sets status=null + signal="SIGTERM" on timeout kill.
     process.stderr.write(`sjahrir-dispatch: kimi timed out after ${TIMEOUT_MS}ms\n`);
     await recordLaneOutcome("sjahrir", { ok: false, stdout: r.stdout, stderr: r.stderr, timedOut: true });
-    await logLaneUsage({ lane: "sjahrir", promptLength: prompt.length, ok: false, exitCode: 1, durationMs });
+    await logLaneUsage({ lane: "sjahrir", promptLength: prompt.length, ok: false, timedOut: true, exitCode: 1, durationMs });
     process.exit(1);
   }
   if (r.error) {

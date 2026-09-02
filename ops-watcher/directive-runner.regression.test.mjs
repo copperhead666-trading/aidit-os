@@ -113,6 +113,13 @@ function makeSweepDeps({ issues, comments, plan = goodPlan, stateFile = TMP_STAT
   return { deps, posts, cards, messages, patches, labels, spies, getExecuteCalls: () => executeCalls };
 }
 async function resetTmp() { await fs.unlink(TMP_STATE).catch(() => {}); }
+function memoryStateFs(initial) {
+  let data = JSON.stringify(initial);
+  return {
+    readFile: async () => data,
+    writeFile: async (_file, body) => { data = String(body); },
+  };
+}
 
 async function t(name, fn) {
   try { await fn(); ok(name); } catch (e) { bad(name, e); }
@@ -154,6 +161,45 @@ await t("buildPlanPrompt teaches the two allowed VERIFY command shapes", () => {
   assert.match(p, /node ops-watcher\/verify-file\.mjs --path <file> --matches <regex>/);
 });
 
+await t("buildPlanPrompt omits previous failure feedback when no lastFailure is provided", () => {
+  const p = buildPlanPrompt(issue(), { status: "ok" });
+  assert.doesNotMatch(p, /PREVIOUS ATTEMPT WAS REJECTED/);
+  assert.doesNotMatch(p, /verify-out-of-scope/);
+  assert.doesNotMatch(p, /VERIFY must not contain command chaining characters/);
+});
+
+await t("buildPlanPrompt includes previous plan failure feedback", () => {
+  const p = buildPlanPrompt(issue(), { status: "ok" }, {
+    reason: "verify-out-of-scope",
+    detail: "VERIFY must not contain command chaining characters",
+    attempt: 1,
+  });
+  assert.match(p, /PREVIOUS ATTEMPT WAS REJECTED/);
+  assert.match(p, /Reason code: verify-out-of-scope/);
+  assert.match(p, /Detail: VERIFY must not contain command chaining characters/);
+  assert.match(p, /Attempt: 1/);
+  assert.match(p, /Do not resubmit the same VERIFY line\./);
+});
+
+await t("buildPlanPrompt previous failure with only reason renders no nullish text", () => {
+  const p = buildPlanPrompt(issue(), { status: "ok" }, { reason: "parse-failed" });
+  assert.match(p, /Reason code: parse-failed/);
+  assert.doesNotMatch(p, /undefined/);
+  assert.doesNotMatch(p, /null/);
+});
+
+await t("buildPlanPrompt states VERIFY chaining and regex alternation bans", () => {
+  const p = buildPlanPrompt(issue(), { status: "ok" });
+  assert.match(p, /; & or \|/);
+  assert.match(p, /--matches regex too: write a regex without \| alternation/);
+});
+
+await t("buildPlanPrompt VERIFY template says single command, not command(s)", () => {
+  const p = buildPlanPrompt(issue(), { status: "ok" });
+  assert.match(p, /VERIFY: <the single command that proves it worked>/);
+  assert.doesNotMatch(p, /command\(s\)/);
+});
+
 await t("parsePlan parses well-formed plan and rejects missing VERIFY", () => {
   const parsed = parsePlan(goodPlan);
   assert.equal(parsed.ok, true);
@@ -175,6 +221,13 @@ await t("validateVerifyCommand accepts node ops-watcher verifier shapes", () => 
   assert.equal(validateVerifyCommand("node ops-watcher/verify-file.mjs --path a/b.txt --matches ^OK$").ok, true);
 });
 
+await t("validateVerifyCommand keeps chaining rejection and plain node verifier acceptance", () => {
+  const chained = validateVerifyCommand("node ops-watcher/x.mjs && echo hi");
+  assert.equal(chained.ok, false);
+  assert.equal(chained.reason, "VERIFY must not contain command chaining characters");
+  assert.equal(validateVerifyCommand("node ops-watcher/run-all-tests.mjs --only y").ok, true);
+});
+
 await t("validateVerifyCommand rejects non-contract and chained VERIFY commands", () => {
   assert.equal(validateVerifyCommand("$c = Get-Content ops-watcher/canary-step.mjs; if ($c -match 'canaryAdd') { exit 0 } else { exit 1 }").ok, false);
   assert.equal(validateVerifyCommand("bash -c ls").ok, false);
@@ -194,6 +247,41 @@ await t("sweep with one new directive posts exactly one plan comment and no exec
   assert.equal(posts.length, 1);
   assert.match(posts[0].body.body, /^DIRECTIVE PLAN \(/);
   assert.equal(spies.execute + spies.telegram + spies.git + spies.pm2, 0);
+});
+
+await t("sweep passes recorded lastPlanFailure into the planner prompt", async () => {
+  const state = {
+    attempts: { i1: 1 },
+    lastPlanFailures: {
+      i1: {
+        reason: "verify-out-of-scope",
+        detail: "VERIFY must not contain command chaining characters",
+        attempt: 1,
+      },
+    },
+    lastSweepMs: 0,
+  };
+  const issues = [issue({ id: "i1", identifier: "KOL-68" })];
+  const comments = { i1: [] };
+  let capturedPrompt = "";
+  const { deps } = makeSweepDeps({
+    issues,
+    comments,
+    stateFile: "memory-state-prompt-feedback",
+    extra: {
+      maxPlanAttempts: 2,
+      _fs: memoryStateFs(state),
+      dispatchPlan: async (prompt) => {
+        capturedPrompt = prompt;
+        return { ok: true, stdout: goodPlan, stderr: "", timedOut: false };
+      },
+    },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.planned, 1);
+  assert.match(capturedPrompt, /PREVIOUS ATTEMPT WAS REJECTED/);
+  assert.match(capturedPrompt, /Reason code: verify-out-of-scope/);
+  assert.match(capturedPrompt, /Do not resubmit the same VERIFY line\./);
 });
 
 await t("scope-violating plan posts refusal comment and no plan comment", async () => {
@@ -303,6 +391,137 @@ await t("plan attempt cap escalation is idempotent on the next sweep", async () 
   assert.equal(second.posts.length, 0);
   assert.equal(comments.i1.filter((x) => /^DIRECTIVE OWNER REQUIRED/.test(x.body)).length, 1);
 });
+
+await t("re-escalates after an approved retry fails again", async () => {
+  const priorEscalationAt = "2026-09-01T09:00:00.000Z";
+  const decisionAt = "2026-09-01T09:30:00.000Z";
+  const firstEscalation = c(ownerRequiredBody(priorEscalationAt), priorEscalationAt);
+  const approval = c(TG_APPROVE, decisionAt);
+  const state = {
+    attempts: { i1: 2 },
+    lastPlanFailures: { i1: { reason: "parse-failed", attempt: 2 } },
+    attemptCapDecisionResets: {
+      i1: { decision: "approved", at: decisionAt, commentId: approval.id, raw: TG_APPROVE, escalationAt: priorEscalationAt },
+    },
+    lastSweepMs: 0,
+  };
+  const comments = { i1: [firstEscalation, approval] };
+  const { deps, posts, labels, cards } = makeSweepDeps({
+    issues: [issue({
+      id: "i1",
+      identifier: "KOL-68",
+      labels: [{ name: "DIRECTIVE" }, { name: "OWNER_REQUIRED", id: "owner-required-id" }],
+      labelIds: ["owner-required-id"],
+    })],
+    comments,
+    stateFile: "memory-state-e1",
+    extra: { maxPlanAttempts: 2, _fs: memoryStateFs(state) },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  const escalationPosts = posts.filter((p) => /\/api\/issues\/i1\/comments$/.test(p.url) && /^DIRECTIVE OWNER REQUIRED/.test(p.body.body));
+  assert.equal(res.planned, 0);
+  assert.equal(escalationPosts.length, 1);
+  assert.equal(labels.length, 1);
+  assert.equal(cards.length, 0);
+});
+
+await t("does not double-escalate within one owner decision round", async () => {
+  const priorEscalationAt = "2026-09-01T09:00:00.000Z";
+  const decisionAt = "2026-09-01T09:30:00.000Z";
+  const secondEscalationAt = "2026-09-01T09:45:00.000Z";
+  const firstEscalation = c(ownerRequiredBody(priorEscalationAt), priorEscalationAt);
+  const approval = c(TG_APPROVE, decisionAt);
+  const secondEscalation = c(ownerRequiredBody(secondEscalationAt), secondEscalationAt);
+  const state = {
+    attempts: { i1: 2 },
+    lastPlanFailures: { i1: { reason: "parse-failed", attempt: 2 } },
+    attemptCapDecisionResets: {
+      i1: { decision: "approved", at: decisionAt, commentId: approval.id, raw: TG_APPROVE, escalationAt: priorEscalationAt },
+    },
+    lastSweepMs: 0,
+  };
+  const comments = { i1: [firstEscalation, approval, secondEscalation] };
+  const { deps, posts, labels, cards } = makeSweepDeps({
+    issues: [issue({
+      id: "i1",
+      identifier: "KOL-68",
+      labels: [{ name: "DIRECTIVE" }, { name: "OWNER_REQUIRED", id: "owner-required-id" }],
+      labelIds: ["owner-required-id"],
+    })],
+    comments,
+    stateFile: "memory-state-e2",
+    extra: { maxPlanAttempts: 2, _fs: memoryStateFs(state) },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  const escalationPosts = posts.filter((p) => /\/api\/issues\/i1\/comments$/.test(p.url) && /^DIRECTIVE OWNER REQUIRED/.test(p.body.body));
+  assert.equal(res.planned, 0);
+  assert.equal(escalationPosts.length, 0);
+  assert.equal(labels.length, 0);
+  assert.equal(cards.length, 0);
+});
+
+await t("first attempt-cap escalation path is unchanged", async () => {
+  const state = {
+    attempts: { i1: 2 },
+    lastPlanFailures: { i1: { reason: "verify-out-of-scope", attempt: 2 } },
+    attemptCapDecisionResets: {},
+    lastSweepMs: 0,
+  };
+  const comments = { i1: [] };
+  const { deps, posts, labels, cards } = makeSweepDeps({
+    issues: [issue({ id: "i1", identifier: "KOL-70" })],
+    comments,
+    stateFile: "memory-state-e3",
+    extra: { maxPlanAttempts: 2, _fs: memoryStateFs(state) },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  const escalationPosts = posts.filter((p) => /\/api\/issues\/i1\/comments$/.test(p.url) && /^DIRECTIVE OWNER REQUIRED/.test(p.body.body));
+  assert.equal(res.planned, 0);
+  assert.equal(escalationPosts.length, 1);
+  assert.equal(labels.length, 1);
+  assert.equal(cards.length, 0);
+});
+
+await t("label failure still blocks re-escalation comment", async () => {
+  const priorEscalationAt = "2026-09-01T09:00:00.000Z";
+  const decisionAt = "2026-09-01T09:30:00.000Z";
+  const firstEscalation = c(ownerRequiredBody(priorEscalationAt), priorEscalationAt);
+  const approval = c(TG_APPROVE, decisionAt);
+  const state = {
+    attempts: { i1: 2 },
+    lastPlanFailures: { i1: { reason: "parse-failed", attempt: 2 } },
+    attemptCapDecisionResets: {
+      i1: { decision: "approved", at: decisionAt, commentId: approval.id, raw: TG_APPROVE, escalationAt: priorEscalationAt },
+    },
+    lastSweepMs: 0,
+  };
+  const comments = { i1: [firstEscalation, approval] };
+  const labelCalls = [];
+  const { deps, posts, cards } = makeSweepDeps({
+    issues: [issue({
+      id: "i1",
+      identifier: "KOL-68",
+      labels: [{ name: "DIRECTIVE" }, { name: "OWNER_REQUIRED", id: "owner-required-id" }],
+      labelIds: ["owner-required-id"],
+    })],
+    comments,
+    stateFile: "memory-state-e4",
+    extra: {
+      maxPlanAttempts: 2,
+      _fs: memoryStateFs(state),
+      addIssueLabel: async (iss, label) => { labelCalls.push({ issue: iss, label }); return { ok: false, reason: "404" }; },
+    },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  const escalationPosts = posts.filter((p) => /\/api\/issues\/i1\/comments$/.test(p.url) && /^DIRECTIVE OWNER REQUIRED/.test(p.body.body));
+  assert.equal(res.planned, 0);
+  assert.equal(labelCalls.length, 1);
+  assert.equal(escalationPosts.length, 0);
+  assert.equal(posts.length, 0);
+  assert.equal(cards.length, 0);
+  assert.ok(res.errors.some((e) => String(e).includes("owner-required label FAILED") && String(e).includes("404")));
+});
+
 await t("owner approval after attempt-cap escalation resets attempts and plans using the real default cap", async () => {
   await resetTmp();
   await fs.writeFile(TMP_STATE, JSON.stringify({
@@ -420,8 +639,10 @@ await t("the same post-escalation decision is consumed once and does not reset a
   st = JSON.parse(await fs.readFile(TMP_STATE, "utf8"));
   assert.equal(planCalls, 1);
   assert.equal(st.attempts.i1, 1);
-  assert.equal(second.posts.length, 0);
+  assert.equal(second.posts.filter((p) => /^DIRECTIVE OWNER REQUIRED/.test(p.body.body)).length, 1);
+  assert.equal(second.labels.length, 1);
   assert.equal(comments.i1.filter((x) => /DIRECTIVE DRAFT FAILED/.test(x.body)).length, 1);
+  assert.equal(comments.i1.filter((x) => /^DIRECTIVE OWNER REQUIRED/.test(x.body)).length, 2);
 });
 
 await t("issue at attempt cap with no owner decision stays skipped without duplicate escalation", async () => {

@@ -23,6 +23,8 @@ import {
   isQuotaFailureText,
   parseRetryAtMs,
   QUOTA_COOLDOWN_MS,
+  quotaReasonExcerpt,
+  laneFitness,
 } from "./routing.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -189,6 +191,13 @@ function mockRoleMap(defaultLane, fallbackLane) {
 }
 function probeDeps(ollamaOk, nousOk, kimiOk, codexOk) {
   return {
+    // resolveLane now consults MEASURED lane health. These tests are about
+    // availability, so they inject an empty measurement on purpose: an
+    // unmeasured lane is always fit, which keeps every pre-existing assertion
+    // about availability meaningful and stops the suite reading the real
+    // ops-watcher/lane-usage.jsonl (which would make it non-hermetic and make
+    // results depend on how the real lanes happened to behave that day).
+    health: {},
     httpGet: async () => ollamaOk ? { status: 200, body: { models: [{ name: "glm-5.2:cloud" }] }, networkError: false } : { status: 0, body: null, networkError: true, networkErrorMessage: "ECONNREFUSED" },
     runSpawn: async (cmd) => {
       if (cmd[0] === "hermes") return nousOk ? { ok: true, code: 0, signal: "binary-responsive", version: "h" } : { ok: false, code: null, signal: "spawn-error", error: "ENOENT" };
@@ -715,6 +724,185 @@ async function quota_shouldSkipLaneReasons() {
   } catch (err) { bad(name, err); }
 }
 
+// =====================================================================
+// Q1-Q3: a quota reason must be bounded WITHOUT losing the provider's own
+// reset time. Live on 2026-09-02 the CORLEONE lane was parked for the flat 6h
+// quota cooldown while its own message said "try again at 9:03 AM" - about 45
+// minutes away. quota_recordQuotaExhaustedUsesProviderRetryTime above already
+// covered a SHORT reason; the real message arrives at the end of a very long
+// CLI transcript, and the caller truncated it to 200 chars before
+// parseRetryAtMs ever saw it. These cover that shape.
+// =====================================================================
+async function quota_excerptKeepsRetryHint() {
+  const name = "Q1 quotaReasonExcerpt keeps the retry-at clause from the end of a long transcript";
+  try {
+    const long = "noise ".repeat(2000)
+      + "ERROR: You've hit your usage limit. Upgrade to Pro, visit settings to purchase more credits or try again at 9:03 AM.";
+    const excerpt = quotaReasonExcerpt(long);
+    assert.ok(excerpt.length <= 320, `excerpt must stay bounded, got ${excerpt.length}`);
+    assert.ok(/try again at 9:03 AM/i.test(excerpt), "the retry clause must survive truncation");
+    assert.notEqual(parseRetryAtMs(excerpt, Date.now()), null, "retry time must still parse from the excerpt");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function quota_excerptPassthroughAndFallback() {
+  const name = "Q2 quotaReasonExcerpt passes short text through and falls back to a bounded head slice";
+  try {
+    assert.equal(quotaReasonExcerpt("short reason"), "short reason");
+    const noQuota = "z".repeat(5000);
+    assert.equal(quotaReasonExcerpt(noQuota).length, 300, "no quota marker -> plain bounded head slice");
+    assert.equal(quotaReasonExcerpt(null), "");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function quota_longTranscriptStillSizesCooldownFromHint() {
+  const name = "Q3 a LONG quota transcript still sizes the cooldown from the provider retry time";
+  try {
+    const sf = await tmpStateFile("qlong");
+    const now = localMs(2026, 8, 1, 20, 0);
+    const retryAt = localMs(2026, 8, 1, 21, 57);
+    const reason = "transcript line\n".repeat(500)
+      + "ERROR: You've hit your usage limit. Please upgrade or try again at 9:57 PM.";
+    const rec = await recordQuotaExhausted("codex", reason, { now, stateFile: sf });
+    assert.equal(rec.retryAtMs, retryAt, "retry time must be parsed from the FULL reason, not a head slice");
+    assert.notEqual(rec.cooldownMs, QUOTA_COOLDOWN_MS, "a long transcript must not fall back to the flat 6h default");
+    const saved = JSON.parse(await fs.readFile(sf, "utf8"));
+    assert.ok(saved.lanes.codex.lastFailureReason.length <= 320, "the stored reason stays bounded");
+    assert.ok(/try again at 9:57 PM/i.test(saved.lanes.codex.lastFailureReason), "the stored reason keeps the hint");
+    await cleanup([sf]);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+
+// =====================================================================
+// FOS-22 (capability-aware routing), fitness half. probeLaneAvailability
+// answers "does this lane answer"; laneFitness answers "are its answers worth
+// the wall clock". Measured on 2026-09-02: 24% of all dispatches burned the
+// full 8-minute wrapper cap and then failed (64% of all failures), and HATTA
+// timed out on ~44% of its runs — yet it kept being chosen because it was
+// "available". Unfit must only ever mean "prefer the fallback".
+// =====================================================================
+const H = (o) => ({ hatta: { n: 50, ok: 24, failed: 26, timedOut: 22, successRate: 48, timeoutRate: 44 }, ...o });
+
+async function fitness_rules() {
+  const name = "laneFitness: unmeasured/too-few/timeout-rate/success-rate/ok";
+  try {
+    const unmeasured = await laneFitness("L2 glm-5.2:cloud", { health: {} });
+    assert.equal(unmeasured.fit, true);
+    assert.equal(unmeasured.reason, "no-measurement");
+
+    const few = await laneFitness("L2 glm-5.2:cloud", {
+      health: { hatta: { n: 9, ok: 0, failed: 9, timedOut: 9, successRate: 0, timeoutRate: 100 } },
+    });
+    assert.equal(few.fit, true, "a lane with too few samples is never condemned on noise");
+    assert.equal(few.reason, "too-few-samples");
+
+    const slow = await laneFitness("L2 glm-5.2:cloud", { health: H() });
+    assert.equal(slow.fit, false);
+    assert.equal(slow.reason, "timeout-rate-high");
+
+    const weak = await laneFitness("L2 glm-5.2:cloud", {
+      health: { hatta: { n: 40, ok: 10, failed: 30, timedOut: 2, successRate: 25, timeoutRate: 5 } },
+    });
+    assert.equal(weak.fit, false);
+    assert.equal(weak.reason, "success-rate-low");
+
+    const good = await laneFitness("L2 glm-5.2:cloud", {
+      health: { hatta: { n: 40, ok: 34, failed: 6, timedOut: 2, successRate: 85, timeoutRate: 5 } },
+    });
+    assert.equal(good.fit, true);
+    assert.equal(good.reason, "ok");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function fitness_neverThrows() {
+  const name = "laneFitness never throws: a broken health source degrades to fit";
+  try {
+    const r = await laneFitness("L2 glm-5.2:cloud", {
+      readLaneHealth: async () => { throw new Error("log unreadable"); },
+    });
+    assert.equal(r.fit, true);
+    assert.equal(r.reason, "fitness-unknown");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function fitness_unfitDefaultPrefersFitFallback() {
+  const name = "resolveLane: available-but-unfit default hands over to an available fit fallback";
+  try {
+    const sf = await tmpStateFile("fit1");
+    const r = await resolveLane("TESTROLE", {
+      roleMap: mockRoleMap("L2 glm-5.2:cloud", "L3 Kimi K3 (256k ctx)"),
+      stateFile: sf,
+      ...probeDeps(true, true, true, true),
+      health: H({ sjahrir: { n: 30, ok: 27, failed: 3, timedOut: 1, successRate: 90, timeoutRate: 3 } }),
+    });
+    assert.equal(r.reason, "default-unfit-use-fallback");
+    assert.equal(r.chosen, "L3 Kimi K3 (256k ctx)");
+    assert.equal(r.defaultFitness.fit, false);
+    assert.equal(r.fallbackFitness.fit, true);
+    await cleanup([sf]);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function fitness_unfitDefaultKeptWhenFallbackUnavailable() {
+  const name = "resolveLane: unfit default is still used when the fallback is unavailable";
+  try {
+    const sf = await tmpStateFile("fit2");
+    const r = await resolveLane("TESTROLE", {
+      roleMap: mockRoleMap("L2 glm-5.2:cloud", "L3 Kimi K3 (256k ctx)"),
+      stateFile: sf,
+      ...probeDeps(true, true, false, true),
+      health: H({ sjahrir: { n: 30, ok: 27, failed: 3, timedOut: 1, successRate: 90, timeoutRate: 3 } }),
+    });
+    assert.equal(r.chosen, "L2 glm-5.2:cloud", "a measured-mediocre lane beats no lane at all");
+    assert.equal(r.reason, "default-ok");
+    await cleanup([sf]);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function fitness_unfitDefaultKeptWhenFallbackAlsoUnfit() {
+  const name = "resolveLane: unfit default is kept when the fallback is also unfit";
+  try {
+    const sf = await tmpStateFile("fit3");
+    const r = await resolveLane("TESTROLE", {
+      roleMap: mockRoleMap("L2 glm-5.2:cloud", "L3 Kimi K3 (256k ctx)"),
+      stateFile: sf,
+      ...probeDeps(true, true, true, true),
+      health: H({ sjahrir: { n: 30, ok: 3, failed: 27, timedOut: 20, successRate: 10, timeoutRate: 67 } }),
+    });
+    assert.equal(r.chosen, "L2 glm-5.2:cloud");
+    assert.equal(r.fallbackFitness.fit, false);
+    await cleanup([sf]);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function fitness_fitDefaultStillDefaultOk() {
+  const name = "resolveLane: an available AND fit default still returns default-ok (happy path untouched)";
+  try {
+    const sf = await tmpStateFile("fit4");
+    const r = await resolveLane("TESTROLE", {
+      roleMap: mockRoleMap("L2 glm-5.2:cloud", "L4 Nous free"),
+      stateFile: sf,
+      ...probeDeps(true, true, true, true),
+      health: { hatta: { n: 40, ok: 34, failed: 6, timedOut: 2, successRate: 85, timeoutRate: 5 } },
+    });
+    assert.equal(r.reason, "default-ok");
+    assert.equal(r.chosen, "L2 glm-5.2:cloud");
+    assert.equal(r.defaultFitness.reason, "ok");
+    await cleanup([sf]);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+
 async function main() {
   console.log("# ops-watcher PHASE-4 routing regression tests");
   await testLaneMapping();
@@ -742,6 +930,15 @@ async function main() {
   await quota_parseRetryAtMsTwentyFourHourForm();
   await quota_parseRetryAtMsNoTime();
   await quota_recordQuotaExhaustedUsesProviderRetryTime();
+  await fitness_rules();
+  await fitness_neverThrows();
+  await fitness_unfitDefaultPrefersFitFallback();
+  await fitness_unfitDefaultKeptWhenFallbackUnavailable();
+  await fitness_unfitDefaultKeptWhenFallbackAlsoUnfit();
+  await fitness_fitDefaultStillDefaultOk();
+  await quota_excerptKeepsRetryHint();
+  await quota_excerptPassthroughAndFallback();
+  await quota_longTranscriptStillSizesCooldownFromHint();
   await quota_recordQuotaExhaustedStoresLongCooldown();
   await quota_oldShapeStateStillSkipsCorrectly();
   await quota_isInCooldownRespectsLongWindow();

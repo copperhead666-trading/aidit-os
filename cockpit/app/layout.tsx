@@ -2,9 +2,11 @@ import type { Metadata, Viewport } from 'next';
 import { JetBrains_Mono } from 'next/font/google';
 import { cookies } from 'next/headers';
 import './globals.css';
+import { PauseBanner } from '@/components/PauseBanner';
 import { Sidebar } from '@/components/Sidebar';
 import { Topbar } from '@/components/Topbar';
 import { CommandPalette } from '@/components/CommandPalette';
+import { readPauseState } from '@/lib/sources';
 import {
   ALLOWED_TELEGRAM_USER_IDS_ENV,
   SESSION_COOKIE_NAME,
@@ -44,7 +46,7 @@ function hasValidSession(): boolean {
   }).ok;
 }
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
   if (!hasValidSession()) {
     return (
       <html lang="en" className={fontMono.variable} suppressHydrationWarning>
@@ -56,6 +58,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </html>
     );
   }
+
+  const pauseState = await readPauseState();
 
   return (
     <html lang="en" className={fontMono.variable} suppressHydrationWarning>
@@ -73,6 +77,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           className="os-shell flex min-h-screen min-w-0 flex-col md:ml-[var(--sidebar-w,232px)]"
           style={{ marginRight: 'var(--conductor-w, 0px)' }}
         >
+          <PauseBanner state={pauseState} />
           <Topbar />
           <main className="min-w-0 flex-1 px-4 pb-16 pt-7 sm:px-6 md:px-8 wide:px-10 ultra:px-12">
             {/* Width tiers: 1280 on laptops · 1760 on large monitors ·

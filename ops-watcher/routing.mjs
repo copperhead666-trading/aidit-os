@@ -71,6 +71,7 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { httpGet } from "./watcher.mjs";
 
+import { readLaneHealth } from "./lane-usage.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 const ROLE_MAP_FILE = path.join(ROOT, "handoffs", "sjahrir", "CANONICAL-ROLE-MAP.json");
@@ -176,6 +177,58 @@ async function saveRoutingState(st, file = STATE_FILE) {
   try { await fs.writeFile(file, JSON.stringify(st, null, 2), "utf8"); } catch { /* best-effort */ }
 }
 
+// Probe key -> lane name used in ops-watcher/lane-usage.jsonl. This is the
+// INVERSE of lane-guard.mjs LANE_KEYS and must stay in sync with it; it is
+// duplicated rather than imported because lane-guard.mjs imports THIS module,
+// and importing it back would be a cycle.
+export const PROBE_KEY_TO_LANE = {
+  codex: "corleone",
+  kimi: "sjahrir",
+  ollama: "hatta",
+};
+
+// Fitness thresholds. Deliberately generous: unfit never means "never use this
+// lane", only "prefer the fallback". A lane we have not measured is always fit
+// — we do not punish a lane for lack of evidence.
+export const FITNESS_MIN_SAMPLES = 10;
+export const FITNESS_MAX_TIMEOUT_RATE = 35;
+export const FITNESS_MIN_SUCCESS_RATE = 50;
+
+// laneFitness(laneStr) — is this lane worth WAITING for, as opposed to merely
+// reachable? probeLaneAvailability answers "does it answer"; this answers "are
+// its answers worth the wall clock". Measured from the real dispatch log.
+//
+// WHY: 24% of recorded dispatches ran the full 8-minute wrapper cap and then
+// failed — 64% of all failures — and HATTA times out on ~44% of its runs. Those
+// lanes were still chosen because they were "available".
+//
+// deps: { health } (a readLaneHealth result) or { readLaneHealth } (the fn).
+// Never throws.
+export async function laneFitness(laneStr, deps = {}) {
+  try {
+    const probeKey = LANE_PROBES[laneStr] ? laneStr : laneStringToProbeKey(laneStr);
+    const laneName = PROBE_KEY_TO_LANE[probeKey] || probeKey || null;
+    if (!laneName) return { fit: true, reason: "no-measurement", health: null };
+
+    const health = deps.health
+      ? deps.health
+      : await (deps.readLaneHealth || readLaneHealth)();
+    const h = health && health[laneName] ? health[laneName] : null;
+    if (!h || !Number.isFinite(h.n)) return { fit: true, reason: "no-measurement", health: null };
+    if (h.n < FITNESS_MIN_SAMPLES) return { fit: true, reason: "too-few-samples", health: h };
+    if (Number(h.timeoutRate) >= FITNESS_MAX_TIMEOUT_RATE) {
+      return { fit: false, reason: "timeout-rate-high", health: h };
+    }
+    if (Number(h.successRate) < FITNESS_MIN_SUCCESS_RATE) {
+      return { fit: false, reason: "success-rate-low", health: h };
+    }
+    return { fit: true, reason: "ok", health: h };
+  } catch {
+    // Measurement must never be able to block a dispatch.
+    return { fit: true, reason: "fitness-unknown", health: null };
+  }
+}
+
 export function cooldownMsFor(count) {
   if (count <= 0) return 0;
   const raw = COOLDOWN_BASE_MS * Math.pow(2, count - 1);
@@ -267,6 +320,29 @@ export async function recordFailure(lane, reason, deps = {}) {
 // quotaExhausted:true so the read path can distinguish it from a transient
 // failure. deps: { now, stateFile }
 // Returns: { lane, failureCount, cooldownMs, lastFailureTs, quotaExhausted }
+// Bound a quota reason for storage WITHOUT destroying the part that matters.
+// The provider's message ("...or try again at 9:03 AM.") usually arrives at the
+// END of a long CLI transcript, so a plain head-slice throws the retry hint away
+// and the lane gets parked for the flat QUOTA_COOLDOWN_MS instead of the ~45
+// minutes the provider actually asked for. Verified live on 2026-09-02: CORLEONE
+// was parked ~6h when its own message said 9:03 AM. So centre the excerpt on the
+// quota sentence, and keep any "try again at" clause that follows it.
+export function quotaReasonExcerpt(text, maxLen = 300) {
+  const raw = String(text == null ? "" : text);
+  if (raw.length <= maxLen) return raw;
+  const quotaAt = raw.search(/usage limit|insufficient_quota|rate limit exceeded|provider\.auth_error|quota/i);
+  if (quotaAt < 0) return raw.slice(0, maxLen);
+  const retry = /\btry\s+again\s+at\s+[^.\n]*/i.exec(raw.slice(quotaAt));
+  const start = Math.max(0, quotaAt - 40);
+  let excerpt = raw.slice(start, start + maxLen);
+  // If the retry clause fell outside the window, append it — it is the single
+  // most useful token in the whole message.
+  if (retry && !excerpt.includes(retry[0])) {
+    excerpt = `${excerpt.slice(0, Math.max(0, maxLen - retry[0].length - 5))} ... ${retry[0]}`;
+  }
+  return excerpt;
+}
+
 export async function recordQuotaExhausted(lane, reason, deps = {}) {
   const now = deps.now || Date.now();
   const file = deps.stateFile || STATE_FILE;
@@ -282,7 +358,9 @@ export async function recordQuotaExhausted(lane, reason, deps = {}) {
     failureCount = (prev.failureCount || 0) + 1;
     st.lanes[key] = {
       lastFailureTs: now,
-      lastFailureReason: String(reason || "unknown"),
+      // Bounded AFTER retryAtMs was parsed from the full reason above — never
+      // before, or the retry hint is lost with the rest of the transcript.
+      lastFailureReason: quotaReasonExcerpt(reason || "unknown"),
       failureCount,
       cooldownMs,
       quotaExhausted: true,
@@ -387,18 +465,55 @@ export async function resolveLane(role, deps = {}) {
     return { laneStr, available: probe.available && !cd.inCooldown, probe, cooldown: cd };
   }
 
+  // Health is read once per resolve and shared by both fitness checks, so a
+  // decision is never made from two different snapshots of the log.
+  let health = deps.health;
+  if (health === undefined) {
+    try { health = await (deps.readLaneHealth || readLaneHealth)(); }
+    catch { health = null; }
+  }
+  const fitnessOf = (laneStr) => laneFitness(laneStr, { health: health || {} });
+
   const def = await evaluate(defaultLane);
   results.default = def;
   if (def.available) {
-    return { role, chosen: defaultLane, reason: "default-ok", defaultLane, fallbackLane, defaultResult: def, fallbackResult: null };
+    const defFit = await fitnessOf(defaultLane);
+    if (defFit.fit) {
+      return {
+        role, chosen: defaultLane, reason: "default-ok", defaultLane, fallbackLane,
+        defaultResult: def, fallbackResult: null, defaultFitness: defFit, fallbackFitness: null,
+      };
+    }
+    // The default answers but is measurably unreliable. Take the fallback ONLY
+    // if it is both available and fit; otherwise keep today's behaviour and use
+    // the default anyway — a measured-mediocre lane beats no lane at all.
+    const fbForUnfit = await evaluate(fallbackLane);
+    const fbFit = fbForUnfit.available ? await fitnessOf(fallbackLane) : null;
+    if (fbForUnfit.available && fbFit && fbFit.fit) {
+      return {
+        role, chosen: fallbackLane, reason: "default-unfit-use-fallback", defaultLane, fallbackLane,
+        defaultResult: def, fallbackResult: fbForUnfit, defaultFitness: defFit, fallbackFitness: fbFit,
+      };
+    }
+    return {
+      role, chosen: defaultLane, reason: "default-ok", defaultLane, fallbackLane,
+      defaultResult: def, fallbackResult: fbForUnfit, defaultFitness: defFit, fallbackFitness: fbFit,
+    };
   }
   const fb = await evaluate(fallbackLane);
   results.fallback = fb;
   if (fb.available) {
     const why = def.cooldown && def.cooldown.inCooldown ? "default-cooldown-use-fallback" : "default-unavailable-use-fallback";
-    return { role, chosen: fallbackLane, reason: why, defaultLane, fallbackLane, defaultResult: def, fallbackResult: fb };
+    return {
+      role, chosen: fallbackLane, reason: why, defaultLane, fallbackLane,
+      defaultResult: def, fallbackResult: fb,
+      defaultFitness: null, fallbackFitness: await fitnessOf(fallbackLane),
+    };
   }
-  return { role, chosen: null, reason: "both-unavailable-defer", defaultLane, fallbackLane, defaultResult: def, fallbackResult: fb };
+  return {
+    role, chosen: null, reason: "both-unavailable-defer", defaultLane, fallbackLane,
+    defaultResult: def, fallbackResult: fb, defaultFitness: null, fallbackFitness: null,
+  };
 }
 
 // ---- resolveSjahrirModel(taskKind) ----
@@ -450,9 +565,18 @@ export async function resolveSjahrirModel(taskKind, deps = {}) {
 async function main() {
   const arg = process.argv[2];
   if (arg === "--probe-all") {
+    // Availability alone is what let a lane that times out on 44% of its runs
+    // keep being chosen, so every line carries measured reliability too.
+    let health = {};
+    try { health = await readLaneHealth(); } catch { health = {}; }
     for (const key of Object.keys(LANE_PROBES)) {
       const r = await probeLaneAvailability(key);
-      console.log(`${key}: available=${r.available} signal=${r.signal}${r.models ? " models=" + JSON.stringify(r.models) : ""}${r.version ? " version=" + JSON.stringify(r.version) : ""} reason=${r.reason}`);
+      const laneName = PROBE_KEY_TO_LANE[key];
+      const h = laneName ? health[laneName] : null;
+      const healthStr = h
+        ? `health=${h.successRate}% ok, ${h.timeoutRate}% timeout (n=${h.n})`
+        : "health=belum ada data";
+      console.log(`${key}: available=${r.available} signal=${r.signal}${r.models ? " models=" + JSON.stringify(r.models) : ""}${r.version ? " version=" + JSON.stringify(r.version) : ""} reason=${r.reason} ${healthStr}`);
     }
     return;
   }

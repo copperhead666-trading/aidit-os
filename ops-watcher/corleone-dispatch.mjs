@@ -123,7 +123,7 @@ async function main() {
     // spawnSync sets status=null + signal="SIGTERM" on timeout kill.
     process.stderr.write(`corleone-dispatch: codex timed out after ${TIMEOUT_MS}ms\n`);
     await recordLaneOutcome("corleone", { ok: false, stdout: r.stdout, stderr: r.stderr, timedOut: true });
-    await logLaneUsage({ lane: "corleone", promptLength: prompt.length, ok: false, exitCode: 1, durationMs });
+    await logLaneUsage({ lane: "corleone", promptLength: prompt.length, ok: false, timedOut: true, exitCode: 1, durationMs });
     process.exit(1);
   }
   if (r.error) {

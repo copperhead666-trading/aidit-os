@@ -114,6 +114,7 @@ import {
 } from "./telegram-listener-daemon.mjs";
 import { AHMAD_AGENT_ID } from "./telegram-listener.mjs";
 import { retrieveDispatchContext as retrieveDispatchContextReal } from "./ahmad-context-retrieval.mjs";
+import { readLaneHealth } from "./lane-usage.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -186,16 +187,27 @@ function isStuckInProgress(it, nowMs) {
 // the DIRECTIVE packet and the stuck-recovery packet, so both give headless
 // AHMAD the same tool-scope boundary, the same implementation-lane menu, the
 // same Bahasa-Indonesia language rule, and the same completion protocol.
-function buildSharedClosingInstructions(ident) {
+// Render measured lane reliability for the packet. Availability only means a
+// lane answers; this is what it is like to WAIT for it. Hard-coding these
+// numbers is what made the old menu wrong — it advertised HATTA as the good
+// default while HATTA was timing out on ~44% of its runs — so they are always
+// derived from the log, never written by hand.
+function laneHealthSuffix(health, laneName) {
+  const h = health && health[laneName];
+  if (!h || !Number.isFinite(h.n)) return " (keandalan terukur: belum ada data)";
+  return ` (keandalan terukur: ${h.successRate}% sukses, ${h.timeoutRate}% timeout, n=${h.n})`;
+}
+
+function buildSharedClosingInstructions(ident, health = null) {
   return [
     `Your tools are scoped to a single run_command MCP tool (Bash/Write/Edit are disallowed for this session) — see its description for exactly what it accepts. You cannot edit files directly; when implementation is needed, delegate it via run_command to one of the implementation lanes below, then independently re-verify the result from canonical sources (re-read the file/output) rather than trusting its own stdout claim, per this org's orchestration/recovery skills.`,
     ``,
-    `Implementation lanes available to you via run_command (pick the one that fits the task; you may run 'node ops-watcher/routing.mjs --probe-all' via run_command BEFORE picking a lane to see live availability, and you should prefer a lane reported available over one reported unavailable/in cooldown):`,
+    `Implementation lanes available to you via run_command (pick the one that fits the task; you may run 'node ops-watcher/routing.mjs --probe-all' via run_command BEFORE picking a lane to see live availability AND measured reliability. Availability only means a lane answers. Prefer a lane that is both available and reliable, and do not send a large or multi-file task to a lane with a high measured timeout rate.)`,
     `COST NOTE: HATTA, HATTA-FLASH, SJAHRIR, and CORLEONE are ALL paid flat-rate subscriptions the OWNER already pays for regardless of usage (Ollama Cloud Pro, Kimi Code, and ChatGPT Plus respectively — none of them are free). There is no per-call cost difference between them, so never pick one because it seems "cheaper" — none is. Pick based on which lane genuinely fits the task. The OWNER has specifically said CORLEONE has been sitting underused relative to what is being paid for and wants it used MORE — treat CORLEONE as a first-class choice for a fair share of tasks, not only as a fallback when HATTA/SJAHRIR are unavailable.`,
-    `  - HATTA: 'node ops-watcher/hatta-dispatch.mjs "<prompt>"' — a strong general-purpose implementation lane (Ollama Cloud Pro). Good default for ordinary implementation work.`,
-    `  - HATTA-FLASH: 'node ops-watcher/hatta-flash-dispatch.mjs "<prompt>"' — the same paid lane, using a smaller/faster model (glm-5.3-flash:cloud). Prefer this over plain HATTA for trivial, low-risk, low-context tasks (a one-line text edit, a quick lookup/summary, a short throwaway script) where speed matters more than depth — not because it is cheaper (it is the same subscription), simply faster for light work.`,
-    `  - SJAHRIR: 'node ops-watcher/sjahrir-dispatch.mjs "<prompt>"' — prefer when the task needs heavy context, deep research, or synthesis. This project's own routing.mjs (resolveSjahrirModel) documents the split: synthesis/research -> use the K3-256K model; bounded coding -> K2.7 Code; escalation -> full K3. Pick SJAHRIR when the work is context-heavy rather than for ordinary implementation.`,
-    `  - CORLEONE: 'node ops-watcher/corleone-dispatch.mjs "<prompt>"' — a strong implementation lane via the Codex CLI (ChatGPT Plus). The OWNER wants this lane used more, not just as a fallback — actively consider it for a reasonable share of ordinary implementation tasks, the same way you would consider HATTA, rather than reaching for it only when other lanes are in cooldown.`,
+    `  - HATTA: 'node ops-watcher/hatta-dispatch.mjs "<prompt>"' — a general-purpose implementation lane (Ollama Cloud Pro).${laneHealthSuffix(health, "hatta")}`,
+    `  - HATTA-FLASH: 'node ops-watcher/hatta-flash-dispatch.mjs "<prompt>"' — the same paid lane, using a smaller/faster model (glm-5.3-flash:cloud). Prefer this over plain HATTA for trivial, low-risk, low-context tasks (a one-line text edit, a quick lookup/summary, a short throwaway script) where speed matters more than depth — not because it is cheaper (it is the same subscription), simply faster for light work.${laneHealthSuffix(health, "hatta-flash")}`,
+    `  - SJAHRIR: 'node ops-watcher/sjahrir-dispatch.mjs "<prompt>"' — prefer when the task needs heavy context, deep research, or synthesis. This project's own routing.mjs (resolveSjahrirModel) documents the split: synthesis/research -> use the K3-256K model; bounded coding -> K2.7 Code; escalation -> full K3. Pick SJAHRIR when the work is context-heavy rather than for ordinary implementation.${laneHealthSuffix(health, "sjahrir")}`,
+    `  - CORLEONE: 'node ops-watcher/corleone-dispatch.mjs "<prompt>"' — a strong implementation lane via the Codex CLI (ChatGPT Plus). The OWNER wants this lane used more, not just as a fallback — actively consider it for a reasonable share of ordinary implementation tasks, the same way you would consider HATTA, rather than reaching for it only when other lanes are in cooldown.${laneHealthSuffix(health, "corleone")}`,
     `  - GRAPHIFY-ANALYST: 'node ops-watcher/graphify-analyst.mjs "<structural question>"' — NOT an implementation lane; use this when you need to answer a structural/multi-hop question about how code relates across files (e.g. "what calls X", "what depends on Y") using the existing code graph, before deciding how to implement something. It discloses if the graph is stale rather than answering silently on outdated structure.`,
     ``,
     `LANGUAGE: the OWNER is an Indonesian speaker. Every message you send the OWNER — the Paperclip comment in step 1 below AND the ahmad-notify.mjs message in step 2 — MUST be written in professional Bahasa Indonesia, not English. Keep code, file paths, commands, and technical identifiers verbatim (untranslated); translate only the surrounding prose.`,
@@ -207,7 +219,7 @@ function buildSharedClosingInstructions(ident) {
   ];
 }
 
-function buildColdTaskPacket(it) {
+function buildColdTaskPacket(it, health = null) {
   const ident = it.identifier || it.id;
   const opening = [
     `You are AHMAD, the primary owner-facing orchestrator for Active FounderOS-Aidit, running headless (spawned by ops-watcher/ahmad-dispatch.mjs from an OWNER Telegram directive).`,
@@ -219,7 +231,7 @@ function buildColdTaskPacket(it) {
     String(it.description || ""),
     ``,
   ];
-  return [...opening, ...buildSharedClosingInstructions(ident)].join("\n");
+  return [...opening, ...buildSharedClosingInstructions(ident, health)].join("\n");
 }
 
 // Stuck-recovery packet — different opening framing (there is no "OWNER
@@ -228,7 +240,7 @@ function buildColdTaskPacket(it) {
 // the SAME shared closing block so the tool-scope boundary, implementation-lane
 // menu, language rule, and completion protocol are identical to the DIRECTIVE
 // packet.
-function buildStuckRecoveryPacket(it) {
+function buildStuckRecoveryPacket(it, health = null) {
   const ident = it.identifier || it.id;
   const opening = [
     `You are AHMAD, the primary owner-facing orchestrator for Active FounderOS-Aidit, running headless (spawned by ops-watcher/ahmad-dispatch.mjs). You are being woken NOT by an OWNER directive, but because Paperclip issue ${ident} appears STUCK: its status is 'in_progress' but there has been no progress for over ${STUCK_THRESHOLD_MIN} minutes (executionLockedAt: ${it.executionLockedAt}).`,
@@ -245,7 +257,7 @@ function buildStuckRecoveryPacket(it) {
     `Do not do both — pick (a) or (b), not partial work on both.`,
     ``,
   ];
-  return [...opening, ...buildSharedClosingInstructions(ident)].join("\n");
+  return [...opening, ...buildSharedClosingInstructions(ident, health)].join("\n");
 }
 
 function compactLine(v, max = 180) {
@@ -342,8 +354,15 @@ export async function buildTaskPacket(it, {
   retrieveContextTimeoutMs = CONTEXT_RETRIEVAL_TIMEOUT_MS,
   now = () => Date.now(),
   env = process.env,
+  laneHealth,
 } = {}) {
-  const coldPacket = packetBuilder(it);
+  // Resolved once per packet. Never allowed to break a dispatch: an unreadable
+  // log renders "belum ada data" rather than throwing.
+  let health = laneHealth;
+  if (health === undefined) {
+    try { health = await readLaneHealth(); } catch { health = null; }
+  }
+  const coldPacket = packetBuilder(it, health);
   let bundle;
   try {
     bundle = await retrieveContextBundleForPacket(it, {
@@ -437,6 +456,7 @@ export async function runAhmadDispatchOnce(deps) {
     httpPost: _post = httpPost,
     httpPatch: _patch = httpPatch,
     spawnAhmad = spawnHeadlessAhmadReal,
+    laneHealth,
     retrieveContext = retrieveDispatchContextReal,
     retrieveContextTimeoutMs = CONTEXT_RETRIEVAL_TIMEOUT_MS,
     log = (m) => console.log(m),
@@ -529,7 +549,7 @@ export async function runAhmadDispatchOnce(deps) {
             results.push({ id, identifier: ident, outcome: "marker-failed" });
             continue;
           }
-          const packet = await buildTaskPacket(it, { retrieveContext, retrieveContextTimeoutMs, now });
+          const packet = await buildTaskPacket(it, { retrieveContext, retrieveContextTimeoutMs, now, laneHealth });
           const spawned = spawnAhmad(packet, { identifier: ident });
           log(`ahmad-dispatch: ${ident} spawned headless AHMAD (pid=${spawned && spawned.pid}${spawned && spawned.logFile ? `, log=${spawned.logFile}` : ""})`);
           results.push({ id, identifier: ident, outcome: "dispatched", pid: spawned && spawned.pid });
@@ -578,7 +598,7 @@ export async function runAhmadDispatchOnce(deps) {
             results.push({ id, identifier: ident, outcome: "marker-failed" });
             continue;
           }
-          const packet = await buildTaskPacket(it, { retrieveContext, retrieveContextTimeoutMs, now, packetBuilder: buildStuckRecoveryPacket });
+          const packet = await buildTaskPacket(it, { retrieveContext, retrieveContextTimeoutMs, now, packetBuilder: buildStuckRecoveryPacket, laneHealth });
           const spawned = spawnAhmad(packet, { identifier: ident });
           log(`ahmad-dispatch: ${ident} spawned headless AHMAD for stuck recovery (pid=${spawned && spawned.pid}${spawned && spawned.logFile ? `, log=${spawned.logFile}` : ""})`);
           results.push({ id, identifier: ident, outcome: "stuck-recovery-dispatched", pid: spawned && spawned.pid });

@@ -26,6 +26,8 @@
 //   editMessageText(messageId, newText, { buttons, timeoutMs, baseUrl })
 //   getUpdates(offset, { timeoutMs, baseUrl })
 //   setMyCommands(commands, { timeoutMs, baseUrl })
+//   setChatMenuButton(menuButton, { timeoutMs, baseUrl })
+//   getMyCommands({ timeoutMs, baseUrl })  |  getChatMenuButton({ timeoutMs, baseUrl })
 //   tokenStatus()
 //
 // `baseUrl` is a TEST SEAM only: it defaults to the real Telegram API base
@@ -171,6 +173,32 @@ export async function setMyCommands(commands, { timeoutMs, baseUrl } = {}) {
   return tgFetch("setMyCommands", { commands }, { timeoutMs, baseUrl });
 }
 
+// Register the chat menu button (the button left of the input box). Used to
+// hang the Mini App off the OWNER's chat. Scoped to OWNER_CHAT_ID on purpose:
+// the default (chat_id omitted) applies to every private chat with the bot, so
+// anyone who found the bot would be handed a cockpit button. Same never-throw
+// contract as every other wrapper. `menuButton` is a MenuButton object, e.g.
+// { type: "web_app", text: "Cockpit", web_app: { url } } — Telegram requires
+// that url to be https.
+export async function setChatMenuButton(menuButton, { timeoutMs, baseUrl } = {}) {
+  return tgFetch(
+    "setChatMenuButton",
+    { chat_id: OWNER_CHAT_ID, menu_button: menuButton },
+    { timeoutMs, baseUrl },
+  );
+}
+
+// Read back what is actually registered on the live bot. Read-only: used to
+// verify a setMyCommands/setChatMenuButton apply landed, instead of trusting
+// the apply's own return value.
+export async function getMyCommands({ timeoutMs, baseUrl } = {}) {
+  return tgFetch("getMyCommands", {}, { timeoutMs, baseUrl });
+}
+
+export async function getChatMenuButton({ timeoutMs, baseUrl } = {}) {
+  return tgFetch("getChatMenuButton", { chat_id: OWNER_CHAT_ID }, { timeoutMs, baseUrl });
+}
+
 // Introspection for logs/reports — NEVER the token value.
 export function tokenStatus() {
   const t = getToken();
@@ -211,6 +239,9 @@ async function runSelftest() {
       }
       if (req.url.endsWith("/getUpdates")) {
         return res.end(JSON.stringify({ ok: true, result: [] }));
+      }
+      if (req.url.endsWith("/setMyCommands") || req.url.endsWith("/setChatMenuButton")) {
+        return res.end(JSON.stringify({ ok: true, result: true }));
       }
       res.statusCode = 400;
       res.end(JSON.stringify({ ok: false, description: "unknown method" }));
@@ -266,6 +297,24 @@ async function runSelftest() {
     assert.equal(s3.networkError, true);
     assert.ok(!JSON.stringify(s3).includes(FAKE));
     ok("(g) network error -> networkError, no token leak");
+
+    // (h) menu registration wrappers: both reach the API with the documented
+    // payload shape. setChatMenuButton must carry chat_id so the button is
+    // scoped to the OWNER instead of every private chat with the bot.
+    received.length = 0;
+    const cmds = await setMyCommands([{ command: "status", description: "x" }], { baseUrl, timeoutMs: 3000 });
+    assert.equal(cmds.sent, true);
+    const btn = await setChatMenuButton(
+      { type: "web_app", text: "Cockpit", web_app: { url: "https://example.invalid/" } },
+      { baseUrl, timeoutMs: 3000 },
+    );
+    assert.equal(btn.sent, true);
+    const cmdCall = received.find((r) => r.url.endsWith("/setMyCommands"));
+    const btnCall = received.find((r) => r.url.endsWith("/setChatMenuButton"));
+    assert.equal(cmdCall.body.commands[0].command, "status");
+    assert.equal(btnCall.body.chat_id, OWNER_CHAT_ID);
+    assert.equal(btnCall.body.menu_button.type, "web_app");
+    ok("(h) setMyCommands + setChatMenuButton send documented payloads, button scoped to OWNER");
   } catch (e) {
     bad("selftest", e);
   } finally {

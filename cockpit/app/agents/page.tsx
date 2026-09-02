@@ -127,6 +127,9 @@ function laneStatus(lane: LaneStat): { tone: 'ok' | 'warn' | 'err'; label: strin
   if (lane.ok === 0) {
     return { tone: 'err', label: 'no successful runs' };
   }
+  if (lane.runs >= 10 && lane.timeoutRate >= 35) {
+    return { tone: 'warn', label: `${lane.timeoutRate}% timeout` };
+  }
   const successRate = Math.round((lane.ok / lane.runs) * 100);
   if (successRate <= 50) {
     return { tone: 'warn', label: `${successRate}% — degraded` };
@@ -137,6 +140,9 @@ function laneStatus(lane: LaneStat): { tone: 'ok' | 'warn' | 'err'; label: strin
 function LaneLine({ lane }: { lane: LaneStat }) {
   const successRate =
     lane.runs > 0 ? `${Math.round((lane.ok / lane.runs) * 100)}%` : '—';
+  const timeoutRate = lane.runs > 0 ? `${lane.timeoutRate}%` : '—';
+  const timeoutValueClass =
+    lane.runs > 0 && lane.timeoutRate >= 35 ? 'text-os-warn' : 'text-os-text';
   const status = laneStatus(lane);
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-os-muted">
@@ -147,6 +153,10 @@ function LaneLine({ lane }: { lane: LaneStat }) {
       <span className="inline-flex items-center gap-1.5">
         <span className="font-mono text-[9.5px] uppercase tracking-[0.18em] text-os-dim">success</span>
         <span className="text-os-text">{successRate}</span>
+      </span>
+      <span className="inline-flex items-center gap-1.5">
+        <span className="font-mono text-[9.5px] uppercase tracking-[0.18em] text-os-dim">timeout</span>
+        <span className={timeoutValueClass}>{timeoutRate}</span>
       </span>
       <span>
         <Badge tone={status.tone} ghost={status.ghost}>
@@ -295,6 +305,7 @@ export default async function AgentsPage() {
             );
           })}
         </ul>
+        <p className="text-xs text-os-muted">Timeout = dispatch yang habis di batas 8 menit lalu gagal. Beda dengan gagal cepat: waktunya benar-benar terbakar.</p>
       </section>
 
       <section className="space-y-2">

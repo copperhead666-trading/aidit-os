@@ -1,5 +1,5 @@
 // ops-watcher/telegram-commands.mjs
-// The OWNER's real, read-only slash commands for the Telegram bot.
+// The OWNER's real slash commands for the Telegram bot.
 //
 // WHY THIS FILE EXISTS:
 //   The owner typed /pause and /stop and got nothing, because the bot had never
@@ -11,9 +11,10 @@
 //   letters, digits and underscores. COMMANDS below is exactly that array.
 //
 // WHAT IS HERE:
-//   - COMMANDS                         the BotCommand array (four read-only cmds)
+//   - COMMANDS                         the BotCommand array (owner commands)
 //   - renderStatus / renderInbox /
-//     renderCockpit / renderHelp       PURE formatters: take already-gathered
+//     renderCockpit / renderHelp /
+//     renderPause / renderResume       PURE formatters: take already-gathered
 //                                     data, return the message text. No file
 //                                     reads, no fetches, no side effects. That
 //                                     is what makes them testable and safe to
@@ -28,10 +29,19 @@
 //                                     file does NOT duplicate that fallback.
 //
 // HARD STOPS (non-negotiable):
-//   - No /pause, /stop, or ANY command that changes system state. What pausing
-//     should pause is the owner's decision, not ours.
-//   - setMyCommands is NOT called for real anywhere in this task. COMMANDS is
-//     just data; wiring/registration comes later, separately.
+//   - /pause and /resume ARE implemented: on 2026-09-01 the owner defined the
+//     semantics themselves - "/pause = emergency stop for ALL of FounderOS when
+//     I see an anomaly" (the 1839-zombie incident). They are the only
+//     state-changing commands here, they touch exactly one thing (the pause
+//     flag owned by pause-gate.mjs), and they NEVER auto-resume.
+//   - /stop is still NOT implemented. The owner defined it as "interrupt, like
+//     ESC" - that needs a PID registry, because killing by process name on this
+//     machine would also kill PM2, Paperclip and the cockpit. Until that
+//     registry exists, /stop must keep falling through to the honest fallback.
+//   - COMMANDS is data. Registering it with Telegram is a separate, deliberate
+//     step: ops-watcher/telegram-setup.mjs (dry-run by default, --apply to
+//     write). Changing COMMANDS here does NOT update the owner's Telegram menu
+//     until that script is run with --apply.
 //
 // DATA CONTRACTS (what deps must provide; every number comes from deps, never
 // fabricated here):
@@ -44,6 +54,8 @@
 //
 //   node ops-watcher/telegram-commands.regression.test.mjs
 
+import { clearPause as realClearPause, pauseBanner, readPause as realReadPause, setPaused as realSetPaused } from "./pause-gate.mjs";
+
 const COCKPIT_URL = "https://asus-gray.tailc7b60e.ts.net/";
 
 // The BotCommand array registered via setMyCommands. Descriptions are Indonesian,
@@ -54,6 +66,8 @@ export const COMMANDS = [
   { command: "inbox", description: "apa yang butuh keputusan lo dan apa yang macet" },
   { command: "cockpit", description: "tautan cockpit" },
   { command: "help", description: "cara pakai singkat" },
+  { command: "pause", description: "hentikan seluruh FounderOS sekarang" },
+  { command: "resume", description: "lanjutkan FounderOS yang sedang dijeda" },
 ];
 
 // ---- helpers (pure) ----
@@ -159,16 +173,60 @@ export function renderCockpit(data) {
   return `*Cockpit*\n${url}\nTailscale harus nyala dan laptop menyala.`;
 }
 
-// help: the three gestures — tap SETUJUI or TOLAK on a card to decide, reply to
-// a card to attach a note, send a normal message to assign work. The exact
-// button names SETUJUI / TOLAK are what the cards really show.
+// help: the command menu plus the three gestures — tap SETUJUI or TOLAK on a
+// card to decide, reply to a card to attach a note, send a normal message to
+// assign work. The exact button names SETUJUI / TOLAK are what the cards really
+// show.
 export function renderHelp() {
+  const commandLines = COMMANDS.map((c) => `  - /${c.command} - ${c.description}`);
   return [
     "*Cara pakai*",
+    "Perintah:",
+    ...commandLines,
+    "",
+    "Gerakan:",
     "• Ketuk SETUJUI atau TOLAK pada kartu untuk memutuskan.",
     "• Balas sebuah kartu untuk menambah catatan.",
     "• Kirim pesan biasa untuk memberi pekerjaan baru.",
   ].join("\n");
+}
+
+export function renderPause(result) {
+  const r = result || {};
+  if (r.alreadyPaused) {
+    return [
+      "*FounderOS sudah dijeda*",
+      pauseBanner(r.state) || "FounderOS PAUSED.",
+      "Kirim /resume untuk melanjutkan.",
+    ].join("\n");
+  }
+  if (!r.ok) {
+    return [
+      "*GAGAL menjeda FounderOS*",
+      "Flag pause tidak bisa ditulis: " + (r.error || "alasan tidak tersedia"),
+      "FounderOS MASIH BERJALAN. Hentikan manual dari laptop kalau ini darurat.",
+    ].join("\n");
+  }
+  return [
+    "*FounderOS DIJEDA*",
+    pauseBanner(r.state) || "FounderOS PAUSED.",
+    "Yang berhenti: sweep heartbeat, dispatch ke agen, mutasi Paperclip, dan notifikasi.",
+    "Proses PM2 tidak dimatikan - mereka hidup tapi diam.",
+    "Kirim /resume untuk melanjutkan. Tidak ada lanjut otomatis.",
+  ].join("\n");
+}
+
+export function renderResume(result) {
+  const r = result || {};
+  if (!r.ok) {
+    return [
+      "*GAGAL melanjutkan*",
+      "Flag pause tidak bisa dihapus: " + (r.error || "alasan tidak tersedia"),
+      "FounderOS MASIH DIJEDA.",
+    ].join("\n");
+  }
+  if (!r.cleared) return "FounderOS tidak sedang dijeda. Tidak ada yang diubah.";
+  return "*FounderOS DILANJUTKAN*\nSweep berikutnya jalan seperti biasa.";
 }
 
 // ---- command parsing + dispatch ----
@@ -208,6 +266,30 @@ export async function handleCommand(text, deps = {}) {
   }
   if (cmd === "help") {
     return { handled: true, reply: renderHelp() };
+  }
+  if (cmd === "pause") {
+    const readFn = deps.readPause || realReadPause;
+    const setFn = deps.setPaused || realSetPaused;
+    const current = readFn();
+    if (current && current.paused) {
+      return { handled: true, reply: renderPause({ alreadyPaused: true, state: current }) };
+    }
+    // The reply must report what the write ACTUALLY did. Never assume success:
+    // telling the owner the system is stopped when the flag was not written is
+    // the worst failure this command can have.
+    const res = setFn({ reason: "Dijeda dari Telegram oleh owner.", by: "owner" });
+    return {
+      handled: true,
+      reply: renderPause({ ok: !!(res && res.ok), state: res && res.state, error: res && res.error }),
+    };
+  }
+  if (cmd === "resume") {
+    const clearFn = deps.clearPause || realClearPause;
+    const res = clearFn();
+    return {
+      handled: true,
+      reply: renderResume({ ok: !!(res && res.ok), cleared: !!(res && res.cleared), error: res && res.error }),
+    };
   }
   return { handled: false };
 }

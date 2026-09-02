@@ -327,8 +327,19 @@ function compactJson(v, n = 5000) {
   return s.length > n ? s.slice(0, n) + `\n...[truncated ${s.length - n} chars]` : s;
 }
 
-export function buildPlanPrompt(issue, contextBundle) {
+export function buildPlanPrompt(issue, contextBundle, lastFailure = null) {
   const ident = issue?.identifier || issue?.id || "unknown";
+  const hasLastFailure = lastFailure && typeof lastFailure === "object" && Object.keys(lastFailure).length > 0;
+  const previousFailureLines = hasLastFailure
+    ? [
+      "",
+      "PREVIOUS ATTEMPT WAS REJECTED. Read this before writing the new plan:",
+      ...(lastFailure.reason != null ? [`- Reason code: ${lastFailure.reason}`] : []),
+      ...(lastFailure.detail != null ? [`- Detail: ${lastFailure.detail}`] : []),
+      ...(lastFailure.attempt != null ? [`- Attempt: ${lastFailure.attempt}`] : []),
+      "Produce a plan that does not repeat this. Do not resubmit the same VERIFY line.",
+    ]
+    : [];
   return [
     "You are the planning lane for FounderOS-Aidit directive-runner stage 1.",
     "Produce a short approval plan only. Do not execute anything.",
@@ -338,17 +349,20 @@ export function buildPlanPrompt(issue, contextBundle) {
     "STEPS:",
     "- <step>",
     "- <step>",
-    "VERIFY: <the exact command(s) that prove it worked>",
+    "VERIFY: <the single command that proves it worked>",
     "OUT OF SCOPE: <what this deliberately will not do>",
     "RISK: low | medium | high",
     "",
     "Hard boundary: repo-relative paths only; nothing under ventures/, .git/, .paperclip/; no .env* files; no network; no message to anyone but the owner; no package installs.",
     "VERIFY contract: the VERIFY line MUST be a single command starting with node ops-watcher/.",
+    "The VERIFY line must not contain ; & or | - not even inside a quoted argument. Two commands joined by && will be rejected before the owner ever sees the plan.",
+    "This applies to the --matches regex too: write a regex without | alternation, or pick a different single command.",
     "Allowed VERIFY for code changes: node ops-watcher/run-all-tests.mjs --only <suite-file>",
     "Allowed VERIFY for file-content directives: node ops-watcher/verify-file.mjs --path <file> --matches <regex>",
     "PowerShell, cmd, bash, git, or any other command will be rejected before the owner sees the plan.",
     "Scope is only this repository: D:\\AI\\Active FounderOS-Aidit.",
     "Write OBJECTIVE, STEPS, VERIFY, and OUT OF SCOPE in professional Bahasa Indonesia. Keep file paths and commands verbatim.",
+    ...previousFailureLines,
     "",
     `Issue: ${ident}`,
     `Title: ${issue?.title || ""}`,
@@ -784,7 +798,18 @@ export async function runDirectiveSweepOnce(deps = {}) {
       const prior = Number(state.attempts[key] || 0);
       if (prior >= maxPlanAttempts) {
         log(`directive-runner: ${ident} reached plan attempt cap (${prior}/${maxPlanAttempts})`);
-        const alreadyEscalated = hasLabel(issue, OWNER_REQUIRED_LABEL) || comments.some(isAttemptCapEscalationComment);
+        // Idempotency is scoped to the owner's most recent decision, not to all
+        // time. Once the owner has decided on a previous escalation, the sticky
+        // owner-required label and the old escalation comment are evidence of
+        // THAT round, not this one — so only an escalation comment newer than
+        // the decision may suppress a new one. Without this, an approved retry
+        // that fails again goes permanently silent.
+        const priorDecision = findAttemptCapDecision(comments);
+        const decisionAtMs = priorDecision.at ? Date.parse(priorDecision.at) : NaN;
+        const newestEscalation = newestAttemptCapEscalation(comments);
+        const alreadyEscalated = Number.isFinite(decisionAtMs)
+          ? !!(newestEscalation && newestEscalation.t > decisionAtMs)
+          : (hasLabel(issue, OWNER_REQUIRED_LABEL) || !!newestEscalation);
         if (!dryRun && !alreadyEscalated) {
           let labelOk = false;
           try {
@@ -830,7 +855,7 @@ export async function runDirectiveSweepOnce(deps = {}) {
       }
 
       const ctx = await bounded("context retrieval", () => retrieveContext({ issue, targetRole: "CORLEONE", taskKind: "directive-plan", now }), CONTEXT_TIMEOUT_MS);
-      const prompt = buildPlanPrompt(issue, ctx.ok ? ctx.value : { status: "degraded", error: ctx.error });
+      const prompt = buildPlanPrompt(issue, ctx.ok ? ctx.value : { status: "degraded", error: ctx.error }, state.lastPlanFailures?.[key] || inferLastPlanFailure(comments) || null);
       const out = await dispatchPlan(prompt, { issue, timeoutMs: PLAN_TIMEOUT_MS });
       const text = cap(out && out.stdout ? out.stdout : out && out.text ? out.text : "");
       const parsed = parsePlan(text);

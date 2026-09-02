@@ -52,6 +52,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { discoverPaperclipPort } from "./watcher.mjs";
+import { pauseBanner, readPause } from "./pause-gate.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -525,8 +526,34 @@ export async function runSupervisorOnce(deps = {}) {
     log = (m) => console.log(m),
     now = Date.now,
     sleep = defaultSleep,
+    checkPause = readPause,
   } = deps;
   const nowMs = typeof now === "function" ? now() : now;
+
+  // Emergency stop comes first. This module can `pm2 resurrect` and message the
+  // OWNER, so while FounderOS is paused it must do neither — restarting the very
+  // processes the owner just stopped would defeat the stop button. Fails closed:
+  // readPause() already reports PAUSED when it cannot read the flag, and a throw
+  // here is treated as paused too.
+  let pauseState;
+  try {
+    pauseState = checkPause();
+  } catch (err) {
+    pauseState = { paused: true, reason: `pause state unreadable: ${(err && err.message) || err}` };
+  }
+  if (pauseState && pauseState.paused) {
+    const banner = pauseBanner(pauseState) || "FounderOS PAUSED.";
+    log(`pm2-supervisor: ${banner} — tidak resurrect, tidak alert.`);
+    try {
+      await appendEvidence(JSON.stringify({
+        ts: nowMs,
+        outcome: "paused",
+        severity: "paused",
+        reason: pauseState.reason || null,
+      }));
+    } catch { /* never throw */ }
+    return { outcome: "paused", banner };
+  }
 
   let state;
   try { state = await readState(); } catch { state = {}; }

@@ -18,6 +18,12 @@ const SKILL_MATRIX_PATH = path.join(CONFIG_DIR, 'skill-matrix.json');
 const DECISION_LEDGER_PATH = path.join(CONFIG_DIR, 'decision-ledger.json');
 const AGENT_REGISTRY_PATH = path.join(CONFIG_DIR, 'agent-registry.json');
 
+// A record written before the wrapper recorded timeouts explicitly is counted
+// as a timeout when it ran essentially the whole wrapper cap (8 minutes in the
+// dispatch wrappers). Without this, historic timeouts silently read as ordinary
+// failures and the timeout rate looks far better than it is.
+const LANE_TIMEOUT_FALLBACK_MS = 470_000;
+
 const PROBE_TO_LANE: Record<string, string> = {
   codex: 'corleone',
   kimi: 'sjahrir',
@@ -61,6 +67,7 @@ export interface LaneUsageEntry {
   ok: boolean;
   exitCode: number | null;
   durationMs: number;
+  timedOut?: boolean;
   extra?: {
     skipped?: boolean;
     reason?: string;
@@ -72,6 +79,8 @@ export interface LaneStat {
   runs: number;
   ok: number;
   failed: number;
+  timedOut: number;
+  timeoutRate: number;
   avgDurationMs: number;
   lastTs: string | null;
   quotaExhausted: boolean;
@@ -281,7 +290,8 @@ function isLaneUsageEntry(v: unknown): v is LaneUsageEntry {
     typeof v.promptLength !== 'number' ||
     typeof v.ok !== 'boolean' ||
     (v.exitCode !== null && typeof v.exitCode !== 'number') ||
-    typeof v.durationMs !== 'number'
+    typeof v.durationMs !== 'number' ||
+    (v.timedOut !== undefined && typeof v.timedOut !== 'boolean')
   ) {
     return false;
   }
@@ -397,6 +407,7 @@ export async function readLanes(): Promise<LaneStat[] | null> {
       runs: number;
       ok: number;
       failed: number;
+      timedOut: number;
       totalDurationMs: number;
       lastTs: string | null;
     }
@@ -407,14 +418,19 @@ export async function readLanes(): Promise<LaneStat[] | null> {
         runs: 0,
         ok: 0,
         failed: 0,
+        timedOut: 0,
         totalDurationMs: 0,
         lastTs: null,
       };
       const isSkipped = entry.extra?.skipped === true;
       if (!isSkipped) {
+        const timedOut =
+          entry.timedOut === true ||
+          (typeof entry.timedOut !== 'boolean' && entry.durationMs >= LANE_TIMEOUT_FALLBACK_MS);
         acc.runs += 1;
         if (entry.ok) acc.ok += 1;
         else acc.failed += 1;
+        if (timedOut) acc.timedOut += 1;
         acc.totalDurationMs += entry.durationMs;
       }
       if (acc.lastTs === null || Date.parse(entry.ts) > Date.parse(acc.lastTs)) {
@@ -444,6 +460,8 @@ export async function readLanes(): Promise<LaneStat[] | null> {
         runs: acc?.runs ?? 0,
         ok: acc?.ok ?? 0,
         failed: acc?.failed ?? 0,
+        timedOut: acc?.timedOut ?? 0,
+        timeoutRate: acc && acc.runs > 0 ? Math.round((acc.timedOut / acc.runs) * 100) : 0,
         avgDurationMs: acc && acc.runs > 0 ? acc.totalDurationMs / acc.runs : 0,
         lastTs: acc?.lastTs ?? null,
         quotaExhausted: routingEntry?.quotaExhausted ?? false,

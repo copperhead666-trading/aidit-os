@@ -74,12 +74,11 @@
 //   When the OWNER's message is a bare slash command — the whole trimmed text is
 //   a single line starting with `/`, optionally followed by arguments on that
 //   same line (e.g. "/pause" or "/stop extra args") — do NOT create an issue.
-//   We do NOT implement any command's behaviour: what pausing should actually
-//   pause is a real decision the owner has not made, and guessing it would be
-//   worse than honestly saying we do not have it. Instead we reply once in
-//   Indonesian naming what actually does work (tap APPROVE/REJECT on a card,
-//   reply to a card to attach a note, or send a normal message without a leading
-//   slash to assign new work). A message that merely CONTAINS a slash, or a
+//   We dispatch known commands through telegram-commands.mjs. Unknown commands
+//   get one Indonesian fallback reply naming the registered commands plus what
+//   else works (tap APPROVE/REJECT on a card, reply to a card to attach a note,
+//   or send a normal message without a leading slash to assign new work). A
+//   message that merely CONTAINS a slash, or a
 //   multi-line instruction whose first line happens to start with one, is real
 //   work and must still become a directive — only a message whose entire content
 //   is one slash-token (plus optional same-line arguments) is a command.
@@ -165,7 +164,7 @@ import {
   OWNER_CHAT_ID,
 } from "./telegram-client.mjs";
 import { parseDecisionOptionsFromComments } from "./telegram-decision-options.mjs";
-import { handleCommand, parseCommand } from "./telegram-commands.mjs";
+import { COMMANDS, handleCommand, parseCommand } from "./telegram-commands.mjs";
 import { pauseBanner, readPause } from "./pause-gate.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -381,9 +380,8 @@ export function escMd(s) {
 // line) — e.g. "/pause" or "/stop extra args". A message that merely CONTAINS
 // a slash somewhere, or a multi-line instruction whose first line happens to
 // start with one, is NOT a bare command and remains real work (a directive).
-// We intentionally do NOT implement any command's behaviour: what pausing
-// should pause is a real decision the owner has not made, and guessing would be
-// worse than honestly saying we do not have it. Exported so tests can assert on it.
+// Known commands are handled by telegram-commands.mjs; unknown commands get the
+// honest fallback. Exported so tests can assert on bare-command detection.
 export function isBareSlashCommand(text) {
   const t = String(text == null ? "" : text).trim();
   if (!t) return false;
@@ -396,12 +394,15 @@ export function isBareSlashCommand(text) {
 export function slashCommandNotImplementedReply(rawText) {
   const t = String(rawText == null ? "" : rawText).trim();
   const cmd = (t.split(/\s+/)[0] || t);
+  const commandLines = COMMANDS.map((c) => `  - /${c.command} - ${c.description}\n`).join("");
   return (
-    `Maaf, ${cmd} bukan perintah yang diterapkan sistem ini — sistem belum punya perintah apa pun saat ini.\n\n` +
-    `Yang tersedia:\n` +
-    `• Ketuk SETUJUI atau TOLAK pada kartu keputusan untuk memutuskan.\n` +
-    `• Balas sebuah kartu keputusan untuk menambahkan catatan.\n` +
-    `• Kirim pesan biasa tanpa garis miring di awal untuk memberikan pekerjaan baru.`
+    "Maaf, " + cmd + " bukan perintah yang dikenali sistem ini.\n\n"
+    + "Perintah yang ada:\n"
+    + commandLines
+    + "\nSelain itu:\n"
+    + "- Ketuk SETUJUI atau TOLAK pada kartu keputusan untuk memutuskan.\n"
+    + "- Balas sebuah kartu keputusan untuk menambahkan catatan.\n"
+    + "- Kirim pesan biasa tanpa garis miring di awal untuk memberikan pekerjaan baru."
   );
 }
 
@@ -602,9 +603,9 @@ export async function processUpdateForCallback(upd, ctx) {
     // ---- Bare slash-command guard ----
     // If the OWNER's message is a bare slash command (entire trimmed text is a
     // single line starting with `/`, optionally with arguments on that line),
-    // do NOT create an issue. We do not implement any command; reply once in
-    // Indonesian naming what actually works (tap a button, reply to a card, or
-    // send a normal message). A message that merely CONTAINS a slash, or a
+    // do NOT create an issue. Known commands are handled directly; unknown ones
+    // get one fallback reply naming what is available. A message that merely
+    // CONTAINS a slash, or a
     // multi-line instruction whose first line starts with `/`, is real work and
     // falls through to the directive path below.
     if (isBareSlashCommand(msgText)) {
