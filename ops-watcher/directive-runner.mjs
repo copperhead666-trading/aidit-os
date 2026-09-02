@@ -190,7 +190,8 @@ function isUnexecutableComment(c) {
 // the reason when it cannot. The three failures need different fixes — no plan
 // comment at all, a plan comment with no OBJECTIVE line, and a plan that does
 // not parse — so they are reported separately rather than as one "no plan".
-export function capturePlanForExecution(comments) {
+export function capturePlanForExecution(rawComments) {
+  const comments = commentsOldestFirst(rawComments);
   const planIdx = findLastIndex(comments, isPlanComment);
   if (planIdx < 0) return { ok: false, reason: "plan-comment-missing" };
   const planBody = bodyOf(comments[planIdx]);
@@ -212,6 +213,26 @@ function hasUnexecutableReportAfter(comments, approvedAtIso) {
     if (t != null && t > cutoff) return true;
   }
   return false;
+}
+// Paperclip's comments endpoint returns NEWEST FIRST. Every helper below that
+// reaches for "the last matching comment" assumed the opposite, so on a real
+// issue they read the OLDEST plan and the OLDEST decision. That is what kept
+// KOL-73 unexecutable: each new plan was posted, approved, and then ignored in
+// favour of the 2026-09-01 plan whose multi-line PowerShell VERIFY cannot parse
+// — "missing OUT OF SCOPE" every sweep, no matter how good the new plan was.
+// The test fixtures all built their arrays oldest-first, which is why no suite
+// ever saw it.
+//
+// Ordering is normalised once, here, so the positional helpers mean what they
+// say. If any comment lacks a parsable timestamp the original order is kept
+// rather than guessed at.
+export function commentsOldestFirst(comments) {
+  const list = Array.isArray(comments) ? comments : [];
+  if (list.length < 2) return list;
+  const decorated = list.map((c, i) => ({ c, i, t: commentTime(c) }));
+  if (decorated.some((d) => d.t == null)) return list;
+  const sorted = decorated.slice().sort((a, b) => (a.t - b.t) || (a.i - b.i));
+  return sorted.map((d) => d.c);
 }
 function findLastIndex(comments, pred) {
   for (let i = (comments || []).length - 1; i >= 0; i--) if (pred(comments[i])) return i;
@@ -317,7 +338,7 @@ export function findPlanDecision(comments, planCommentAt) {
 }
 
 export function classifyDirective(issue, comments, { now = Date.now, stalledAfterMs = DEFAULT_STALLED_AFTER_MS } = {}) {
-  const cmts = Array.isArray(comments) ? comments : [];
+  const cmts = commentsOldestFirst(comments);
   const newest = newestComment(cmts);
   const lastCommentAt = newest ? new Date(newest.t).toISOString() : null;
   const status = String(issue?.status || "").toLowerCase();
@@ -881,7 +902,7 @@ export async function runDirectiveSweepOnce(deps = {}) {
           summary.errors.push(`${ident}: comments network error: ${cRes.networkErrorMessage}`);
           continue;
         }
-        comments = Array.isArray(cRes.body) ? cRes.body : [];
+        comments = commentsOldestFirst(Array.isArray(cRes.body) ? cRes.body : []);
       } catch (err) {
         summary.errors.push(`${ident}: comments fetch threw: ${err && err.message ? err.message : err}`);
         continue;

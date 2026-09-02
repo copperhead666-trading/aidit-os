@@ -17,6 +17,7 @@ import {
   validateVerifyCommand,
   runDirectiveSweepOnce,
   capturePlanForExecution,
+  commentsOldestFirst,
   readStateOutcome,
   UNEXECUTABLE_MARKER,
   buildExecutionPrompt,
@@ -1827,6 +1828,96 @@ await t("C6 a pending card whose stored plan is unreadable is reported, not retr
   assert.equal(cards.length, 0);
   assert.equal(res.cardsRetried, 0);
   assert.equal(logs.some((l) => /card retry skipped/.test(l)), true);
+});
+
+
+await t("O1 capturePlanForExecution reads the newest parseable plan from newest-first comments", async () => {
+  const newerPlan = goodPlan.replace("Menyiapkan perubahan kecil yang diminta owner.", "Menyiapkan normalisasi komentar terbaru untuk Paperclip.");
+  const olderPlan = goodPlan
+    .replace("Menyiapkan perubahan kecil yang diminta owner.", "Membaca rencana lama yang tidak boleh dipakai.")
+    .replace(/^OUT OF SCOPE: .+$/m, "")
+    .replace("RISK: low", "RISK: high");
+  const comments = [
+    c(`${PLAN_MARKER} (2026-09-02T10:00:00.000Z):\n${newerPlan}`, "2026-09-02T10:00:00.000Z"),
+    c(`${PLAN_MARKER} (2026-09-01T09:00:00.000Z):\n${olderPlan}`, "2026-09-01T09:00:00.000Z"),
+  ];
+  const captured = capturePlanForExecution(comments);
+  assert.equal(captured.ok, true);
+  assert.match(captured.plan.objective, /komentar terbaru/);
+  assert.equal(captured.plan.risk, "low");
+});
+
+await t("O2 capturePlanForExecution gives the same verdict for oldest-first comments", async () => {
+  const newerPlan = goodPlan.replace("Menyiapkan perubahan kecil yang diminta owner.", "Menyiapkan normalisasi komentar terbaru untuk Paperclip.");
+  const olderPlan = goodPlan
+    .replace("Menyiapkan perubahan kecil yang diminta owner.", "Membaca rencana lama yang tidak boleh dipakai.")
+    .replace(/^OUT OF SCOPE: .+$/m, "")
+    .replace("RISK: low", "RISK: high");
+  const newestFirst = [
+    c(`${PLAN_MARKER} (2026-09-02T10:00:00.000Z):\n${newerPlan}`, "2026-09-02T10:00:00.000Z"),
+    c(`${PLAN_MARKER} (2026-09-01T09:00:00.000Z):\n${olderPlan}`, "2026-09-01T09:00:00.000Z"),
+  ];
+  const oldestFirst = newestFirst.slice().reverse();
+  const fromNewestFirst = capturePlanForExecution(newestFirst);
+  const fromOldestFirst = capturePlanForExecution(oldestFirst);
+  assert.deepEqual(fromOldestFirst, fromNewestFirst);
+  assert.match(fromOldestFirst.plan.objective, /komentar terbaru/);
+});
+
+await t("O3 classifyDirective does not let an old approval authorize a newer plan", async () => {
+  const comments = [
+    c(`${PLAN_MARKER} (2026-09-02T10:00:00.000Z):\n${goodPlan}`, "2026-09-02T10:00:00.000Z"),
+    c(`${APPROVED_MARKER}: lanjutkan rencana lama`, "2026-09-01T09:30:00.000Z"),
+    c(`${PLAN_MARKER} (2026-09-01T09:00:00.000Z):\n${goodPlan}`, "2026-09-01T09:00:00.000Z"),
+  ];
+  const classified = classifyDirective(issue(), comments, { now: NOW });
+  assert.equal(classified.state, "awaiting-approval");
+  assert.equal(classified.reason, "plan posted, awaiting owner decision");
+});
+
+await t("O4 commentsOldestFirst sorts stably and leaves unsafe input unchanged", async () => {
+  const a = c("a", "2026-09-01T09:10:00.000Z");
+  const b = c("b", "2026-09-01T09:00:00.000Z");
+  const cSame = c("c", "2026-09-01T09:00:00.000Z");
+  const d = c("d", "2026-09-01T09:20:00.000Z");
+  const sorted = commentsOldestFirst([a, b, cSame, d]);
+  assert.deepEqual(sorted.map((x) => x.body), ["b", "c", "a", "d"]);
+
+  const missingCreatedAt = [a, { id: "missing", body: "missing createdAt" }, b];
+  assert.strictEqual(commentsOldestFirst(missingCreatedAt), missingCreatedAt);
+  assert.deepEqual(missingCreatedAt.map((x) => x.body), ["a", "missing createdAt", "b"]);
+
+  const invalidCreatedAt = [a, { id: "invalid", body: "invalid createdAt", createdAt: "not-a-date" }, b];
+  assert.strictEqual(commentsOldestFirst(invalidCreatedAt), invalidCreatedAt);
+  assert.deepEqual(invalidCreatedAt.map((x) => x.body), ["a", "invalid createdAt", "b"]);
+});
+
+await resetTmp();
+await t("O5 runDirectiveSweepOnce accepts newest-first approved comments without re-reading the old broken plan", async () => {
+  const state = { attempts: {}, lastPlanFailures: {}, pendingCards: {}, lastSweepMs: 0 };
+  const newerPlan = goodPlan.replace("Menyiapkan perubahan kecil yang diminta owner.", "Menjalankan rencana terbaru yang sudah disetujui.");
+  const olderPlan = goodPlan
+    .replace("Menyiapkan perubahan kecil yang diminta owner.", "Membaca rencana lama yang rusak.")
+    .replace(/^OUT OF SCOPE: .+$/m, "");
+  const comments = {
+    i1: [
+      c(`${APPROVED_MARKER}: lanjutkan rencana terbaru`, "2026-09-02T10:10:00.000Z"),
+      c(`${PLAN_MARKER} (2026-09-02T10:00:00.000Z):\n${newerPlan}`, "2026-09-02T10:00:00.000Z"),
+      c(`${APPROVED_MARKER}: lanjutkan rencana lama`, "2026-09-01T09:30:00.000Z"),
+      c(`${PLAN_MARKER} (2026-09-01T09:00:00.000Z):\n${olderPlan}`, "2026-09-01T09:00:00.000Z"),
+    ],
+  };
+  const { deps, getExecuteCalls } = makeSweepDeps({
+    issues: [issue({ id: "i1", identifier: "KOL-O5" })],
+    comments,
+    extra: { _fs: memoryStateFs(state) },
+  });
+  const summary = await runDirectiveSweepOnce(deps);
+  assert.equal(summary.approved.length, 1);
+  assert.equal(summary.approved[0].identifier, "KOL-O5");
+  assert.equal(summary.unexecutable.length, 0);
+  assert.equal(summary.errors.some((e) => /plan-parse-failed/.test(e)), false);
+  assert.equal(getExecuteCalls(), 1);
 });
 
 await resetTmp();
