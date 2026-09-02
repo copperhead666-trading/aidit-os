@@ -247,6 +247,41 @@ async function t10_multipleFindingsOneBundledAlert() {
   ok("T10: multiple simultaneous findings -> exactly ONE bundled postAlert call");
 }
 
+async function t31_failedAlertDoesNotAdvanceCooldown() {
+  // The dedupe state used to be written before the alert was attempted, so a
+  // spawn that failed still stamped lastAlertedAt and suppressed the finding
+  // for COOLDOWN_MS. postAlert reports that failure by return value, never by
+  // throwing, which is why the old try/catch did not notice.
+  const missing = "ops-watcher/not-there.mjs";
+  const { deps, alertCalls, stateStore } = makeDeps({
+    readAllowedScripts: async () => [missing],
+    statFile: async () => { throw new Error("ENOENT"); },
+    postAlert: (msg) => { alertCalls.push(msg); return { pid: null, error: "spawn ENOENT" }; },
+  });
+  const r = await runAuditClerkOnce(deps);
+  assert.equal(alertCalls.length, 1, "T31: the alert was attempted");
+  assert.equal(r.alerted, false, "T31: a failed spawn is not reported as alerted");
+  const stored = stateStore.getStored();
+  const key = `orphaned-allowlist:${missing}`;
+  assert.equal(stored.alerts[key], undefined, "T31: an undelivered finding keeps no cooldown stamp");
+  ok("T31: postAlert failure -> alerted=false and the finding's cooldown is not advanced");
+}
+
+async function t32_deliveredAlertStillAdvancesCooldown() {
+  const missing = "ops-watcher/not-there.mjs";
+  const { deps, stateStore } = makeDeps({
+    readAllowedScripts: async () => [missing],
+    statFile: async () => { throw new Error("ENOENT"); },
+  });
+  const r = await runAuditClerkOnce(deps);
+  assert.equal(r.alerted, true, "T32: a delivered alert still reports alerted");
+  assert.equal(r.notifyPid, 4242, "T32: the pid is carried through");
+  const stored = stateStore.getStored();
+  const key = `orphaned-allowlist:${missing}`;
+  assert.equal(stored.alerts[key].lastAlertedAt, NOW, "T32: a delivered finding advances its cooldown");
+  ok("T32: postAlert success -> alerted=true and the cooldown is advanced");
+}
+
 function t11_registryDriftPromptUsesPathsNotFileBodies() {
   const prompt = buildRegistryDriftPrompt("config/agent-registry.json", "handoffs/sjahrir/CANONICAL-ROLE-MAP.json");
   assert.ok(prompt.includes("--in pointed at the FounderOS-Aidit repository root"), "T11: prompt names workspace context");
@@ -655,6 +690,8 @@ async function main() {
     t28_guardLaneQuotaSkipDoesNotDispatchAndPreservesLastAttempt,
     t29_guardLaneCooldownSkipProducesNoFinding,
     t30_classifyDriftOutputFourShapesViaSharedHelper,
+    t31_failedAlertDoesNotAdvanceCooldown,
+    t32_deliveredAlertStillAdvancesCooldown,
   ];
   for (const t of tests) await t();
   console.log(`\naudit-clerk.regression.test.mjs: ${pass}/${tests.length} passed`);

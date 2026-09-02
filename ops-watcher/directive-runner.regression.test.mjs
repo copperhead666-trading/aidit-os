@@ -1454,6 +1454,42 @@ await t("K7 a parseable approved plan is still captured and executed, with no re
   assert.equal(unexecutablePosts(posts).length, 0);
 });
 
+await resetTmp();
+await t("K9 a Telegram send that is refused rather than thrown is recorded, not lost", async () => {
+  // sendMessage returns { sent: false, ok: false, reason } when the token is
+  // missing or the API refuses; it does not throw. The catch this replaced saw
+  // only thrown errors, so a refused send left summary.errors empty and the
+  // owner's single push notification for a failed directive just never arrived.
+  const { issues, comments } = approved73([planComment73(goodPlan), c(TG_APPROVE, "2026-09-01T09:30:00.000Z")]);
+  const { deps, messages } = makeSweepDeps({
+    issues,
+    comments,
+    extra: {
+      executeDirective: async () => ({ outcome: "reverted", reason: "verify-red" }),
+      sendOwnerMessage: async (text) => { messages.push(text); return { sent: false, ok: false, reason: "TELEGRAM_BOT_TOKEN_AHMAD not set" }; },
+    },
+  });
+  const summary = await runDirectiveSweepOnce(deps);
+  assert.equal(summary.reverted, 1, "the directive still counts as reverted");
+  assert.equal(messages.length, 1, "the send was attempted exactly once, no retry loop");
+  const recorded = summary.errors.filter((e) => /telegram send failed/.test(e));
+  assert.equal(recorded.length, 1, "the refused send is recorded");
+  assert.match(recorded[0], /TELEGRAM_BOT_TOKEN_AHMAD not set/, "the reason is carried through");
+});
+
+await resetTmp();
+await t("K10 a delivered Telegram send records no error", async () => {
+  const { issues, comments } = approved73([planComment73(goodPlan), c(TG_APPROVE, "2026-09-01T09:30:00.000Z")]);
+  const { deps, messages } = makeSweepDeps({
+    issues,
+    comments,
+    extra: { executeDirective: async () => ({ outcome: "reverted", reason: "verify-red" }) },
+  });
+  const summary = await runDirectiveSweepOnce(deps);
+  assert.equal(messages.length, 1);
+  assert.equal(summary.errors.filter((e) => /telegram/.test(e)).length, 0);
+});
+
 await t("K8 capturePlanForExecution names each failure without running a sweep", () => {
   assert.equal(capturePlanForExecution([]).reason, "plan-comment-missing");
   assert.equal(capturePlanForExecution([c("catatan biasa")]).reason, "plan-comment-missing");

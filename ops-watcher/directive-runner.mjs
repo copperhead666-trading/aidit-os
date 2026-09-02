@@ -37,6 +37,7 @@ import {
   patchIssue,
 } from "./paperclip-write-client.mjs";
 import { retrieveDispatchContext } from "./ahmad-context-retrieval.mjs";
+import { deliverAlert } from "./alert-delivery.mjs";
 import { sendMessage as telegramSendMessage } from "./telegram-client.mjs";
 // Stage 3 reuse — import, do not rewrite. The snapshot/rollback helpers and the
 // lane registry already implement the same shape for the self-repair path; a
@@ -1049,12 +1050,13 @@ export async function runDirectiveSweepOnce(deps = {}) {
           const body = failureComment({ outcome, reason, nowMs });
           const fpost = await _post(`${base}/api/issues/${exIssue.id}/comments`, { body, authorType: "user" });
           if (fpost.networkError) summary.errors.push(`${exIdent}: failure comment network error: ${fpost.networkErrorMessage}`);
-          // Exactly ONE Telegram message — no retry loop.
-          try {
-            await sendOwnerMsg(failureTelegramText({ identifier: exIdent, outcome, reason }));
-          } catch (e) {
-            summary.errors.push(`${exIdent}: telegram send error: ${e && e.message ? e.message : e}`);
-          }
+          // Exactly ONE Telegram message — no retry loop. sendMessage reports
+          // a refused send as { sent: false, reason } instead of throwing, so
+          // the catch this replaces covered only a thrown error and a message
+          // the API rejected left no trace at all — the owner's single push
+          // notification for a failed directive simply never arrived.
+          const tg = await deliverAlert(() => sendOwnerMsg(failureTelegramText({ identifier: exIdent, outcome, reason })));
+          if (!tg.delivered) summary.errors.push(`${exIdent}: telegram send failed: ${tg.reason}`);
           // Do NOT patch the status. Count by outcome bucket.
           if (outcome === "refused") summary.refused += 1;
           else summary.reverted += 1; // reverted | aborted

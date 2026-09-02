@@ -28,6 +28,7 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { ALLOWED_SCRIPTS } from "./ahmad-mcp-server.mjs";
 import { guardLaneStart, isUnusableModelOutput } from "./lane-guard.mjs";
+import { deliverAlert } from "./alert-delivery.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -638,12 +639,35 @@ export async function runAuditClerkOnce(deps = {}) {
     }
   }
 
+  // Alert first, then record what actually happened. The dedupe state used to
+  // be written before the alert was attempted, marking every finding as
+  // alerted at nowMs; a spawn that failed was logged as "not relayed" and then
+  // suppressed for the whole COOLDOWN_MS, so the finding was never retried.
+  let alerted = false;
+  let notifyPid = null;
+  if (toAlert.length > 0) {
+    const delivery = await deliverAlert(() => postAlert(buildAlertMessage(toAlert)));
+    alerted = delivery.delivered;
+    notifyPid = delivery.pid ?? null;
+    if (alerted) {
+      log(`audit-clerk: spawned ahmad-notify (pid=${notifyPid}) with ${toAlert.length} finding(s)`);
+    } else {
+      log(`audit-clerk: ahmad-notify spawn FAILED (${delivery.reason}) - findings not relayed, cooldown not advanced`);
+    }
+  } else {
+    log(findings.length > 0
+      ? `audit-clerk: ${findings.length} finding(s) suppressed (within ${COOLDOWN_MS / 3600000}h re-alert cooldown)`
+      : "audit-clerk: no findings - no alert spawned");
+  }
+
   const newAlerts = {};
   for (const f of findings) {
     const prev = alerts[f.key];
-    if (toAlert.includes(f)) {
+    // Only a finding that actually went out advances its cooldown. One that
+    // did not keeps its previous stamp, so the next sweep tries again.
+    if (alerted && toAlert.includes(f)) {
       newAlerts[f.key] = { lastAlertedAt: nowMs, finding: f.detail };
-    } else {
+    } else if (prev) {
       newAlerts[f.key] = prev;
     }
   }
@@ -651,23 +675,6 @@ export async function runAuditClerkOnce(deps = {}) {
     await writeState(stateFile, { alerts: newAlerts, driftCheck });
   } catch (err) {
     log(`audit-clerk: state write threw (${err && err.message}) - dedupe may repeat on next run`);
-  }
-
-  let alerted = false;
-  let notifyPid = null;
-  if (toAlert.length > 0) {
-    try {
-      const spawned = postAlert(buildAlertMessage(toAlert));
-      alerted = true;
-      notifyPid = spawned && spawned.pid;
-      log(`audit-clerk: spawned ahmad-notify (pid=${notifyPid}) with ${toAlert.length} finding(s)`);
-    } catch (err) {
-      log(`audit-clerk: ahmad-notify spawn FAILED (${err && err.message}) - findings not relayed`);
-    }
-  } else {
-    log(findings.length > 0
-      ? `audit-clerk: ${findings.length} finding(s) suppressed (within ${COOLDOWN_MS / 3600000}h re-alert cooldown)`
-      : "audit-clerk: no findings - no alert spawned");
   }
 
   return {

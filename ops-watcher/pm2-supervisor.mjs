@@ -53,6 +53,7 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { discoverPaperclipPort } from "./watcher.mjs";
 import { pauseBanner, readPause } from "./pause-gate.mjs";
+import { deliverAlert } from "./alert-delivery.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -575,13 +576,14 @@ export async function runSupervisorOnce(deps = {}) {
     if (nowMs - state.lastAlertAt < ALERT_COOLDOWN_MS) {
       return { alerted: false, reason: "alert-cooldown" };
     }
-    try {
-      await postAlert(message);
-      state.lastAlertAt = nowMs;
-      return { alerted: true };
-    } catch (err) {
-      return { alerted: false, reason: String((err && err.message) || err) }
-    }
+    // postAlert reports a failed spawn by return value, so the catch this
+    // replaces only ever saw a thrown error. Stamping lastAlertAt on an unread
+    // result meant a PM2 outage alert that never left the machine still
+    // silenced the next ALERT_COOLDOWN_MS of alerts.
+    const delivery = await deliverAlert(() => postAlert(message));
+    if (!delivery.delivered) return { alerted: false, reason: delivery.reason };
+    state.lastAlertAt = nowMs;
+    return { alerted: true };
   };
 
   const assess = async () => {

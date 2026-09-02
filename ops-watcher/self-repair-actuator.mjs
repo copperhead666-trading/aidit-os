@@ -14,6 +14,7 @@ import { promises as realFs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
+import { deliverAlert } from "./alert-delivery.mjs";
 
 import {
   repairScopeFor,
@@ -459,10 +460,18 @@ export async function escalate(fault, _evidence, deps = {}) {
     return { alerted: false, reason: "cooldown" };
   }
   const message = buildEscalationMessage(fault);
-  try { postAlert(message); } catch { /* best-effort */ }
+  // postAlert never throws: it catches its own spawn failure and reports it in
+  // the return value, so the old `try { postAlert(m) } catch {}` caught nothing
+  // and `alerted: true` was unconditional. Writing lastAlertedMs after a failed
+  // alert was the worse half — the cooldown above then suppressed every retry,
+  // turning one undelivered escalation into a permanently silent channel.
+  const delivery = await deliverAlert(() => postAlert(message));
+  if (!delivery.delivered) {
+    return { alerted: false, reason: `escalation alert failed: ${delivery.reason}` };
+  }
   state.escalations = { ...escalations, [stepName]: { lastAlertedMs: nowMs } };
   await writeStateRaw(state, { writeFile: deps.writeFile, stateFile });
-  return { alerted: true };
+  return { alerted: true, pid: delivery.pid ?? null };
 }
 
 // =====================================================================

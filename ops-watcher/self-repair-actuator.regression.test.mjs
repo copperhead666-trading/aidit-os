@@ -539,6 +539,47 @@ async function testNoExternalEffectsAcrossBranches() {
 // =====================================================================
 // B10: escalate posts once then respects its 24h per-step cooldown
 // =====================================================================
+async function testEscalateFailedAlertKeepsRetrying() {
+  const name = "B10b escalate with a failed postAlert reports alerted=false and does not start the cooldown";
+  try {
+    // defaultPostAlert catches its own spawn failure and returns { pid: null,
+    // error } rather than throwing, so the `try { postAlert(m) } catch {}` this
+    // replaced caught nothing and returned alerted:true regardless. Stamping
+    // lastAlertedMs then suppressed the retry for the whole 24h window, so one
+    // undelivered escalation silenced the step entirely.
+    const stateFile = "/fake/escalate-fail-state.json";
+    const store = new Map();
+    const readFile = async (p) => {
+      const key = String(p);
+      if (!store.has(key)) { const e = new Error("ENOENT"); e.code = "ENOENT"; throw e; }
+      return Buffer.from(store.get(key));
+    };
+    const writeFile = async (p, data) => { store.set(String(p), Buffer.isBuffer(data) ? data : Buffer.from(data)); };
+    const failing = spy(() => ({ pid: null, error: "spawn ENOENT" }));
+    const working = spy(() => ({ pid: 321 }));
+    const fault = { name: "gbrain-curator", kind: "crash" };
+
+    const r1 = await escalate(fault, [], { stateFile, readFile, writeFile, postAlert: failing, now: () => T });
+    assert.equal(r1.alerted, false, "a failed spawn is not an alert");
+    assert.match(String(r1.reason), /ENOENT/, "the reason names the spawn failure");
+    assert.equal(failing.calls.length, 1);
+
+    // One minute later, well inside the 24h window: because the first attempt
+    // was never delivered, there is no cooldown to respect and it must retry.
+    const r2 = await escalate(fault, [], { stateFile, readFile, writeFile, postAlert: working, now: () => T + 60 * 1000 });
+    assert.equal(r2.alerted, true, "the next sweep retries an undelivered escalation");
+    assert.equal(r2.pid, 321, "the delivered attempt carries its pid");
+    assert.equal(working.calls.length, 1);
+
+    // And now the cooldown does apply.
+    const r3 = await escalate(fault, [], { stateFile, readFile, writeFile, postAlert: working, now: () => T + 2 * 60 * 1000 });
+    assert.equal(r3.alerted, false, "a delivered escalation still starts the cooldown");
+    assert.equal(r3.reason, "cooldown");
+    assert.equal(working.calls.length, 1, "no second call inside the window");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
 async function testEscalateCooldown() {
   const name = "B10 escalate posts once then respects 24h per-step cooldown";
   try {
@@ -698,6 +739,7 @@ async function main() {
   await testRevertedFullSuiteRed();
   await testNoExternalEffectsAcrossBranches();
   await testEscalateCooldown();
+  await testEscalateFailedAlertKeepsRetrying();
   await testResetCanaryStepBookkeeping();
   await testEvaluateDrillChecks();
   console.log("");

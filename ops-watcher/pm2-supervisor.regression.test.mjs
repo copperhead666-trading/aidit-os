@@ -388,6 +388,56 @@ async function testSupervisorCriticalUnrecovered() {
 }
 
 // =====================================================================
+// P11b: an alert that never left the machine must not start the cooldown
+// =====================================================================
+async function testSupervisorFailedAlertDoesNotStartCooldown() {
+  const name = "P11b runSupervisorOnce failed postAlert -> lastAlertAt not stamped, so the next sweep can alert again";
+  try {
+    // defaultPostAlert catches its own spawn failure and returns this shape
+    // instead of throwing, so the catch it replaced never saw it. Stamping
+    // lastAlertAt anyway meant one undelivered outage alert silenced the next
+    // ALERT_COOLDOWN_MS of them.
+    const mk = () => seqRunCommand([
+      jlistResult(MISSING_JLIST),
+      { ok: true, stdout: "resurrected", stderr: "" },
+      { ok: true, stdout: "saved", stderr: "" },
+      jlistResult(MISSING_JLIST),
+    ]);
+    const { deps, alertCalls, getState } = makeDeps({
+      runCommand: mk().runCommand,
+      initialState: { lastResurrectAt: 0 },
+    });
+    deps.postAlert = async (msg) => { alertCalls.push(msg); return { error: "spawn ENOENT" }; };
+    const r = await runSupervisorOnce(deps);
+    assert.equal(r.outcome, "unrecovered");
+    assert.equal(alertCalls.length, 1, "the alert was attempted");
+    assert.equal(getState().lastAlertAt, 0, "an undelivered alert does not advance the cooldown");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// P11c: a delivered alert still starts the cooldown
+// =====================================================================
+async function testSupervisorDeliveredAlertStartsCooldown() {
+  const name = "P11c runSupervisorOnce delivered postAlert -> lastAlertAt stamped as before";
+  try {
+    const { runCommand } = seqRunCommand([
+      jlistResult(MISSING_JLIST),
+      { ok: true, stdout: "resurrected", stderr: "" },
+      { ok: true, stdout: "saved", stderr: "" },
+      jlistResult(MISSING_JLIST),
+    ]);
+    const { deps, alertCalls, getState } = makeDeps({ runCommand, initialState: { lastResurrectAt: 0 } });
+    const r = await runSupervisorOnce(deps);
+    assert.equal(r.outcome, "unrecovered");
+    assert.equal(alertCalls.length, 1);
+    assert.equal(getState().lastAlertAt, NOW, "a delivered alert advances the cooldown");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
 // P12: critical inside RESURRECT_COOLDOWN_MS -> resurrect NOT called
 // =====================================================================
 async function testSupervisorCriticalInsideCooldown() {
@@ -599,6 +649,8 @@ async function main() {
     testSupervisorHealthy,
     testSupervisorCriticalRecovered,
     testSupervisorCriticalUnrecovered,
+    testSupervisorFailedAlertDoesNotStartCooldown,
+    testSupervisorDeliveredAlertStartsCooldown,
     testSupervisorCriticalInsideCooldown,
     testSupervisorUnknownNoResurrect,
     testSupervisorPausedNoResurrectNoAlert,
