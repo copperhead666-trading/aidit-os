@@ -101,3 +101,121 @@ All comment fixtures added here are built **newest-first**, the real API order.
 - **`.mcp.json` trim (333 → 115 tools)** still needs a Claude Code restart on
   ASUS.
 - `CLAUDE_FLOW_ENCRYPT_AT_REST` still off, still untouched.
+
+---
+
+## 7. Second block — the live send, and what it exposed
+
+The owner reopened the session, closed the ASUS session, and asked for the
+KOL-36 card to be delivered. Everything below came out of actually sending it.
+
+### 7.1 The card had never been sent, and could not be
+
+The S1 handoff recorded KOL-36 as "waiting on a single tap". It was not. There
+was no `[TELEGRAM SENT]` marker on the issue, and KOL-36 does not carry
+OWNER_REQUIRED - its only label is DIRECTIVE - so telegram-notify would never
+have picked it up. It was re-sent through `sendDecisionCardReal`, the sweep's
+own path.
+
+The first send returned **400**:
+
+    Bad Request: can't parse entities: Can't find end of the entity starting at byte offset 624
+
+`telegram-client` sends with `parse_mode: "Markdown"` and the card interpolated
+plan text unescaped. KOL-36's out-of-scope line contains `.env*`. One unpaired
+asterisk and the owner receives NOTHING - and the pendingCards retry would have
+re-sent the same unparseable bytes forever.
+
+This was introduced by the card work itself: the old card interpolated only the
+objective. Listing files, steps and out-of-scope is exactly where paths, globs
+and code fragments live. `escapeMarkdown` now lives in telegram-client.mjs,
+beside the code that picks the parse mode, and directive-runner applies it in
+`cardLine` - after truncation, so a trailing escape cannot be cut in half.
+
+**Only a live send found this.** Every suite was green before and after.
+
+### 7.2 The same class, three more times
+
+The reply-note acknowledgement, its failure notice and the directive-created
+receipt all interpolated owner-typed text into Markdown AND discarded the send
+result with `.catch(() => {})`. Owner text containing `*` therefore produced a
+400 that nobody could see, on the very message meant to tell the owner their
+directive exists. Fixed with escMd plus one helper that judges and logs.
+`"ACK sent to OWNER"` was also logged unconditionally - it now prints only when
+the send actually succeeded.
+
+telegram-notify.mjs was audited and left alone: it already escapes its title.
+
+### 7.3 KOL-36 ran end to end, and the plan was the thing that failed
+
+Owner tapped APPROVE at 09:08:12. The sweep classified it `approved`, executed,
+VERIFY went red, every change was reverted, and `DIRECTIVE GAGAL ... verify-red`
+was posted. Status was left `todo` rather than falsely marked done.
+
+**The loop works.** The plan was unsatisfiable by construction: `FILES: NONE`
+and an out-of-scope line forbidding file changes, with a VERIFY asserting that
+`handoffs/hermes-kimi/AHMAD-DELTA-PHASE1.md` contains "AHMAD HEADLESS E2E PASS".
+The file exists and does not contain it.
+
+So the gate asked the owner to authorise something no executor could satisfy.
+`920835a` now runs that VERIFY before the plan comment is posted when a plan
+declares no files and verifies with verify-file.mjs, and refuses the plan
+instead. Safe only because verify-file.mjs reads and matches - no spawn, no
+write - so the rule is deliberately not generalised.
+
+## 8. Commits in this block
+
+| | |
+|---|---|
+| `0835a65` | card text is Markdown-escaped; found by a live 400 |
+| `5ab63a2` | three owner acknowledgements escape, and a refused send is logged |
+| `920835a` | an unsatisfiable plan is refused before it reaches the owner |
+
+ops-watcher 48/48 at every commit. Listener suite 30 -> 37 cases,
+directive-runner 104 -> 108. Every new case was mutation-checked: the source
+change stashed, the suite re-run, and the new cases confirmed to FAIL without it.
+
+## 9. Corrections to my own reporting in §5 of this document
+
+- **"corleone-dispatch has no equivalent evidence recovery" was wrong.**
+  `corleone-dispatch.mjs:119` writes `r.stdout` BEFORE the timeout branch, so a
+  capped run keeps its output. What was lost in that run was codex's own closing
+  summary, which no dispatcher could have recovered. No work is needed there.
+
+- **I corrupted telegram-listener.mjs myself and had to restore it.** Windows
+  PowerShell 5.1 `Get-Content` reads a UTF-8 file with no BOM as ANSI, so every
+  em dash, ellipsis and emoji was mangled when the file was written back. The
+  `telegram-listener-daemon` suite caught it on the `'Memproses…'` assertion.
+  Use `[IO.File]::ReadAllText` / `WriteAllText` with a BOM-less UTF8Encoding, or
+  the lane's own edit tool. That warning is now in every lane task file.
+
+## 10. Lane behaviour worth carrying forward
+
+- **CORLEONE hit the 8-minute cap three times.** Every time, its edits had
+  already landed and only the closing report was lost. Do not read
+  `codex timed out` as "nothing happened" - check `git status` and run the suite
+  before deciding. Tasks sized at roughly one file plus its tests finish inside
+  the cap; two files plus a cross-module audit did not.
+- **A lane will exceed its brief if the brief invites it.** One task asked for a
+  Markdown audit "across senders" and came back having rewritten `pausedReply`,
+  changed owner-facing wording, and deleted an exported `escMd` from
+  telegram-notify - none of it requested, and the notify module already escaped
+  correctly. Those parts were reverted and the task re-issued naming the exact
+  three call sites. State the call sites, not the goal.
+- **HATTA did a two-file edit in 3.5 minutes** with `edit_file`, but left
+  `_check.mjs` at the repo root and `ops-watcher/_check_tmp.mjs` behind. Check
+  for scratch files after a HATTA run.
+
+## 11. Still open
+
+- **KOL-36 is not done.** It is `todo` with a failed execution recorded. Its
+  next re-plan is now the live test of `920835a`: if the planner emits the same
+  no-files plan, the owner should see a refusal comment rather than a card.
+- **KOL-29, KOL-30, KOL-67** carry OWNER_REQUIRED with a `[TELEGRAM SENT]`
+  marker already posted, so no new card will be sent for them. They are waiting
+  on the owner, not on the system.
+- **DETAILS has never been exercised live.** The owner tapped APPROVE. The plan
+  rendering, the 4096-character chunking and the comment ordering are proven by
+  mutation-checked tests only.
+- `.mcp.json` trim still needs a Claude Code restart on ASUS.
+- `CLAUDE_FLOW_ENCRYPT_AT_REST` still off.
