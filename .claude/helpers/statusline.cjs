@@ -757,31 +757,70 @@ function getGitInfo() {
   return result;
 }
 
+// Map a raw model id (claude-opus-5, claude-haiku-4-5-20251001, ...) to a
+// display name. Derives the version from the id instead of hard-coding it, so
+// a new model release does not silently render the previous generation.
+function prettyModelId(modelId) {
+  if (!modelId || typeof modelId !== 'string') return null;
+  const id = modelId.toLowerCase();
+  const families = ['opus', 'sonnet', 'haiku', 'fable'];
+  for (const fam of families) {
+    if (!id.includes(fam)) continue;
+    const label = fam.charAt(0).toUpperCase() + fam.slice(1);
+    // Version = digit groups right after the family name: opus-5 -> 5,
+    // haiku-4-5-20251001 -> 4.5 (an 8-digit group is a date, not a version).
+    const m = id.match(new RegExp(fam + '((?:[-_.][0-9]+)+)'));
+    if (!m) return label;
+    const parts = m[1].split(/[-_.]/).filter(Boolean).filter(x => x.length < 8);
+    return parts.length ? label + ' ' + parts.join('.') : label;
+  }
+  const seg = modelId.split('-').slice(1, 3).join(' ');
+  return seg || null;
+}
+
+// Normalize a filesystem path for comparison. ~/.claude.json stores the same
+// project under both "D:\Development" and "D:/Development"; CWD arrives with
+// the platform separator. Comparing raw strings misses the entry entirely.
+function normPath(v) {
+  const BS = String.fromCharCode(92);
+  return String(v || '').split(BS).join('/').replace(/[/]+$/, '').toLowerCase();
+}
+
 // Detect model name from Claude config (pure file reads, no exec)
 function getModelName() {
   try {
     const claudeConfig = readJSON(path.join(os.homedir(), '.claude.json'));
     if (claudeConfig && claudeConfig.projects) {
+      const cwdN = normPath(CWD);
+      // Longest matching project path wins, so a nested project is not
+      // shadowed by its parent appearing earlier in the object.
+      let best = null;
+      let bestLen = -1;
       for (const [projectPath, projectConfig] of Object.entries(claudeConfig.projects)) {
-        if (CWD === projectPath || CWD.startsWith(projectPath + '/')) {
-          const usage = projectConfig.lastModelUsage;
-          if (usage) {
-            const ids = Object.keys(usage);
-            if (ids.length > 0) {
-              let modelId = ids[ids.length - 1];
-              let latest = 0;
-              for (const id of ids) {
-                const ts = usage[id] && usage[id].lastUsedAt ? new Date(usage[id].lastUsedAt).getTime() : 0;
-                if (ts > latest) { latest = ts; modelId = id; }
-              }
-              if (modelId.includes('opus')) return 'Opus 4.8';
-              if (modelId.includes('sonnet')) return 'Sonnet 4.6';
-              if (modelId.includes('haiku')) return 'Haiku 4.5';
-              return modelId.split('-').slice(1, 3).join(' ');
-            }
-          }
-          break;
+        const pN = normPath(projectPath);
+        if (cwdN !== pN && !cwdN.startsWith(pN + '/')) continue;
+        const usage = projectConfig && projectConfig.lastModelUsage;
+        if (!usage || Object.keys(usage).length === 0) continue;
+        if (pN.length > bestLen) { bestLen = pN.length; best = usage; }
+      }
+      if (best) {
+        const ids = Object.keys(best);
+        let modelId = ids[ids.length - 1];
+        let bestScore = -1;
+        for (const id of ids) {
+          const u = best[id] || {};
+          // Prefer an explicit timestamp; entries written without lastUsedAt
+          // fall back to work volume, which tracks the session's real model
+          // far better than object key order (a one-shot Haiku title call
+          // otherwise outranks the Opus session that did all the work).
+          const ts = u.lastUsedAt ? new Date(u.lastUsedAt).getTime() : 0;
+          const vol = (u.inputTokens || 0) + (u.outputTokens || 0)
+            + (u.cacheReadInputTokens || 0) + (u.cacheCreationInputTokens || 0);
+          const score = ts > 0 ? ts : vol;
+          if (score > bestScore) { bestScore = score; modelId = id; }
         }
+        const pretty = prettyModelId(modelId);
+        if (pretty) return pretty;
       }
     }
   } catch { /* ignore */ }
@@ -789,10 +828,8 @@ function getModelName() {
   // Fallback: settings.json model field
   const settings = getSettings();
   if (settings && settings.model) {
-    const m = settings.model;
-    if (m.includes('opus')) return 'Opus 4.8';
-    if (m.includes('sonnet')) return 'Sonnet 4.6';
-    if (m.includes('haiku')) return 'Haiku 4.5';
+    const pretty = prettyModelId(settings.model);
+    if (pretty) return pretty;
   }
   return 'Claude Code';
 }
@@ -802,8 +839,10 @@ function getModelName() {
 // script works both when invoked by Claude Code (stdin has JSON) and
 // when run manually from terminal (stdin is empty/tty).
 let _stdinData = null;
+let _stdinRead = false;
 function getStdinData() {
-  if (_stdinData !== undefined && _stdinData !== null) return _stdinData;
+  if (_stdinRead) return _stdinData;
+  _stdinRead = true;
   try {
     if (process.stdin.isTTY) { _stdinData = null; return null; }
     const chunks = [];
@@ -821,6 +860,12 @@ function getStdinData() {
   }
   return _stdinData;
 }
+
+// Drain stdin at module load, BEFORE getStatuslineData() spawns the CLI
+// delegation (execSync, 8s timeout). Reading lazily after that spawn loses the
+// piped session JSON on a cold run, which silently drops the model name,
+// context % and cost back to their hard-coded fallbacks.
+getStdinData();
 
 function getModelFromStdin() {
   const data = getStdinData();
@@ -993,7 +1038,15 @@ function progressBar(current, total) {
 function generateStatusline() {
   const d = getStatuslineData();
   const git = getGitInfo();
-  const modelName = getModelFromStdin() || (d.user && d.user.modelName) || 'Claude Code';
+  // Chain: piped session JSON (authoritative) -> CLI-reported user block
+  // -> local ~/.claude.json detection. getModelName() used to be unreachable
+  // here, so any render without stdin fell straight through to the literal
+  // placeholder instead of the model actually in use.
+  const cliModel = d.user && d.user.modelName;
+  const modelName = getModelFromStdin()
+    || (cliModel && cliModel !== 'Claude Code' ? cliModel : null)
+    || getModelName()
+    || 'Claude Code';
   const ctxInfo = getContextFromStdin();
   const costInfo = getCostFromStdin();
   // Named RUFLO_VERSION (not pkgVersion) so the #1951 regression guard
