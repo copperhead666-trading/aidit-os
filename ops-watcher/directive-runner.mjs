@@ -97,6 +97,7 @@ export const RESULT_MARKER = "DIRECTIVE RESULT";
 export const REFUSED_MARKER = "PLAN_REFUSED";
 export const DISPATCH_MARKER = "AHMAD DISPATCH";
 const ATTEMPT_CAP_MARKER = "DIRECTIVE OWNER REQUIRED";
+export const UNEXECUTABLE_MARKER = "DIRECTIVE TIDAK DAPAT DIJALANKAN";
 const OWNER_REQUIRED_LABEL = "OWNER_REQUIRED";
 export const DEFAULT_STALLED_AFTER_MS = 6 * 60 * 60 * 1000;
 export const DEFAULT_MAX_PLANS_PER_SWEEP = 1;
@@ -179,6 +180,36 @@ function isPlanComment(c) {
 }
 function isAttemptCapEscalationComment(c) {
   return bodyOf(c).trim().startsWith(ATTEMPT_CAP_MARKER);
+}
+function isUnexecutableComment(c) {
+  return bodyOf(c).trim().startsWith(UNEXECUTABLE_MARKER);
+}
+// Resolve an approved directive's plan comment into an executable plan, naming
+// the reason when it cannot. The three failures need different fixes — no plan
+// comment at all, a plan comment with no OBJECTIVE line, and a plan that does
+// not parse — so they are reported separately rather than as one "no plan".
+export function capturePlanForExecution(comments) {
+  const planIdx = findLastIndex(comments, isPlanComment);
+  if (planIdx < 0) return { ok: false, reason: "plan-comment-missing" };
+  const planBody = bodyOf(comments[planIdx]);
+  const objIdx = planBody.indexOf("OBJECTIVE: ");
+  if (objIdx < 0) return { ok: false, reason: "plan-objective-missing" };
+  const parsed = parsePlan(planBody.slice(objIdx));
+  if (!parsed.ok) return { ok: false, reason: "plan-parse-failed", detail: parsed.error };
+  return { ok: true, plan: parsed };
+}
+// One report per owner decision. The sweep runs every five minutes, so without
+// this the same comment would be posted on every pass for as long as the plan
+// stays unreadable. An approval with no timestamp gets exactly one report ever.
+function hasUnexecutableReportAfter(comments, approvedAtIso) {
+  const cutoff = approvedAtIso ? Date.parse(approvedAtIso) : NaN;
+  for (const c of Array.isArray(comments) ? comments : []) {
+    if (!isUnexecutableComment(c)) continue;
+    if (Number.isNaN(cutoff)) return true;
+    const t = commentTime(c);
+    if (t != null && t > cutoff) return true;
+  }
+  return false;
 }
 function findLastIndex(comments, pred) {
   for (let i = (comments || []).length - 1; i >= 0; i--) if (pred(comments[i])) return i;
@@ -646,6 +677,14 @@ function failureComment({ outcome, reason, nowMs }) {
     "Semua perubahan telah dikembalikan jika ada; status issue tetap tidak diubah.",
   ].join("\n");
 }
+function unexecutableComment({ reason, detail, nowMs }) {
+  return [
+    UNEXECUTABLE_MARKER + " (" + iso(nowMs) + "): directive ini sudah OWNER setujui, tetapi rencananya tidak dapat dibaca sehingga eksekusi tidak dijalankan.",
+    "Alasan: " + reason + ".",
+    detail ? "Detail: " + detail + "." : null,
+    "Tidak ada perubahan yang dilakukan dan status issue tidak diubah. Kirim ulang rencana yang valid, lalu setujui kembali.",
+  ].filter(Boolean).join("\n");
+}
 function failureTelegramText({ identifier, outcome, reason }) {
   return `Directive ${identifier} tidak dapat diselesaikan (${outcome}): ${reason || "tidak diketahui"}. Status tetap approved; tidak ada perubahan yang dipertahankan.`;
 }
@@ -653,7 +692,7 @@ function failureTelegramText({ identifier, outcome, reason }) {
 export async function runDirectiveSweepOnce(deps = {}) {
   const summary = {
     scanned: 0, planned: 0, refused: 0,
-    stalled: [], awaitingApproval: [], approved: [], rejected: [],
+    stalled: [], awaitingApproval: [], approved: [], rejected: [], unexecutable: [],
     executed: 0, reverted: 0, noop: 0, refused: 0,
     errors: [],
   };
@@ -684,7 +723,19 @@ export async function runDirectiveSweepOnce(deps = {}) {
     once = false,
     dryRun = false,
     log = () => {},
+    appendEvidence: appendEvidenceFn = defaultAppendEvidence,
+    evidenceLogFile,
   } = deps;
+
+  // Evidence seam for the sweep itself. executeApprovedDirective already writes
+  // one line per execution outcome; the sweep needs the same for the outcomes
+  // that never reach execution.
+  const sweepEvidenceDeps = { appendFile: deps.appendFile, now };
+  if (evidenceLogFile) sweepEvidenceDeps.file = evidenceLogFile;
+  async function emitSweepEvidence(record) {
+    try { await appendEvidenceFn(record, sweepEvidenceDeps); }
+    catch { /* evidence is best-effort; never let it surface */ }
+  }
 
   // Sweep throttle for the --once path: planning and executing each cost a real
   // lane call while the heartbeat fires every five minutes, so a back-to-back
@@ -771,17 +822,43 @@ export async function runDirectiveSweepOnce(deps = {}) {
       } else if (cls.state === "approved") {
         summary.approved.push({ id: issue.id, identifier: ident, lastCommentAt: cls.lastCommentAt, reason: cls.reason, approvedAt: cls.approvedAt });
         // Stage 3b: capture the parsed plan from the plan comment for the
-        // execution pass below. The plan comment body is
-        // `${PLAN_MARKER} (iso):\n[<stalled note>\n]<planText>`; we slice from
-        // the OBJECTIVE line so the stalled note (if any) is skipped.
-        if (!dryRun) {
-          const planIdx = findLastIndex(comments, isPlanComment);
-          if (planIdx >= 0) {
-            const planBody = bodyOf(comments[planIdx]);
-            const objIdx = planBody.indexOf("OBJECTIVE: ");
-            if (objIdx >= 0) {
-              const parsedPlan = parsePlan(planBody.slice(objIdx));
-              if (parsedPlan.ok) approvedForExecution.push({ issue, plan: parsedPlan, identifier: ident });
+        // execution pass below. The plan comment body starts with PLAN_MARKER
+        // and an ISO stamp, optionally followed by a stalled note; we slice
+        // from the OBJECTIVE line so that note (if any) is skipped.
+        //
+        // Every branch that fails to produce a plan must say so. This used to
+        // fall through to `continue` with no comment, no evidence and no log
+        // line, so an approval the owner had already given simply vanished
+        // (KOL-73: a stored plan with a multi-line PowerShell VERIFY fails
+        // parsePlan with "missing OUT OF SCOPE"). The capture runs even under
+        // dryRun so a dry sweep still reports the problem; only the comment and
+        // the evidence write are suppressed.
+        const capture = capturePlanForExecution(comments);
+        if (capture.ok) {
+          approvedForExecution.push({ issue, plan: capture.plan, identifier: ident });
+        } else {
+          summary.unexecutable.push({
+            id: issue.id,
+            identifier: ident,
+            reason: capture.reason,
+            detail: capture.detail || null,
+            approvedAt: cls.approvedAt || null,
+          });
+          log(`directive-runner: ${ident} approved but not executable (${capture.reason}${capture.detail ? ": " + capture.detail : ""})`);
+          if (!dryRun) {
+            await emitSweepEvidence({
+              type: "directive-capture-failed",
+              identifier: ident,
+              reason: capture.reason,
+              detail: capture.detail || null,
+              approvedAt: cls.approvedAt || null,
+            });
+            if (!hasUnexecutableReportAfter(comments, cls.approvedAt)) {
+              const post = await _post(`${base}/api/issues/${issue.id}/comments`, {
+                body: unexecutableComment({ reason: capture.reason, detail: capture.detail, nowMs: asMs(now) }),
+                authorType: "user",
+              });
+              if (post.networkError) summary.errors.push(`${ident}: unexecutable comment network error: ${post.networkErrorMessage}`);
             }
           }
         }
@@ -1273,12 +1350,14 @@ async function main() {
     `stalled=${summary.stalled.length} awaiting=${summary.awaitingApproval.length} ` +
     `approved=${summary.approved.length} rejected=${summary.rejected.length} ` +
     `executed=${summary.executed} reverted=${summary.reverted} noop=${summary.noop} refused=${summary.refused} ` +
+    `unexecutable=${summary.unexecutable.length}`,
     `errors=${summary.errors.length}`,
   );
   for (const s of summary.stalled) console.log(`  stalled: ${s.identifier || s.id} lastCommentAt=${s.lastCommentAt || "none"} reason=${s.reason}`);
   for (const a of summary.awaitingApproval) console.log(`  awaiting: ${a.identifier || a.id} lastCommentAt=${a.lastCommentAt || "none"}`);
   for (const a of summary.approved) console.log(`  approved: ${a.identifier || a.id} approvedAt=${a.approvedAt || "none"}`);
   for (const r of summary.rejected) console.log(`  rejected: ${r.identifier || r.id}`);
+  for (const u of summary.unexecutable) console.log(`  unexecutable: ${u.identifier || u.id} reason=${u.reason}${u.detail ? " detail=" + u.detail : ""} approvedAt=${u.approvedAt || "none"}`);
   for (const e of summary.errors) console.log(`  error: ${e}`);
   process.exit(0);
 }

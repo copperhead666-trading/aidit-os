@@ -16,6 +16,8 @@ import {
   validatePlanScope,
   validateVerifyCommand,
   runDirectiveSweepOnce,
+  capturePlanForExecution,
+  UNEXECUTABLE_MARKER,
   buildExecutionPrompt,
   executeApprovedDirective,
   PLAN_MARKER,
@@ -1301,6 +1303,168 @@ await t("verifyFile with injected fs reports match, no match, missing file, and 
   assert.equal(denied.ok, false);
   assert.match(denied.reason, /denied directory/);
   assert.equal(reads.length, beforeDenied);
+});
+
+
+// -- KOL-73: an approved directive whose plan cannot be captured -------------
+// The owner approved KOL-73 on 2026-09-01T11:21 and nothing ran: no evidence
+// line, no comment, no error. Its stored plan carries a multi-line PowerShell
+// VERIFY, and parsePlan reads OUT OF SCOPE at verifyIdx+1, which lands on the
+// continuation line instead. The capture branch then dropped the whole
+// directive through `continue`. These cases pin all three silent paths.
+await resetTmp();
+
+const kol73Plan = [
+  "OBJECTIVE: Menyiapkan perubahan kecil yang diminta owner.",
+  "FILES: ops-watcher/foo.mjs",
+  "STEPS:",
+  "- Terapkan perubahan lalu verifikasi secara lokal.",
+  "VERIFY: powershell -NoProfile -Command @" + String.fromCharCode(39),
+  "Get-Content ops-watcher/foo.mjs | Select-String -Pattern canaryAdd",
+  String.fromCharCode(39) + "@",
+  "OUT OF SCOPE: Tidak menjalankan network, Telegram, pm2, git, atau package install.",
+  "RISK: low",
+].join("\n");
+
+function planComment73(body, at = "2026-09-01T09:00:00.000Z") {
+  return c(`${PLAN_MARKER} (${at}):\n${body}`, at);
+}
+function approved73(commentList) {
+  return { issues: [issue({ id: "iss-73", identifier: "KOL-73", status: "todo" })], comments: { "iss-73": commentList } };
+}
+function evidenceSpy() {
+  const records = [];
+  return { records, appendEvidence: async (record) => { records.push(record); } };
+}
+function unexecutablePosts(posts) {
+  return posts.filter((p) => String((p.body && p.body.body) || "").startsWith(UNEXECUTABLE_MARKER));
+}
+
+await t("K1 approved directive with an unparseable plan is reported, not dropped (KOL-73)", async () => {
+  const ev = evidenceSpy();
+  const { issues, comments } = approved73([planComment73(kol73Plan), c(TG_APPROVE, "2026-09-01T09:30:00.000Z")]);
+  const { deps, posts, getExecuteCalls } = makeSweepDeps({ issues, comments, extra: { appendEvidence: ev.appendEvidence } });
+  const summary = await runDirectiveSweepOnce(deps);
+
+  assert.equal(summary.approved.length, 1, "still classified as approved");
+  assert.equal(summary.unexecutable.length, 1, "reported as unexecutable");
+  assert.equal(summary.unexecutable[0].identifier, "KOL-73");
+  assert.equal(summary.unexecutable[0].reason, "plan-parse-failed");
+  assert.equal(summary.unexecutable[0].detail, "missing OUT OF SCOPE");
+  assert.equal(getExecuteCalls(), 0, "nothing is executed from an unreadable plan");
+
+  const reports = unexecutablePosts(posts);
+  assert.equal(reports.length, 1, "exactly one comment tells the owner");
+  assert.match(reports[0].body.body, /plan-parse-failed/);
+  assert.match(reports[0].body.body, /missing OUT OF SCOPE/);
+
+  const captured = ev.records.filter((r) => r.type === "directive-capture-failed");
+  assert.equal(captured.length, 1, "exactly one evidence line");
+  assert.equal(captured[0].identifier, "KOL-73");
+  assert.equal(captured[0].reason, "plan-parse-failed");
+  assert.equal(captured[0].approvedAt, "2026-09-01T09:30:00.000Z");
+});
+
+await resetTmp();
+await t("K2 an approval with no plan comment is re-planned, not classified approved", async () => {
+  // classifyDirective only reports "approved" when a decision follows a plan
+  // comment, so the sweep cannot reach capturePlanForExecution's
+  // plan-comment-missing branch: with no plan there is no approval to act on.
+  // That branch stays as a guard for a plan comment deleted after approval, and
+  // K8 covers it directly. What matters here is that this shape is not silently
+  // dropped either -- it goes back through planning.
+  const ev = evidenceSpy();
+  const { issues, comments } = approved73([c(TG_APPROVE, "2026-09-01T09:30:00.000Z")]);
+  const { deps, posts } = makeSweepDeps({ issues, comments, extra: { appendEvidence: ev.appendEvidence } });
+  const summary = await runDirectiveSweepOnce(deps);
+  assert.equal(summary.approved.length, 0, "no plan means no approval to execute");
+  assert.equal(summary.unexecutable.length, 0);
+  assert.equal(unexecutablePosts(posts).length, 0);
+  assert.equal(summary.planned, 1, "it is re-planned instead of disappearing");
+});
+
+await resetTmp();
+await t("K3 plan comment without an OBJECTIVE line is reported as plan-objective-missing", async () => {
+  const ev = evidenceSpy();
+  const broken = "FILES: ops-watcher/foo.mjs\nSTEPS:\n- lakukan sesuatu\nVERIFY: node x.mjs\nOUT OF SCOPE: tidak ada\nRISK: low";
+  const { issues, comments } = approved73([planComment73(broken), c(TG_APPROVE, "2026-09-01T09:30:00.000Z")]);
+  const { deps, posts } = makeSweepDeps({ issues, comments, extra: { appendEvidence: ev.appendEvidence } });
+  const summary = await runDirectiveSweepOnce(deps);
+  assert.equal(summary.unexecutable.length, 1);
+  assert.equal(summary.unexecutable[0].reason, "plan-objective-missing");
+  assert.equal(unexecutablePosts(posts).length, 1);
+});
+
+await resetTmp();
+await t("K4 the report is posted once per approval, not once per five-minute sweep", async () => {
+  const ev = evidenceSpy();
+  const { issues, comments } = approved73([planComment73(kol73Plan), c(TG_APPROVE, "2026-09-01T09:30:00.000Z")]);
+  const { deps, posts } = makeSweepDeps({ issues, comments, extra: { appendEvidence: ev.appendEvidence } });
+  await runDirectiveSweepOnce(deps);
+  await runDirectiveSweepOnce(deps);
+  await runDirectiveSweepOnce(deps);
+  assert.equal(unexecutablePosts(posts).length, 1, "the owner is not told the same thing three times");
+  // Evidence is a log, not a notification: every sweep still records that the
+  // directive could not be captured, so the silence is auditable afterwards.
+  assert.equal(ev.records.filter((r) => r.type === "directive-capture-failed").length, 3);
+});
+
+await resetTmp();
+await t("K5 a report is posted again once a new plan is approved", async () => {
+  // findPlanDecision takes the first decision after the newest plan comment, so
+  // a second APPROVE tap on the same plan is the same decision and must not
+  // earn a second report. A new plan comment starts a new decision, and that
+  // one does.
+  const ev = evidenceSpy();
+  const earlierReport = c(`${UNEXECUTABLE_MARKER} (2026-09-01T09:45:00.000Z): laporan lama.`, "2026-09-01T09:45:00.000Z");
+  const { issues, comments } = approved73([
+    planComment73(kol73Plan, "2026-09-01T09:00:00.000Z"),
+    c(TG_APPROVE, "2026-09-01T09:30:00.000Z"),
+    earlierReport,
+    planComment73(kol73Plan, "2026-09-01T09:50:00.000Z"),
+    c(TG_APPROVE, "2026-09-01T09:59:00.000Z"),
+  ]);
+  const { deps, posts } = makeSweepDeps({ issues, comments, extra: { appendEvidence: ev.appendEvidence } });
+  const summary = await runDirectiveSweepOnce(deps);
+  assert.equal(summary.unexecutable.length, 1);
+  assert.equal(summary.unexecutable[0].approvedAt, "2026-09-01T09:59:00.000Z", "the newest plan's decision governs");
+  assert.equal(unexecutablePosts(posts).length, 1, "the newer approval earns its own report");
+});
+
+await resetTmp();
+await t("K6 dryRun reports the problem in the summary but posts nothing and writes no evidence", async () => {
+  const ev = evidenceSpy();
+  const { issues, comments } = approved73([planComment73(kol73Plan), c(TG_APPROVE, "2026-09-01T09:30:00.000Z")]);
+  const { deps, posts } = makeSweepDeps({ issues, comments, extra: { appendEvidence: ev.appendEvidence, dryRun: true } });
+  const summary = await runDirectiveSweepOnce(deps);
+  assert.equal(summary.unexecutable.length, 1, "a dry sweep still surfaces it");
+  assert.equal(summary.unexecutable[0].reason, "plan-parse-failed");
+  assert.equal(unexecutablePosts(posts).length, 0, "dryRun writes no comment");
+  assert.equal(ev.records.length, 0, "dryRun writes no evidence");
+});
+
+await resetTmp();
+await t("K7 a parseable approved plan is still captured and executed, with no report", async () => {
+  const ev = evidenceSpy();
+  const { issues, comments } = approved73([planComment73(goodPlan), c(TG_APPROVE, "2026-09-01T09:30:00.000Z")]);
+  const { deps, posts, getExecuteCalls } = makeSweepDeps({ issues, comments, extra: { appendEvidence: ev.appendEvidence } });
+  const summary = await runDirectiveSweepOnce(deps);
+  assert.equal(summary.unexecutable.length, 0);
+  assert.equal(getExecuteCalls(), 1, "the happy path still reaches execution");
+  assert.equal(unexecutablePosts(posts).length, 0);
+});
+
+await t("K8 capturePlanForExecution names each failure without running a sweep", () => {
+  assert.equal(capturePlanForExecution([]).reason, "plan-comment-missing");
+  assert.equal(capturePlanForExecution([c("catatan biasa")]).reason, "plan-comment-missing");
+  assert.equal(capturePlanForExecution([planComment73("FILES: a.mjs\nSTEPS:\n- x\nVERIFY: y\nOUT OF SCOPE: z\nRISK: low")]).reason, "plan-objective-missing");
+  const parseFail = capturePlanForExecution([planComment73(kol73Plan)]);
+  assert.equal(parseFail.ok, false);
+  assert.equal(parseFail.reason, "plan-parse-failed");
+  assert.equal(parseFail.detail, "missing OUT OF SCOPE");
+  const good = capturePlanForExecution([planComment73(goodPlan)]);
+  assert.equal(good.ok, true);
+  assert.equal(good.plan.risk, "low");
 });
 
 await resetTmp();
