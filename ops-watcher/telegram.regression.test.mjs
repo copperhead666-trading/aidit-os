@@ -485,6 +485,7 @@ async function testDetailsShowsFullDirectivePlan() {
     assert.ok(text.includes("Tidak mengubah branch keputusan lain."), "out-of-scope should be shown");
     assert.ok(text.includes("node ops-watcher/run-all-tests.mjs --only telegram.regression.test.mjs"), "verify command should be shown");
     assert.ok(text.includes("low"), "risk should be shown");
+    assert.ok(text.includes("komentar sesudah plan"), "newest comment body should still be shown alongside the plan");
     ok(name);
   } catch (e) { bad(name, e); }
 }

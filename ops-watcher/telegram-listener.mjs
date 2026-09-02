@@ -1128,6 +1128,11 @@ export async function applyAction(ctx) {
     ];
     if (capture.ok) {
       detailParts.push("", renderDirectivePlanDetail(capture.plan));
+      detailParts.push(
+        "",
+        `*Komentar terbaru (${comments.length}):*`,
+        recent,
+      );
     } else {
       detailParts.push(
         "",
