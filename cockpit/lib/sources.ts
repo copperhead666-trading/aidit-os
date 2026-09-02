@@ -75,7 +75,15 @@ function normalizeClassification(value: string): string {
   return stripMarkdown(value).toUpperCase();
 }
 
-export async function readIssues(): Promise<IssueSummary[] | null> {
+export interface ResolvedPaperclip {
+  port: number;
+  companyId: string;
+}
+
+// Extracted from readIssues so every reader reaches Paperclip the same way.
+// The fingerprint check matters: a port can answer /api/health while belonging
+// to a different, drifted instance.
+export async function resolveVerifiedPaperclip(): Promise<ResolvedPaperclip | null> {
   try {
     const root = getRepoRoot();
     const configPath = path.join(root, 'config', 'paperclip-endpoint.json');
@@ -108,7 +116,6 @@ export async function readIssues(): Promise<IssueSummary[] | null> {
       }
     }
 
-    let verifiedPort: number | null = null;
     for (const port of candidatePorts) {
       const res = await fetchWithTimeout(`http://127.0.0.1:${port}/api/health`, 2000);
       if (!res || !res.ok) continue;
@@ -120,14 +127,18 @@ export async function readIssues(): Promise<IssueSummary[] | null> {
       }
       if (!isRecord(body)) continue;
       const backup = isRecord(body.databaseBackup) ? body.databaseBackup : null;
-      // A port can answer /api/health while belonging to a different, drifted Paperclip instance —
-      // only trust it once its backup dir matches the fingerprint pinned in the config file.
-      if (backup && backup.backupDir === fingerprint) {
-        verifiedPort = port;
-        break;
-      }
+      if (backup && backup.backupDir === fingerprint) return { port, companyId };
     }
-    if (verifiedPort === null) return null;
+    return null;
+  } catch {
+    return null;
+  }
+}
+export async function readIssues(): Promise<IssueSummary[] | null> {
+  try {
+    const resolved = await resolveVerifiedPaperclip();
+    if (resolved === null) return null;
+    const { port: verifiedPort, companyId } = resolved;
 
     const issuesRes = await fetchWithTimeout(
       `http://127.0.0.1:${verifiedPort}/api/companies/${companyId}/issues`,
@@ -380,5 +391,108 @@ export async function readPauseState(): Promise<PauseState> {
     };
   } catch {
     return { paused: true, reason: 'Status pause tidak bisa dibaca.', atIso: null, by: null, unreadable: true };
+  }
+}
+
+export interface OpenDecision {
+  identifier: string;
+  title: string;
+  status: string;
+  labels: string[];
+  ownerRequired: boolean;
+  planBody: string | null;
+  planAt: string | null;
+  cardSent: boolean;
+}
+
+// Everything actually waiting on the owner, in one place. A Telegram decision
+// card is sent once and never re-sent, so a card scrolled past leaves a
+// decision invisible - cardSent is what distinguishes 'you were asked and have
+// not answered' from 'nobody ever asked you'.
+//
+// The plan comment body is passed through VERBATIM. Parsing it here would mean
+// a second parser drifting from parsePlan in ops-watcher/directive-runner.mjs.
+export async function readOpenDecisions(): Promise<OpenDecision[] | null> {
+  try {
+    const resolved = await resolveVerifiedPaperclip();
+    if (resolved === null) return null;
+    const { port, companyId } = resolved;
+    const base = `http://127.0.0.1:${port}`;
+
+    const labelsRes = await fetchWithTimeout(`${base}/api/companies/${companyId}/labels`, 2000);
+    if (!labelsRes || !labelsRes.ok) return null;
+    const labelsBody: unknown = await labelsRes.json().catch(() => null);
+    if (!Array.isArray(labelsBody)) return null;
+    const labelNames = new Map<string, string>();
+    for (const entry of labelsBody) {
+      if (!isRecord(entry)) continue;
+      if (typeof entry.id === 'string' && typeof entry.name === 'string') labelNames.set(entry.id, entry.name);
+    }
+
+    const issuesRes = await fetchWithTimeout(`${base}/api/companies/${companyId}/issues`, 2000);
+    if (!issuesRes || !issuesRes.ok) return null;
+    const issuesBody: unknown = await issuesRes.json().catch(() => null);
+    if (!Array.isArray(issuesBody)) return null;
+
+    const open: OpenDecision[] = [];
+    for (const issue of issuesBody) {
+      if (!isRecord(issue)) continue;
+      const status = typeof issue.status === 'string' ? issue.status : '';
+      if (status === 'done' || status === 'cancelled') continue;
+
+      const labels = (Array.isArray(issue.labelIds) ? issue.labelIds : [])
+        .map((id) => (typeof id === 'string' ? labelNames.get(id) : undefined))
+        .filter((name): name is string => typeof name === 'string');
+      const ownerRequired = labels.includes('OWNER_REQUIRED');
+      const isDirective = labels.includes('DIRECTIVE');
+      if (!ownerRequired && !isDirective) continue;
+
+      const identifier = typeof issue.identifier === 'string' ? issue.identifier : String(issue.id ?? '');
+      const title = typeof issue.title === 'string' ? issue.title : '(untitled)';
+      const issueId = typeof issue.id === 'string' ? issue.id : null;
+
+      let planBody: string | null = null;
+      let planAt: string | null = null;
+      let cardSent = false;
+      let decidedAfterPlan = false;
+
+      if (issueId !== null) {
+        const cRes = await fetchWithTimeout(`${base}/api/issues/${issueId}/comments`, 2000);
+        const cBody: unknown = cRes && cRes.ok ? await cRes.json().catch(() => null) : null;
+        if (Array.isArray(cBody)) {
+          // Paperclip returns comments NEWEST FIRST. Sorting here rather than
+          // trusting position is the same trap that kept KOL-73 unexecutable.
+          const dated = cBody
+            .filter(isRecord)
+            .map((c) => ({
+              body: typeof c.body === 'string' ? c.body : '',
+              at: typeof c.createdAt === 'string' ? c.createdAt : null,
+            }))
+            .map((c) => ({ ...c, ms: c.at ? Date.parse(c.at) : NaN }))
+            .filter((c) => Number.isFinite(c.ms))
+            .sort((a, b) => a.ms - b.ms);
+
+          cardSent = dated.some((c) => c.body.trimStart().startsWith('[TELEGRAM SENT]'));
+          for (const c of dated) {
+            if (c.body.includes('DIRECTIVE PLAN') && !c.body.includes('DIRECTIVE PLAN APPROVED')) {
+              planBody = c.body;
+              planAt = c.at;
+              decidedAfterPlan = false;
+            } else if (planAt !== null && (c.body.startsWith('OWNER MENYETUJUI') || c.body.startsWith('OWNER MENOLAK'))) {
+              decidedAfterPlan = true;
+            }
+          }
+        }
+      }
+
+      // Waiting means: the owner is asked by label, or a plan sits undecided.
+      if (!ownerRequired && !(planBody !== null && !decidedAfterPlan)) continue;
+      open.push({ identifier, title, status, labels, ownerRequired, planBody, planAt, cardSent });
+    }
+
+    open.sort((a, b) => a.identifier.localeCompare(b.identifier, undefined, { numeric: true }));
+    return open;
+  } catch {
+    return null;
   }
 }

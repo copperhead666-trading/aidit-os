@@ -1,6 +1,8 @@
 export const dynamic = 'force-dynamic';
 
 import { readDecisions } from '@/lib/founderos';
+import { readOpenDecisions } from '@/lib/sources';
+import type { OpenDecision } from '@/lib/sources';
 import type { DecisionRecord } from '@/lib/founderos';
 import { PageHeader } from '@/components/PageHeader';
 import { Dot, Badge, SectionHead } from '@/components/terminal';
@@ -24,14 +26,72 @@ function isMigrated(record: DecisionRecord): boolean {
   return typeof record.migrated_from === 'string';
 }
 
+// What is still waiting on the owner. The ledger below records decisions
+// already made; without this section the page showed only history.
+function OpenSection({ items }: { items: OpenDecision[] | null }) {
+  if (items === null) {
+    return (
+      <section className="space-y-2">
+        <SectionHead label="Open" />
+        <EmptyState file="paperclip endpoint" />
+      </section>
+    );
+  }
+  if (items.length === 0) {
+    return (
+      <section className="space-y-2">
+        <SectionHead label="Open" count={0} />
+        <div className="border border-os-border bg-os-surface p-4 flex items-center gap-2 text-xs text-os-muted">
+          <Dot state="ok" />
+          nothing is waiting on you
+        </div>
+      </section>
+    );
+  }
+  return (
+    <section className="space-y-2">
+      <SectionHead label="Open" count={items.length} />
+      <ul className="border border-os-border bg-os-surface divide-y divide-os-border">
+        {items.map((d) => (
+          <li key={d.identifier} className="p-3 text-xs space-y-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-mono text-os-text">{d.identifier}</span>
+              <span className="text-os-dim uppercase tracking-[0.08em]">{d.status}</span>
+              <span className="ml-auto flex items-center gap-1.5">
+                {d.ownerRequired && <Badge tone="accent">owner required</Badge>}
+                {!d.cardSent && (
+                  <Badge tone="default" ghost>
+                    never sent to telegram
+                  </Badge>
+                )}
+              </span>
+            </div>
+            <p className="text-os-muted">{d.title}</p>
+            {d.planBody === null ? (
+              <p className="text-os-dim">no plan posted yet</p>
+            ) : (
+              <pre className="max-h-64 overflow-auto border border-os-border bg-os-bg p-2 text-[11px] leading-relaxed text-os-muted whitespace-pre-wrap">
+                {d.planBody}
+              </pre>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 export default async function DecisionsPage() {
   const ledger = await readDecisions();
+  const openDecisions = await readOpenDecisions();
   const records = ledger?.records ?? null;
 
   if (records === null) {
     return (
       <main className="min-h-screen bg-os-bg text-os-text px-4 py-6 sm:px-6 sm:py-8 max-w-3xl mx-auto space-y-8">
         <PageHeader eyebrow="FOUNDEROS" title="Decisions" />
+        <OpenSection items={openDecisions} />
+
         <section className="space-y-2">
           <SectionHead label="Ledger" />
           <EmptyState file="config/decision-ledger.json" />
@@ -76,6 +136,8 @@ export default async function DecisionsPage() {
           </div>
         }
       />
+
+      <OpenSection items={openDecisions} />
 
       <section className="space-y-2">
         <SectionHead label="Ledger" />
