@@ -117,6 +117,22 @@ const tools = [
   {
     type: "function",
     function: {
+      name: "edit_file",
+      description: "Edit an existing UTF-8 text file inside the workspace by replacing one exact, unique text match. Prefer edit_file over write_file for any change to an existing file, because write_file must restate the entire file.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Workspace-relative file path." },
+          search: { type: "string", description: "Exact text to find." },
+          replace: { type: "string", description: "Text to substitute." },
+        },
+        required: ["path", "search", "replace"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "list_directory",
       description: "List a directory inside the workspace.",
       parameters: {
@@ -304,6 +320,31 @@ async function writeFileTool(args, evidence) {
     return { ok: true, path: rel, bytes: Buffer.byteLength(content, "utf8") };
   } catch (error) {
     return { ok: false, error: `write_file failed: ${error.message}` };
+  }
+}
+
+export async function editFileTool(args, evidence) {
+  const resolved = resolveWorkspacePath(args?.path);
+  if (!resolved.ok) return { ok: false, error: resolved.error };
+  const protectedReason = protectedWorkspacePathReason(resolved, { write: true });
+  if (protectedReason) return { ok: false, error: protectedReason };
+
+  const search = String(args?.search ?? "");
+  if (search === "") return { ok: false, error: "edit_file: search text must not be empty" };
+
+  try {
+    const content = await fs.readFile(resolved.resolved, "utf8");
+    const occurrences = content.split(search).length - 1;
+    if (occurrences === 0) return { ok: false, error: "edit_file: search text not found" };
+    if (occurrences > 1) return { ok: false, error: `edit_file: search text is not unique (${occurrences} occurrences)` };
+
+    const updated = content.replace(search, String(args?.replace ?? ""));
+    await fs.writeFile(resolved.resolved, updated, "utf8");
+    const rel = relativeToWorkspace(resolved.resolved);
+    evidence.filesWritten.push(rel);
+    return { ok: true, path: rel, bytes: Buffer.byteLength(updated, "utf8"), replaced: 1 };
+  } catch (error) {
+    return { ok: false, error: `edit_file failed: ${error.message}` };
   }
 }
 
@@ -654,6 +695,16 @@ function summarizeArgs(name, args) {
       SUMMARY_LIMIT,
     );
   }
+  if (name === "edit_file") {
+    return truncate(
+      JSON.stringify({
+        path: args?.path,
+        searchLength: String(args?.search ?? "").length,
+        replaceLength: String(args?.replace ?? "").length,
+      }),
+      SUMMARY_LIMIT,
+    );
+  }
   return truncate(JSON.stringify(args ?? {}), SUMMARY_LIMIT);
 }
 
@@ -678,6 +729,7 @@ async function executeToolCall(toolCall, evidence) {
 
   if (name === "read_file") result = await readFileTool(args);
   else if (name === "write_file") result = await writeFileTool(args, evidence);
+  else if (name === "edit_file") result = await editFileTool(args, evidence);
   else if (name === "list_directory") result = await listDirectoryTool(args);
   else if (name === "run_command") result = await runCommandTool(args);
   else result = { ok: false, error: `Unknown tool: ${name}` };
@@ -695,24 +747,35 @@ async function executeToolCall(toolCall, evidence) {
 async function postChat(messages) {
   if (ENDPOINT_CONFIG.error) throw new Error(ENDPOINT_CONFIG.error);
 
-  const response = await fetch(ENDPOINT, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      model: MODEL,
-      system: SYSTEM_PROMPT,
-      messages,
-      tools,
-      stream: false,
-    }),
-  });
+  const requestTimeoutMs = Number.parseInt(process.env.HATTA_REQUEST_TIMEOUT_MS || "120000", 10);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
+  try {
+    const response = await fetch(ENDPOINT, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: MODEL,
+        system: SYSTEM_PROMPT,
+        messages,
+        tools,
+        stream: false,
+      }),
+    });
 
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new Error(`Ollama chat failed: HTTP ${response.status} ${truncate(body, 500)}`);
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      throw new Error(`Ollama chat failed: HTTP ${response.status} ${truncate(body, 500)}`);
+    }
+
+    return response.json();
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error(`Ollama chat timed out after ${requestTimeoutMs}ms`);
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
-
-  return response.json();
 }
 
 async function runTask(prompt) {
@@ -827,3 +890,4 @@ if (isEntry) {
     process.exitCode = 1;
   });
 }
+

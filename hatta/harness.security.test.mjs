@@ -11,6 +11,7 @@ import {
   validateCommand,
   resolveWorkspacePath,
   protectedWorkspacePathReason,
+  editFileTool,
 } from "./harness.mjs";
 
 const WORKSPACE_ROOT = path.resolve("D:\\AI\\Active FounderOS-Aidit");
@@ -45,6 +46,21 @@ function mustBlockPath(label, requested) {
 
 function mustProtectPath(label, requested, opts) {
   add(label, () => assert.ok(protectedWorkspacePathReason(requested, opts), `${label} must be protected`));
+}
+
+function makeEvidence() {
+  return { filesWritten: [] };
+}
+
+async function withTempWorkspaceFile(label, content, fn) {
+  const rel = `hatta/workspace/${label}-${process.pid}-${Date.now()}.txt`;
+  const abs = path.join(WORKSPACE_ROOT, rel);
+  await fs.writeFile(abs, content, "utf8");
+  try {
+    await fn(rel, abs);
+  } finally {
+    await fs.rm(abs, { force: true }).catch(() => {});
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -119,6 +135,85 @@ mustBlockCommand("block node script outside approved roots", "node", ["graphify-
 mustBlockCommand("block node absolute outside workspace", "node", ["C:/Windows/System32/cscript.exe"]);
 
 // ---------------------------------------------------------------------------
+// edit_file workspace edits and write guard parity.
+// ---------------------------------------------------------------------------
+add("edit_file replaces one unique match and preserves surrounding bytes", async () => {
+  const original = "alpha\nKEEP-BEFORE\nneedle\nKEEP-AFTER\nomega\n";
+  await withTempWorkspaceFile("edit-unique", original, async (rel, abs) => {
+    const evidence = makeEvidence();
+    const result = await editFileTool({ path: rel, search: "needle", replace: "replacement" }, evidence);
+    const updated = await fs.readFile(abs, "utf8");
+    const writeFileStyleRel = path.relative(WORKSPACE_ROOT, abs);
+
+    assert.deepEqual(result, {
+      ok: true,
+      path: writeFileStyleRel,
+      bytes: Buffer.byteLength(original.replace("needle", "replacement"), "utf8"),
+      replaced: 1,
+    });
+    assert.equal(updated, "alpha\nKEEP-BEFORE\nreplacement\nKEEP-AFTER\nomega\n");
+    assert.deepEqual(evidence.filesWritten, [writeFileStyleRel]);
+  });
+});
+
+add("edit_file refuses non-unique search and leaves disk unchanged", async () => {
+  const original = "first target\nsecond target\n";
+  await withTempWorkspaceFile("edit-duplicate", original, async (rel, abs) => {
+    const evidence = makeEvidence();
+    const result = await editFileTool({ path: rel, search: "target", replace: "changed" }, evidence);
+
+    expectBlocked(result, "duplicate edit_file search");
+    assert.equal(result.error, "edit_file: search text is not unique (2 occurrences)");
+    assert.equal(await fs.readFile(abs, "utf8"), original);
+    assert.deepEqual(evidence.filesWritten, []);
+  });
+});
+
+add("edit_file refuses missing search and leaves disk unchanged", async () => {
+  const original = "alpha\nbeta\ngamma\n";
+  await withTempWorkspaceFile("edit-missing", original, async (rel, abs) => {
+    const evidence = makeEvidence();
+    const result = await editFileTool({ path: rel, search: "delta", replace: "changed" }, evidence);
+
+    expectBlocked(result, "missing edit_file search");
+    assert.equal(result.error, "edit_file: search text not found");
+    assert.equal(await fs.readFile(abs, "utf8"), original);
+    assert.deepEqual(evidence.filesWritten, []);
+  });
+});
+
+add("edit_file refuses empty search text", async () => {
+  const original = "alpha\nbeta\n";
+  await withTempWorkspaceFile("edit-empty", original, async (rel, abs) => {
+    const evidence = makeEvidence();
+    const result = await editFileTool({ path: rel, search: "", replace: "changed" }, evidence);
+
+    expectBlocked(result, "empty edit_file search");
+    assert.equal(result.error, "edit_file: search text must not be empty");
+    assert.equal(await fs.readFile(abs, "utf8"), original);
+    assert.deepEqual(evidence.filesWritten, []);
+  });
+});
+
+add("edit_file refuses outside workspace path with write_file guard error", async () => {
+  const outsidePath = "../../Windows/System32/drivers/etc/hosts";
+  const result = await editFileTool({ path: outsidePath, search: "x", replace: "y" }, makeEvidence());
+  const writeFileGuard = resolveWorkspacePath(outsidePath);
+
+  expectBlocked(result, "outside edit_file path");
+  assert.equal(result.error, writeFileGuard.error);
+});
+
+add("edit_file refuses protected secret path with write_file guard error", async () => {
+  const secretPath = "hatta/workspace/.env.edit-file-test";
+  const result = await editFileTool({ path: secretPath, search: "x", replace: "y" }, makeEvidence());
+  const writeFileGuard = protectedWorkspacePathReason(secretPath, { write: true });
+
+  expectBlocked(result, "protected edit_file path");
+  assert.equal(result.error, writeFileGuard);
+});
+
+// ---------------------------------------------------------------------------
 // Secret exposure and package-manager control files.
 // ---------------------------------------------------------------------------
 mustProtectPath("protect gibran api key", "ops-watcher/gibran-api.key");
@@ -171,3 +266,7 @@ for (const c of cases) {
 console.log("");
 console.log(`ADVERSARIAL HARNESS TEST SUMMARY: ${passed} passed, ${failed} failed, ${skipped} skipped.`);
 if (failed > 0) process.exitCode = 1;
+
+
+
+
