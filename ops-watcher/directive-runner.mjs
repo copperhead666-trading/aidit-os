@@ -688,24 +688,55 @@ function attemptCapComment({ attempts, failure, nowMs }) {
 // identifier + title, the plan's OBJECTIVE, file count, the VERIFY command, and
 // the RISK level. The full plan stays in the Paperclip comment; the card is the
 // summary plus the two buttons.
+// Telegram hard-caps a message at 4096 characters. The card is built to stay
+// well inside that on its own, and the pieces that can run long — the file list
+// and the steps — are capped item-by-item so a large plan degrades into "and N
+// more" instead of failing to send.
+const CARD_MAX_FILES = 8;
+const CARD_MAX_STEPS = 6;
+const CARD_LINE_CAP = 160;
+
+function cardLine(value) {
+  const one = String(value ?? "").replace(/\s+/g, " ").trim();
+  return one.length > CARD_LINE_CAP ? one.slice(0, CARD_LINE_CAP - 1) + "…" : one;
+}
+
+function cardList(items, cap) {
+  const list = Array.isArray(items) ? items.filter((x) => String(x ?? "").trim()) : [];
+  if (list.length === 0) return ["  (tidak ada)"];
+  const shown = list.slice(0, cap).map((x) => `  • ${cardLine(x)}`);
+  if (list.length > cap) shown.push(`  • …dan ${list.length - cap} lagi (ketuk LIHAT DETAIL)`);
+  return shown;
+}
+
+// The owner is being asked to authorise work. An approval gate has to show what
+// will change, not how much will change: the previous card sent "Jumlah file: 3"
+// and nothing else, so approving it meant approving files the owner could not
+// see. Named files, named steps, and the out-of-scope line are the three things
+// that make the answer an informed one.
 export function buildDecisionCardText(issue, plan) {
   const ident = issue?.identifier || issue?.id || "unknown";
   const title = String(issue?.title || "(tanpa judul)");
-  const objective = String(plan?.objective || "");
-  const fileCount = Array.isArray(plan?.files) ? plan.files.length : 0;
-  const verify = String(plan?.verify || "");
-  const risk = String(plan?.risk || "low");
+  const files = Array.isArray(plan?.files) ? plan.files : [];
+  const steps = Array.isArray(plan?.steps) ? plan.steps : [];
   return [
     "📋 Rencana directive butuh keputusan Anda",
     "",
-    `${ident} — ${title}`,
+    `${ident} — ${cardLine(title)}`,
     "",
-    `Tujuan: ${objective}`,
-    `Jumlah file: ${fileCount}`,
-    `Verifikasi: ${verify}`,
-    `Risiko: ${risk}`,
+    `Tujuan: ${cardLine(plan?.objective)}`,
     "",
-    "Ketuk SETUJUI untuk melanjutkan atau TOLAK untuk membatalkan.",
+    `File yang akan diubah (${files.length}):`,
+    ...cardList(files, CARD_MAX_FILES),
+    "",
+    `Langkah (${steps.length}):`,
+    ...cardList(steps, CARD_MAX_STEPS),
+    "",
+    `Sengaja TIDAK dikerjakan: ${cardLine(plan?.outOfScope) || "(tidak dinyatakan)"}`,
+    `Verifikasi: ${cardLine(plan?.verify)}`,
+    `Risiko: ${cardLine(plan?.risk) || "low"}`,
+    "",
+    "SETUJUI menjalankan rencana ini. TOLAK meminta rencana baru — Anda akan diminta alasannya.",
   ].join("\n");
 }
 
@@ -714,10 +745,21 @@ export function buildDecisionCardText(issue, plan) {
 // No second scheme, no second sender — the existing telegram-listener already
 // maps these back to the issue and writes the decision comment findPlanDecision
 // reads.
+// The listener already speaks a richer vocabulary than the card ever offered:
+// ACTION_LETTERS in telegram-listener.mjs maps a=APPROVE, r=REJECT, d=DETAILS,
+// z=DEFER. The card only ever sent a: and r:, so DETAILS and DEFER existed and
+// were unreachable. Four actions, laid out two per row so the destructive one is
+// not adjacent to the harmless one.
 export function buildDecisionCardButtons(shortId) {
   return [
-    [{ text: "SETUJUI", callback_data: `a:${shortId}` }],
-    [{ text: "TOLAK", callback_data: `r:${shortId}` }],
+    [
+      { text: "✅ SETUJUI", callback_data: `a:${shortId}` },
+      { text: "📄 LIHAT DETAIL", callback_data: `d:${shortId}` },
+    ],
+    [
+      { text: "✏️ TOLAK + ALASAN", callback_data: `r:${shortId}` },
+      { text: "🕒 TUNDA", callback_data: `z:${shortId}` },
+    ],
   ];
 }
 

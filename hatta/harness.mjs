@@ -17,6 +17,8 @@ const MODEL = process.env.OLLAMA_MODEL_HATTA || "glm-5.2:cloud";
 const MAX_ITERATIONS = Number.parseInt(process.env.HATTA_MAX_ITER || "40", 10);
 const STDIO_LIMIT = 4000;
 const SUMMARY_LIMIT = 700;
+export const HARNESS_EVIDENCE_PATH = path.join(WORKSPACE_ROOT, "hatta", ".harness-evidence.json");
+let currentEvidence = null;
 
 const PROTECTED_SECRET_BASENAMES = new Set([
   ".env",
@@ -179,6 +181,39 @@ function makeEvidence(startedAt) {
     startedAt,
     finishedAt: null,
   };
+}
+
+export async function persistHarnessEvidence(evidence, io = fs) {
+  try {
+    await io.mkdir(path.dirname(HARNESS_EVIDENCE_PATH), { recursive: true });
+    await io.writeFile(HARNESS_EVIDENCE_PATH, JSON.stringify(evidence), "utf8");
+  } catch {
+    // Best-effort harness bookkeeping; never fail the model run over evidence persistence.
+  }
+  return evidence;
+}
+
+async function persistRunEvidence(evidence, persist) {
+  try {
+    await persist(evidence);
+  } catch {
+    // Keep persistence failures out of the returned evidence and normal run flow.
+  }
+  return evidence;
+}
+
+export function handleTerminationSignal(signal, {
+  writeLine = (line) => process.stdout.write(`${line}\n`),
+  exit = (code) => process.exit(code),
+  now = () => new Date().toISOString(),
+} = {}) {
+  const timestamp = now();
+  const evidence = currentEvidence || makeEvidence(timestamp);
+  evidence.terminatedBy = signal;
+  evidence.finishedAt = timestamp;
+  currentEvidence = evidence;
+  writeLine(JSON.stringify(evidence));
+  exit(1);
 }
 
 // Exported (Phase 7 security audit) as pure, side-effect-free functions so the
@@ -778,15 +813,20 @@ async function postChat(messages) {
   }
 }
 
-async function runTask(prompt) {
-  const startedAt = new Date().toISOString();
+export async function runTask(prompt, {
+  chat = postChat,
+  persist = persistHarnessEvidence,
+  now = () => new Date().toISOString(),
+} = {}) {
+  const startedAt = now();
   const evidence = makeEvidence(startedAt);
+  currentEvidence = evidence;
   const messages = [{ role: "user", content: prompt }];
 
   try {
     for (let index = 0; index < MAX_ITERATIONS; index += 1) {
       evidence.iterations = index + 1;
-      const response = await postChat(messages);
+      const response = await chat(messages);
       const assistantMessage = response?.message || { role: "assistant", content: "" };
       messages.push(assistantMessage);
 
@@ -805,6 +845,7 @@ async function runTask(prompt) {
           content: JSON.stringify(result),
         });
       }
+      await persistRunEvidence(evidence, persist);
     }
 
     evidence.error = `Reached MAX_ITERATIONS (${MAX_ITERATIONS}) before a final answer.`;
@@ -813,7 +854,8 @@ async function runTask(prompt) {
     evidence.error = error.message;
     return evidence;
   } finally {
-    evidence.finishedAt = new Date().toISOString();
+    evidence.finishedAt = now();
+    await persistRunEvidence(evidence, persist);
   }
 }
 
@@ -882,8 +924,11 @@ const isEntry = (() => {
   }
 })();
 if (isEntry) {
+  process.once("SIGTERM", () => handleTerminationSignal("SIGTERM"));
+  process.once("SIGINT", () => handleTerminationSignal("SIGINT"));
   main().catch((error) => {
     const evidence = makeEvidence(new Date().toISOString());
+    currentEvidence = evidence;
     evidence.error = error.message;
     evidence.finishedAt = new Date().toISOString();
     console.log(JSON.stringify(evidence));

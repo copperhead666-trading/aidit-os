@@ -109,3 +109,5 @@ ops-watcher/.self-repair-backups/
 cockpit/node_modules/
 cockpit/.next/
 cockpit/tsconfig.tsbuildinfo
+# HATTA harness evidence (runtime artifact, rewritten every iteration of every run)
+hatta/.harness-evidence.json

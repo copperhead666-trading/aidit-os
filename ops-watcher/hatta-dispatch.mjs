@@ -19,6 +19,7 @@
 //   node ops-watcher/hatta-dispatch.mjs "<prompt>"
 
 import { spawnSync } from "node:child_process";
+import fsSync from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { logLaneUsage } from "./lane-usage.mjs";
@@ -28,6 +29,19 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
 
 const TIMEOUT_MS = 8 * 60 * 1000; // 480000ms, under ahmad-mcp-server.mjs's 9-min RUN_TIMEOUT_MS cap
+
+// Where hatta/harness.mjs persists evidence after every iteration. Reading it is
+// best-effort by design: a missing or half-written file must never turn a
+// reported timeout into a crash.
+const HARNESS_EVIDENCE_FILE = path.join(REPO_ROOT, "hatta", ".harness-evidence.json");
+export function readHarnessEvidence(file = HARNESS_EVIDENCE_FILE, _fs = fsSync) {
+  try {
+    const parsed = JSON.parse(_fs.readFileSync(file, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
 const HARNESS_SCRIPT = path.resolve(REPO_ROOT, "hatta", "harness.mjs");
 
 async function main() {
@@ -68,7 +82,25 @@ async function main() {
 
   if (r.signal === "SIGTERM" && r.status === null) {
     // spawnSync sets status=null + signal="SIGTERM" on timeout kill.
-    process.stderr.write(`hatta-dispatch: harness timed out after ${TIMEOUT_MS}ms\n`);
+    //
+    // The harness prints its evidence only when runTask returns, so a timeout
+    // used to destroy the whole record of the run: eight minutes of paid model
+    // time reported as one line. The harness now also persists evidence after
+    // every iteration, and on Windows that FILE is the only thing that survives
+    // — spawnSync's kill goes through TerminateProcess, which no SIGTERM handler
+    // in the child can catch, so the child's own signal handler never fires.
+    // Read the file here, where the run is being reported.
+    const recovered = readHarnessEvidence();
+    if (recovered) {
+      process.stdout.write(JSON.stringify({ ...recovered, timedOut: true, recoveredFrom: "evidence-file" }) + "\n");
+      process.stderr.write(
+        `hatta-dispatch: harness timed out after ${TIMEOUT_MS}ms — recovered partial evidence ` +
+        `(iterations=${recovered.iterations ?? "?"}, toolCalls=${(recovered.toolCalls || []).length}, ` +
+        `filesWritten=${(recovered.filesWritten || []).length})\n`,
+      );
+    } else {
+      process.stderr.write(`hatta-dispatch: harness timed out after ${TIMEOUT_MS}ms — no evidence file to recover\n`);
+    }
     await recordLaneOutcome("hatta", { ok: false, stdout: r.stdout, stderr: r.stderr, timedOut: true });
     await logLaneUsage({ lane: "hatta", promptLength: prompt.length, ok: false, timedOut: true, exitCode: 1, durationMs });
     process.exit(1);

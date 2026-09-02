@@ -12,6 +12,10 @@ import {
   resolveWorkspacePath,
   protectedWorkspacePathReason,
   editFileTool,
+  HARNESS_EVIDENCE_PATH,
+  handleTerminationSignal,
+  persistHarnessEvidence,
+  runTask,
 } from "./harness.mjs";
 
 const WORKSPACE_ROOT = path.resolve("D:\\AI\\Active FounderOS-Aidit");
@@ -62,6 +66,75 @@ async function withTempWorkspaceFile(label, content, fn) {
     await fs.rm(abs, { force: true }).catch(() => {});
   }
 }
+
+function finalChat(content = "done") {
+  return async () => ({ message: { role: "assistant", content } });
+}
+
+function fixedClock() {
+  const timestamps = ["2026-01-01T00:00:00.000Z", "2026-01-01T00:00:01.000Z"];
+  let index = 0;
+  return () => timestamps[Math.min(index++, timestamps.length - 1)];
+}
+
+// ---------------------------------------------------------------------------
+// Harness evidence persistence and termination bookkeeping.
+// ---------------------------------------------------------------------------
+add("runTask persists harness evidence JSON with iterations", async () => {
+  await fs.rm(HARNESS_EVIDENCE_PATH, { force: true }).catch(() => {});
+
+  const evidence = await runTask("offline evidence smoke", {
+    chat: finalChat("evidence complete"),
+    now: fixedClock(),
+  });
+  const parsed = JSON.parse(await fs.readFile(HARNESS_EVIDENCE_PATH, "utf8"));
+
+  assert.equal(evidence.ok, true);
+  assert.equal(parsed.iterations, 1);
+  assert.equal(parsed.finalMessage, "evidence complete");
+  assert.ok(Object.hasOwn(parsed, "iterations"));
+});
+
+add("evidence write failure does not abort run or change returned evidence", async () => {
+  const expected = await runTask("offline baseline", {
+    chat: finalChat("same evidence"),
+    persist: async () => {},
+    now: fixedClock(),
+  });
+  const actual = await runTask("offline failing evidence write", {
+    chat: finalChat("same evidence"),
+    persist: (evidence) => persistHarnessEvidence(evidence, {
+      mkdir: async () => {},
+      writeFile: async () => { throw new Error("simulated write failure"); },
+    }),
+    now: fixedClock(),
+  });
+
+  assert.deepEqual(actual, expected);
+});
+
+add("termination handler prints terminated evidence JSON", async () => {
+  await runTask("offline signal seed", {
+    chat: finalChat("ready for signal"),
+    persist: async () => {},
+    now: fixedClock(),
+  });
+
+  const lines = [];
+  let exitCode = null;
+  handleTerminationSignal("SIGTERM", {
+    writeLine: (line) => lines.push(line),
+    exit: (code) => { exitCode = code; },
+    now: () => "2026-01-01T00:00:02.000Z",
+  });
+  const parsed = JSON.parse(lines[0]);
+
+  assert.equal(lines.length, 1);
+  assert.equal(exitCode, 1);
+  assert.equal(parsed.terminatedBy, "SIGTERM");
+  assert.equal(parsed.finishedAt, "2026-01-01T00:00:02.000Z");
+  assert.equal(parsed.iterations, 1);
+});
 
 // ---------------------------------------------------------------------------
 // Legitimate HATTA workflows that must keep working.
