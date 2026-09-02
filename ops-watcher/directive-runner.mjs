@@ -392,6 +392,8 @@ export function buildPlanPrompt(issue, contextBundle, lastFailure = null) {
     "Allowed VERIFY for code changes: node ops-watcher/run-all-tests.mjs --only <suite-file>",
     "Allowed VERIFY for file-content directives: node ops-watcher/verify-file.mjs --path <file> --matches <regex>",
     "PowerShell, cmd, bash, git, or any other command will be rejected before the owner sees the plan.",
+    "Line contract: VERIFY occupies exactly ONE line, OUT OF SCOPE is the very next line, and RISK the one after that. A VERIFY spread over several lines - a here-string, a backslash continuation, a wrapped command - makes the parser read the continuation where OUT OF SCOPE should be, and the plan is rejected as missing OUT OF SCOPE.",
+    "Nothing may follow the RISK line.",
     "Scope is only this repository: D:\\AI\\Active FounderOS-Aidit.",
     "Write OBJECTIVE, STEPS, VERIFY, and OUT OF SCOPE in professional Bahasa Indonesia. Keep file paths and commands verbatim.",
     ...previousFailureLines,

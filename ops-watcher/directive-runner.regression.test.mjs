@@ -1577,6 +1577,21 @@ await t("K14 readStateOutcome separates a missing file from a corrupt one", () =
   assert.equal(readStateOutcome(denied), "EACCES");
 });
 
+await t("K15 the plan prompt states the line contract that KOL-73 violated", () => {
+  // parsePlan reads OUT OF SCOPE at verifyIdx + 1 and RISK at verifyIdx + 2, so
+  // a VERIFY spread over several lines fails as "missing OUT OF SCOPE" - which
+  // is exactly how KOL-73's PowerShell here-string plan died. The prompt banned
+  // "; & |" and named the allowed commands, but never said the line itself must
+  // be one line, so the model had no way to know.
+  const prompt = buildPlanPrompt(issue(), { status: "ok", evidence: [] }, null);
+  assert.match(prompt, /VERIFY occupies exactly ONE line/);
+  assert.match(prompt, /OUT OF SCOPE is the very next line/);
+  assert.match(prompt, /here-string/);
+  assert.match(prompt, /Nothing may follow the RISK line/);
+  // The contract it already stated must still be there.
+  assert.match(prompt, /single command starting with node ops-watcher\//);
+});
+
 await t("K8 capturePlanForExecution names each failure without running a sweep", () => {
   assert.equal(capturePlanForExecution([]).reason, "plan-comment-missing");
   assert.equal(capturePlanForExecution([c("catatan biasa")]).reason, "plan-comment-missing");
