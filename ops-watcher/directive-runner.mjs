@@ -314,14 +314,27 @@ function recordAttemptCapDecisionReset(state, key, decision) {
     escalationAt: decision.escalationAt || null,
   };
 }
-function hasExecutionCapReportBetween(comments, planCommentAt, approvedAtIso) {
+// findPlanDecision returns the OLDEST decision after the plan. A directive the
+// owner approved twice - once before the execution cap and once after it, which
+// is exactly what KOL-36 did - therefore reports the FIRST approval, and a
+// between-the-two test reads false. The question is not which decision the
+// classifier picked; it is whether the owner has approved SINCE the cap report.
+// So look at the comments directly.
+function hasOwnerApprovalAfterExecutionCap(comments, planCommentAt) {
   const planMs = planCommentAt != null ? asMs(planCommentAt) : NaN;
-  const approvedMs = approvedAtIso ? Date.parse(approvedAtIso) : NaN;
-  if (!Number.isFinite(planMs) || !Number.isFinite(approvedMs)) return false;
+  if (!Number.isFinite(planMs)) return false;
+  let capMs = null;
   for (const c of Array.isArray(comments) ? comments : []) {
     if (!isExecutionCapEscalationComment(c)) continue;
     const t = commentTime(c);
-    if (t != null && t > planMs && t < approvedMs) return true;
+    if (t != null && t > planMs && (capMs === null || t > capMs)) capMs = t;
+  }
+  if (capMs === null) return false;
+  for (const c of Array.isArray(comments) ? comments : []) {
+    const body = bodyOf(c);
+    if (!body.startsWith(DECISION_APPROVE_PREFIX) && !body.includes(APPROVED_MARKER)) continue;
+    const t = commentTime(c);
+    if (t != null && t > capMs) return true;
   }
   return false;
 }
@@ -380,7 +393,7 @@ export function classifyDirective(issue, comments, { now = Date.now, stalledAfte
     const planCommentAt = commentTime(cmts[planIdx]);
     const decision = findPlanDecision(cmts, planCommentAt);
     if (decision.decision === "approved") {
-      if (hasExecutionCapReportBetween(cmts, planCommentAt, decision.at)) {
+      if (hasOwnerApprovalAfterExecutionCap(cmts, planCommentAt)) {
         return { state: "stalled", reason: "owner approved a re-plan after the execution cap", lastCommentAt, approvedAt: decision.at };
       }
       return { state: "approved", reason: "owner approved via Telegram after plan", lastCommentAt, approvedAt: decision.at };

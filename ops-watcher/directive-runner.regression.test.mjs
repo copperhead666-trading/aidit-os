@@ -247,6 +247,27 @@ await t("classifyDirective stalls a capped directive when owner approves a re-pl
   assert.equal(isPlannable(issue({ status: "todo" }), cls.state), true);
 });
 
+// The case that actually shipped broken. KOL-36 was approved at 09:08, capped
+// at 11:20, and approved again at 11:29. findPlanDecision returns the OLDEST
+// decision after the plan, so the classifier reported the 09:08 approval and a
+// "cap between plan and approval" test read false - the owner's second tap did
+// nothing. What matters is whether an approval exists AFTER the cap report.
+await t("classifyDirective stalls when approved once before the cap and once after", () => {
+  const planAt = "2026-09-01T09:00:00.000Z";
+  const firstApprovalAt = "2026-09-01T09:08:00.000Z";
+  const capAt = "2026-09-01T09:20:00.000Z";
+  const secondApprovalAt = "2026-09-01T09:29:00.000Z";
+  const cls = classifyDirective(issue(), [
+    c(`${PLAN_MARKER} (iso):
+${goodPlan}`, planAt),
+    c(TG_APPROVE, firstApprovalAt),
+    c(`${EXECUTION_CAP_MARKER} (${capAt}): directive dihentikan setelah 2 eksekusi gagal identik.`, capAt),
+    c(TG_APPROVE, secondApprovalAt),
+  ], { now: NOW });
+  assert.equal(cls.state, "stalled");
+  assert.equal(isPlannable(issue({ status: "todo" }), cls.state), true);
+});
+
 await t("classifyDirective keeps approved when execution-cap report is after the approval", () => {
   const planAt = "2026-09-01T09:00:00.000Z";
   const approvalAt = "2026-09-01T09:30:00.000Z";
