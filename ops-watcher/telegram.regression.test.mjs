@@ -272,11 +272,12 @@ async function runOneAction(actionLetter, opts = {}) {
   const id = "iss-X";
   const shortId = "KOL-95";
   const seed = ownerRequiredIssue({ id, identifier: shortId, title: "decision target" });
+  const seedComments = opts.comments ? { ...seed.comments, [id]: opts.comments.slice() } : seed.comments;
   const update = cbqUpdate(5001, actionLetter, shortId, 4242);
   const tg = mockTelegram({ updatesByOffset: (off) => (off <= 5001 ? [update] : []) });
   const tgS = await tg.start();
   const pc = mockPaperclip({
-    issues: [seed.issue], comments: seed.comments,
+    issues: [seed.issue], comments: seedComments,
     labels: [
       { id: OWNER_REQUIRED_LABEL_ID, name: "OWNER_REQUIRED", color: "#b91c1c" },
       { id: OWNER_REJECTED_LABEL_ID, name: "OWNER_REJECTED", color: "#7f1d1d" },
@@ -412,6 +413,43 @@ async function testDetails() {
     assert.equal(tgCalls.editMessageText.length, 0, "original message not edited on DETAILS");
     assert.equal(tgCalls.answerCallbackQuery.length, 1, "callback answered");
     assert.deepEqual(pc.issues["iss-X"].labelIds, [OWNER_REQUIRED_LABEL_ID], "OWNER_REQUIRED still present");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testDetailsShowsNewestFromNewestFirstApiOrder() {
+  const name = "(5a) DETAILS shows the four newest comments from newest-first API order";
+  const newestFirstComments = [
+    { id: "c-6", body: "comment-6 newest-kept", authorType: "user", createdAt: "2026-09-01T00:06:00.000Z" },
+    { id: "c-5", body: "comment-5 kept", authorType: "agent", createdAt: "2026-09-01T00:05:00.000Z" },
+    { id: "c-4", body: "comment-4 kept", authorType: "user", createdAt: "2026-09-01T00:04:00.000Z" },
+    { id: "c-3", body: "comment-3 oldest-kept", authorType: "agent", createdAt: "2026-09-01T00:03:00.000Z" },
+    { id: "c-2", body: "comment-2 excluded-old", authorType: "user", createdAt: "2026-09-01T00:02:00.000Z" },
+    { id: "c-1", body: "comment-1 excluded-oldest", authorType: "agent", createdAt: "2026-09-01T00:01:00.000Z" },
+  ];
+  try {
+    const { result, tgCalls } = await runOneAction("d", { comments: newestFirstComments });
+    assert.equal(result.results[0].outcome, "details-sent");
+    assert.equal(tgCalls.sendMessage.length, 1, "follow-up details message sent");
+    const text = tgCalls.sendMessage[0].text;
+    for (const body of ["comment-3 oldest-kept", "comment-4 kept", "comment-5 kept", "comment-6 newest-kept"]) {
+      assert.ok(text.includes(body), `${body} should be shown`);
+    }
+    assert.ok(!text.includes("comment-2 excluded-old"), "older comment-2 must not be shown");
+    assert.ok(!text.includes("comment-1 excluded-oldest"), "oldest comment-1 must not be shown");
+    const positions = ["comment-3 oldest-kept", "comment-4 kept", "comment-5 kept", "comment-6 newest-kept"].map((body) => text.indexOf(body));
+    assert.deepEqual(positions, positions.slice().sort((a, b) => a - b), "kept comments are rendered oldest-to-newest");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testRejectEditInvitesReasonReply() {
+  const name = "(5b) REJECT edited card invites owner to reply with a reason";
+  try {
+    const { result, tgCalls } = await runOneAction("r");
+    assert.equal(result.results[0].outcome, "rejected");
+    assert.equal(tgCalls.editMessageText.length, 1, "message edited");
+    assert.match(tgCalls.editMessageText[0].text, /Silakan balas pesan ini dengan alasan penolakan; balasan akan dilampirkan ke issue sebagai OWNER NOTE\./);
     ok(name);
   } catch (e) { bad(name, e); }
 }
@@ -1056,6 +1094,8 @@ async function main() {
     await testApprove();
     await testReject();
     await testDetails();
+    await testDetailsShowsNewestFromNewestFirstApiOrder();
+    await testRejectEditInvitesReasonReply();
     await testDefer();
     await testAskAhmad();
     await testOffsetDedupe();

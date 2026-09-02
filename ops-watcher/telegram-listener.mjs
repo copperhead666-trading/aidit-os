@@ -166,6 +166,7 @@ import {
 import { parseDecisionOptionsFromComments } from "./telegram-decision-options.mjs";
 import { COMMANDS, handleCommand, parseCommand } from "./telegram-commands.mjs";
 import { pauseBanner, readPause } from "./pause-gate.mjs";
+import { commentsOldestFirst } from "./directive-runner.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1034,7 +1035,7 @@ export async function applyAction(ctx) {
       if (cm && cm.networkError) log(`telegram-listener: ${shortId} REJECT state WAS changed but the confirmation comment FAILED to post (network error)`);
     }
     await toast("\U0001F6AB Ditolak");
-    await edit(`\U0001F6AB DITOLAK\n${escMd(fresh.title || "(tanpa judul)")}\nDibatalkan`, { removeButtons: true });
+    await edit(`\U0001F6AB DITOLAK\n${escMd(fresh.title || "(tanpa judul)")}\nDibatalkan\nSilakan balas pesan ini dengan alasan penolakan; balasan akan dilampirkan ke issue sebagai OWNER NOTE.`, { removeButtons: true });
     return { outcome: "rejected" };
   }
 
@@ -1042,7 +1043,7 @@ export async function applyAction(ctx) {
     // No state change; send a follow-up message with more detail.
     const cRes = await _get(`${base}/api/issues/${issueId}/comments`);
     const comments = Array.isArray(cRes.body) ? cRes.body : [];
-    const recent = comments.slice(-4).map((c) =>
+    const recent = commentsOldestFirst(comments).slice(-4).map((c) =>
       `• ${escMd(c.authorType || "?")}${c.authorAgentId ? "(agent)" : ""}: ${escMd(String(c.body || "").split("\n")[0].slice(0, 120))}`)
       .join("\n") || "(tidak ada komentar)";
     const fresh = await freshIssue(base, issueId, _get);
