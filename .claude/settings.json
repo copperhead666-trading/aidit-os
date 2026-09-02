@@ -122,7 +122,8 @@
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
     "CLAUDE_FLOW_V3_ENABLED": "true",
-    "CLAUDE_FLOW_HOOKS_ENABLED": "true"
+    "CLAUDE_FLOW_HOOKS_ENABLED": "true",
+    "CLAUDE_FLOW_ENABLE_NATIVE_BRIDGE_ON_WINDOWS": "1"
   },
   "claudeFlow": {
     "version": "3.0.0",
