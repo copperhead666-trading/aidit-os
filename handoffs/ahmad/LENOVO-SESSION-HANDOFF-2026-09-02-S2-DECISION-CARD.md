@@ -280,3 +280,113 @@ anchors - "the block that begins `if (!dryRun && approvedForExecution.length`"
 One dispatch left the file with a duplicate `import { createHash }`, breaking
 nine suites, and delivered nothing else. Always run `node --check` and the suite
 after a capped lane before believing anything about the worktree.
+
+---
+
+## 15. Close-out — what the owner should know before resuming on ASUS
+
+Written at the end of the Lenovo session, 2026-09-02 ~12:15 WIB. Working tree
+clean, 17 commits on top of `5f3f60d`, ops-watcher **48/48 suites** at every one.
+
+### 15.1 The one sentence
+
+The Telegram decision gate works end to end and has been proven live, but every
+defect worth fixing today was found by RUNNING it, not by reading it or by the
+suites - which were green before and after each one.
+
+### 15.2 What is proven live, with evidence
+
+| Thing | Evidence |
+|---|---|
+| Card reaches the owner | `sent:true`, 200, `message_id 608` |
+| Owner tap is processed | APPROVE at 09:08:12, listener log + comment |
+| Execute -> VERIFY -> revert -> report | `DIRECTIVE GAGAL ... reverted, verify-red`, status left `todo` |
+| DETAILS renders the plan | `plan=ok, chunks=1/1`, 1306 chars, 200, no mutating dep called |
+| Execution cap stops a loop | last failure 11:04, `capReportedAt: 11:20:19`, none since |
+| Approve-after-cap re-plans | live classify: `stalled`, `isPlannable: true` |
+
+### 15.3 What is NOT proven, stated plainly
+
+- **The Cockpit Decisions page has never been rendered.** `tsc --noEmit` clean,
+  `next build` clean, `/decisions` builds as a dynamic route - and that is all.
+  The page sits behind Telegram auth and returns 307 to `/enter` without a
+  session. Manufacturing a session to validate my own work was not worth doing.
+  **Open `http://127.0.0.1:4200/decisions` in an authenticated browser first.**
+- **REJECT and DEFER have never been tapped live.** Only APPROVE and DETAILS.
+- KOL-36 has not re-planned yet; the sweep that will do it had not run.
+
+### 15.4 KOL-36, and what happens without anyone touching it
+
+Its plan is unsatisfiable: `FILES: NONE` plus an out-of-scope line forbidding
+file changes, with a VERIFY demanding that
+`handoffs/hermes-kimi/AHMAD-DELTA-PHASE1.md` contain "AHMAD HEADLESS E2E PASS".
+The file exists and does not contain it.
+
+State now: classified `stalled`, plannable. The next sweep writes a NEW plan.
+If the planner again produces a no-files plan with a verify-file VERIFY, the
+rule in `920835a` refuses it BEFORE the owner is asked, twice at most, and then
+it returns to the owner as an escalation with a written reason. There is no
+longer a path where it loops or dies silently.
+
+**The honest fix is probably to rewrite the directive itself.** Its objective is
+"reply with an exact phrase", but its VERIFY checks a file. Those cannot both be
+right. Deciding which one the owner meant is an owner call, not a system one.
+
+### 15.5 Two corrections to my own work in this session
+
+- **`be5052c` did not work on the directive it was written for.** It asked
+  whether a cap report sat between the plan and "the" approval, but
+  `findPlanDecision` returns the OLDEST decision after a plan, and KOL-36 had two
+  approvals - 09:08 and 11:29. It reported the first, so the check read false and
+  the owner's second tap did nothing, again. `4c1ca40` asks the right question
+  instead: has the owner approved SINCE the cap report. Found only by running
+  `classifyDirective` against live data.
+- **`f25f782` was committed with no tests**, stated in its own message, because
+  it stopped an active loop. `1dfa398` paid it back.
+
+### 15.6 Working method that actually held
+
+- **Mutation-check every new test**: stash the source change, re-run, confirm the
+  new cases FAIL. Three separate commits today would otherwise have shipped tests
+  that could not fail. Where the check is blunt - a test file that cannot even
+  import without the change - say so rather than implying per-case proof.
+- **Run it live.** The Markdown 400, the acknowledgement swallowing, the retry
+  loop and the double-approval bug were all invisible to 48 green suites.
+
+### 15.7 Tooling notes for the next session
+
+- **Never read or write these files with PowerShell 5.1 `Get-Content` /
+  `Set-Content`.** They are UTF-8 without BOM; 5.1 reads them as ANSI and
+  silently destroys every em dash, ellipsis and emoji. I did this once and had to
+  restore the file. Use `[IO.File]::ReadAllText/WriteAllText` with a BOM-less
+  UTF8Encoding, or a Node script.
+- **Lanes on Windows die on shell quoting.** Three CORLEONE dispatches burned
+  their full 8 minutes and produced nothing - one of them left a duplicate
+  `import { createHash }` that broke nine suites. What worked instead: write a
+  Node script locally, `scp` it, run it. No shell parser involved.
+- **After ANY capped lane run**, check `git status`, `node --check` and the suite
+  before believing the lane's report. `codex timed out` does not mean nothing
+  happened - in most cases the edits had landed and only the summary was lost.
+- Lane tasks that fit inside 8 minutes: one file plus its tests, with EXACT
+  anchors quoted ("the block that begins `if (!dryRun && approvedForExecution`").
+  Tasks that describe a goal instead of an anchor spend the budget reading.
+
+### 15.8 Open, in the order I would take them
+
+1. **Look at `/decisions` in a browser.** It was built for the 11 parked
+   decisions and has never been seen. If it is wrong, everything below is
+   premature.
+2. **Answer the parked decisions.** KOL-62 vs KOL-63 (which product line starts)
+   is the one that unblocks real product work. KOL-29, KOL-30, KOL-67 already
+   carry `[TELEGRAM SENT]`, so no new card will ever be sent for them - they are
+   invisible unless the owner goes looking, which is exactly what the new page is
+   for.
+3. **Decide KOL-36's directive** - fix the objective or fix the VERIFY.
+4. **Bugs KOL-48 and KOL-58**: the automated GIBRAN/hermes review-runner points
+   at the wrong workspace and misclassifies WORKSPACE-ERROR. Until that is fixed,
+   automated review verdicts are not worth trusting.
+5. Only then a product slice - KOL-34, or whichever line wins step 2.
+
+Still untouched: `.mcp.json` trim needs a Claude Code restart on ASUS (the owner
+restarted it, so this may already be in effect - verify the advertised tool count
+rather than assuming). `CLAUDE_FLOW_ENCRYPT_AT_REST` still off.
