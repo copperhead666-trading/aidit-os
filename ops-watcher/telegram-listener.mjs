@@ -378,6 +378,28 @@ export function escMd(s) {
   return String(s == null ? "" : s).replace(/([\\*_`\[])/g, "\\$1");
 }
 
+function telegramSendFailureReason(result) {
+  if (!result) return "missing send result";
+  if (result.networkError) return result.networkErrorMessage ? `network error: ${result.networkErrorMessage}` : "network error";
+  if (result.sent === false) return "sent=false";
+  if (result.ok === false) return result.description || result.reason || "ok=false";
+  if (typeof result.status === "number" && !okStatus(result.status)) return `Telegram API status ${result.status}`;
+  return null;
+}
+
+async function sendOwnerAcknowledgement(_sendMessage, text, upOpts, log, uid, ackName) {
+  let result = null;
+  try {
+    result = await _sendMessage(text, upOpts);
+  } catch (err) {
+    result = { networkError: true, networkErrorMessage: String((err && err.message) || err) };
+  }
+  const failureReason = telegramSendFailureReason(result);
+  if (failureReason) {
+    log(`telegram-listener: update ${uid} ${ackName} acknowledgement FAILED to post (${failureReason})`);
+  }
+  return result;
+}
 function renderDirectivePlanDetail(plan) {
   const files = Array.isArray(plan?.files) ? plan.files : [];
   const steps = Array.isArray(plan?.steps) ? plan.steps : [];
@@ -731,12 +753,19 @@ export async function processUpdateForCallback(upd, ctx) {
         }
         if (!nc || nc.networkError) {
           log(`telegram-listener: update ${uid} reply-note post FAILED for ${targetLabel} — not creating a directive; owner may retry`);
-          await _sendMessage(`Could not attach your note to ${targetLabel} — please retry.`, upOpts).catch(() => {});
+          await sendOwnerAcknowledgement(
+            _sendMessage,
+            `Could not attach your note to ${escMd(targetLabel)} — please retry.`,
+            upOpts,
+            log,
+            uid,
+            "reply-note failure",
+          );
           return { update_id: uid, outcome: "reply-note-failed", issueId: targetIssue.id, identifier: targetIssue.identifier, networkError: true };
         }
         log(`telegram-listener: update ${uid} OWNER reply-note attached to ${targetLabel}`);
-        const ackText = `Note attached to ${targetLabel}: "${msgText.slice(0, 60)}${msgText.length > 60 ? "\u2026" : ""}"`;
-        await _sendMessage(ackText, upOpts).catch(() => {});
+        const ackText = `Note attached to ${escMd(targetLabel)}: "${escMd(msgText.slice(0, 60))}${msgText.length > 60 ? "\u2026" : ""}"`;
+        await sendOwnerAcknowledgement(_sendMessage, ackText, upOpts, log, uid, "reply-note");
         return { update_id: uid, outcome: "reply-note-attached", issueId: targetIssue.id, identifier: targetIssue.identifier };
       }
       log(`telegram-listener: update ${uid} reply_to_message=${replyTo.message_id} did not match a known decision card — treating as directive`);
@@ -808,12 +837,14 @@ export async function processUpdateForCallback(upd, ctx) {
       // The receipt reports what the writes actually did. Telling the owner a
       // directive is executing when it was never wired up is the failure mode
       // the pause reply was deliberately built to avoid.
-      const received = `Received: "${msgText.slice(0, 60)}${msgText.length > 60 ? "\u2026" : ""}"`;
+      const received = `Received: "${escMd(msgText.slice(0, 60))}${msgText.length > 60 ? "\u2026" : ""}"`;
       const ackText = wiringFailure
-        ? `${received}\nCreated ${identifier}, tetapi GAGAL disiapkan untuk eksekusi (${wiringFailure}). Directive TIDAK berjalan — periksa Paperclip.`
-        : `${received}\nCreated ${identifier} — executing.`;
-      await _sendMessage(ackText, upOpts).catch(() => {});
-      log(`telegram-listener: update ${uid} ACK sent to OWNER`);
+        ? `${received}\nCreated ${escMd(identifier)}, tetapi GAGAL disiapkan untuk eksekusi (${escMd(wiringFailure)}). Directive TIDAK berjalan — periksa Paperclip.`
+        : `${received}\nCreated ${escMd(identifier)} — executing.`;
+      const ackResult = await sendOwnerAcknowledgement(_sendMessage, ackText, upOpts, log, uid, "directive-created");
+      // Only claim the receipt reached the owner when it actually did. The
+      // failure itself is already logged by sendOwnerAcknowledgement.
+      if (!telegramSendFailureReason(ackResult)) log(`telegram-listener: update ${uid} ACK sent to OWNER`);
 
       // ---- Event-driven wake: spawn heartbeat --once immediately ----
       // Trigger the pipeline directly — no approval loop for OWNER's own directive.

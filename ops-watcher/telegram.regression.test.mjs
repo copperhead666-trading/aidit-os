@@ -257,6 +257,11 @@ function textUpdate(updateId, text, chatId = 8987077084) {
   };
 }
 
+function replyTextUpdate(updateId, text, replyMessageId, chatId = 8987077084) {
+  const upd = textUpdate(updateId, text, chatId);
+  upd.message.reply_to_message = { message_id: replyMessageId, date: 1, chat: { id: chatId }, text: "decision card" };
+  return upd;
+}
 function commandCtx(overrides = {}) {
   const calls = { sendMessage: [], httpPost: [], patchIssue: [] };
   return {
@@ -950,6 +955,77 @@ async function testTextIngressMissingDirectiveLabelNotFalsified() {
   } catch (e) { bad(name, e); }
 }
 
+async function testReplyNoteAcknowledgementEscapesOwnerMarkdown() {
+  const name = "(23e) reply-note acknowledgement escapes owner Markdown specials";
+  const targetIssue = { id: "iss-note", identifier: "KOL-*NOTE_1" };
+  const { calls, ctx } = commandCtx({
+    _get: async (url) => {
+      if (url.endsWith(`/api/companies/${COMPANY}/issues`)) return { networkError: false, status: 200, body: [targetIssue] };
+      if (url.endsWith(`/api/issues/${targetIssue.id}/comments`)) {
+        return {
+          networkError: false,
+          status: 200,
+          body: [{ id: "c-marker", body: "[TELEGRAM SENT] message_id=700 (x) — owner decision requested via @ahmadsuperbot for KOL-*NOTE_1." }],
+        };
+      }
+      return { networkError: false, status: 200, body: [] };
+    },
+  });
+  try {
+    const r = await processUpdateForCallback(replyTextUpdate(8174, "Please *fix_this_ now", 700), ctx);
+    assert.equal(r.outcome, "reply-note-attached");
+    assert.equal(calls.sendMessage.length, 1, "owner ACK sent");
+    assert.equal(calls.sendMessage[0].text, 'Note attached to KOL-\\*NOTE\\_1: "Please \\*fix\\_this\\_ now"');
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testDirectiveCreatedAcknowledgementEscapesOwnerMarkdown() {
+  const name = "(23f) directive-created acknowledgement escapes owner Markdown specials";
+  const { calls, ctx } = commandCtx({
+    _httpPost: async (url, body) => { calls.httpPost.push({ url, body }); return { status: 201, body: { id: "iss-dir", identifier: "KOL-*DIR_1" }, networkError: false }; },
+    _patchIssue: async (base, issueId, patch) => {
+      calls.patchIssue.push({ issueId, patch });
+      return { issue: null, networkError: true, networkErrorMessage: "bad *wire_" };
+    },
+  });
+  try {
+    const r = await processUpdateForCallback(textUpdate(8175, "Fix *profit_lock_ now"), ctx);
+    assert.equal(r.outcome, "text-ingressed-unwired");
+    assert.equal(calls.sendMessage.length, 1, "owner ACK sent");
+    assert.ok(calls.sendMessage[0].text.includes('Received: "Fix \\*profit\\_lock\\_ now"'), "owner text is escaped");
+    assert.ok(calls.sendMessage[0].text.includes("Created KOL-\\*DIR\\_1"), "identifier is escaped");
+    assert.ok(calls.sendMessage[0].text.includes("patch gagal (bad \\*wire\\_)"), "wiring failure is escaped");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testDirectiveCreatedAcknowledgementSend400IsLoggedWithoutChangingOutcome() {
+  const name = "(23g) directive-created ACK HTTP-400 is logged and ingress outcome is unchanged";
+  const logs = [];
+  const { calls, ctx } = commandCtx({ log: (m) => logs.push(m) });
+  ctx._sendMessage = async (text, opts) => { calls.sendMessage.push({ text, opts }); return { sent: true, ok: true, status: 400 }; };
+  try {
+    const r = await processUpdateForCallback(textUpdate(8176, "Beresin Barrier saya"), ctx);
+    assert.equal(r.outcome, "text-ingressed");
+    assert.equal(r.identifier, "KOL-NEW");
+    assert.equal(calls.sendMessage.length, 1, "owner ACK attempted once");
+    assert.ok(logs.some((l) => /directive-created acknowledgement FAILED to post/.test(l) && /Telegram API status 400/.test(l)), "ACK failure is logged with acknowledgement name and reason");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testAcknowledgementPlainTextGetsNoBackslashes() {
+  const name = "(23h) acknowledgement plain text without Markdown specials gains no backslashes";
+  const { calls, ctx } = commandCtx();
+  try {
+    const r = await processUpdateForCallback(textUpdate(8177, "Beresin Barrier saya"), ctx);
+    assert.equal(r.outcome, "text-ingressed");
+    assert.equal(calls.sendMessage.length, 1, "owner ACK sent");
+    assert.doesNotMatch(calls.sendMessage[0].text, /\\/, "plain acknowledgement has no escape backslashes");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
 // ===========================================================================
 // P0 FIX regression tests: PATCH failure must NOT be falsified as success, and
 // state persistence must NOT be silently swallowed.
@@ -1203,6 +1279,10 @@ async function main() {
     await testTextIngressPatchNetworkFailureNotFalsified();
     await testTextIngressPatchNon2xxNotFalsified();
     await testTextIngressMissingDirectiveLabelNotFalsified();
+    await testReplyNoteAcknowledgementEscapesOwnerMarkdown();
+    await testDirectiveCreatedAcknowledgementEscapesOwnerMarkdown();
+    await testDirectiveCreatedAcknowledgementSend400IsLoggedWithoutChangingOutcome();
+    await testAcknowledgementPlainTextGetsNoBackslashes();
     await testApprovePatchNetworkFailureNotFalsified();
     await testRejectPatchStatusFailureNotFalsified();
     await testStateWriteFailureSurfaced();
