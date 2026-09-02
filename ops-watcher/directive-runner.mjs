@@ -19,7 +19,7 @@
 //                             r:<shortId> — no second scheme, no second sender)
 //   - execution (stage 3b):   executeDirective (defaults to executeApprovedDirective)
 //   - owner Telegram (3b):    sendOwnerMessage (defaults to telegram-client.sendMessage)
-//   - issue patch (3b):       patchIssue (defaults to httpPost /api/issues/:id)
+//   - issue patch (3b):       patchIssue (defaults to httpPatch /api/issues/:id)
 //   - issue label (3b):       addIssueLabel (defaults to httpPost /api/issues/:id/labels)
 //   - label map (3b):         labelMap (default { doneVerified: "DONE_VERIFIED" })
 
@@ -31,6 +31,7 @@ import {
   discoverPaperclipPort,
   httpGet,
   httpPost,
+  httpPatch,
   listIssues,
   CANONICAL_COMPANY_ID,
   ensureLabel,
@@ -796,6 +797,7 @@ export async function runDirectiveSweepOnce(deps = {}) {
     listIssues: listIssuesFn = listIssues,
     httpGet: _get = httpGet,
     httpPost: _post = httpPost,
+    httpPatch: _patch = httpPatch,
     retrieveContext = retrieveDispatchContext,
     dispatchPlan = dispatchPlanReal,
     sendDecisionCard = sendDecisionCardReal,
@@ -1168,7 +1170,14 @@ export async function runDirectiveSweepOnce(deps = {}) {
     if (!dryRun && approvedForExecution.length > 0) {
       const execFn = executeDirective || executeApprovedDirective;
       const sendOwnerMsg = sendOwnerMessage || (async () => ({ sent: false }));
-      const patchIssueFn = patchIssue || (async (iss, patch) => _post(`${base}/api/issues/${iss.id}`, patch));
+      // PATCH, not POST. The old default POSTed to /api/issues/:id, which is not
+      // the update endpoint, and nobody read the reply — so an executed directive
+      // got its result comment and its DONE_VERIFIED label while its status
+      // stayed 'todo'. Exactly the shape addIssueLabelReal above was already
+      // fixed for ("the previous default POSTed /api/issues/:id/labels, which
+      // Paperclip answers 404, so the escalation silently never fired"), left
+      // behind at this one site. Seen live on KOL-73 at 2026-09-02T06:08Z.
+      const patchIssueFn = patchIssue || (async (iss, patch) => _patch(`${base}/api/issues/${iss.id}`, patch));
       const addLabelFn = addIssueLabel || (async (iss, label) => addIssueLabelReal(base, companyId, iss, label, "#b91c1c"));
       const nowMs = asMs(now);
       const toExecute = approvedForExecution.slice(0, MAX_EXECUTIONS_PER_SWEEP);
@@ -1197,11 +1206,22 @@ export async function runDirectiveSweepOnce(deps = {}) {
           const dpost = await _post(`${base}/api/issues/${exIssue.id}/comments`, { body, authorType: "user" });
           const dposted = judgeWrite(dpost);
           if (!dposted.ok) summary.errors.push(`${exIdent}: result comment NOT posted (${dposted.reason})`);
-          try { await patchIssueFn(exIssue, { status: "done" }); }
-          catch (e) { summary.errors.push(`${exIdent}: patch status error: ${e && e.message ? e.message : e}`); }
+          try {
+            const statusPatch = await patchIssueFn(exIssue, { status: "done" });
+            const patched = judgeWrite(statusPatch);
+            if (!patched.ok) {
+              summary.errors.push(`${exIdent}: status NOT set to done (${patched.reason})`);
+              log(`directive-runner: ${exIdent} status NOT set to done (${patched.reason}) — the result comment stands`);
+            }
+          } catch (e) { summary.errors.push(`${exIdent}: patch status error: ${e && e.message ? e.message : e}`); }
           if (labelMap && labelMap.doneVerified) {
-            try { await addLabelFn(exIssue, labelMap.doneVerified); }
-            catch (e) { summary.errors.push(`${exIdent}: add label error: ${e && e.message ? e.message : e}`); }
+            try {
+              const labelAdd = await addLabelFn(exIssue, labelMap.doneVerified);
+              // addIssueLabelReal reports its own failure as { ok: false, reason }.
+              if (labelAdd && labelAdd.ok === false) {
+                summary.errors.push(`${exIdent}: DONE_VERIFIED label NOT added (${labelAdd.reason || "unknown"})`);
+              }
+            } catch (e) { summary.errors.push(`${exIdent}: add label error: ${e && e.message ? e.message : e}`); }
           }
           summary.executed += 1;
         } else if (outcome === "no-op") {

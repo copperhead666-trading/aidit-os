@@ -1977,6 +1977,90 @@ await t("Q7 the executor's VERIFY runs the command the plan actually wrote", asy
   assert.equal(argv[4].includes('"'), false, "the quotes must not survive into the argument");
 });
 
+// ---- S-series: the status patch on a finished directive ---------------------
+// KOL-73 finished at 2026-09-02T06:08Z with its DIRECTIVE RESULT comment posted
+// and DONE_VERIFIED applied, and its status still 'todo'. The default binding
+// POSTed to /api/issues/:id — not the update endpoint — and nobody read the
+// reply. S1 exercises the DEFAULT, uninjected binding, which is where the bug
+// lived; every existing test injects patchIssue and so could never see it.
+
+await t("S1 the default status patch uses PATCH /api/issues/:id, never POST", async () => {
+  await resetTmp();
+  const planAt = "2026-09-01T09:00:00.000Z";
+  const after = "2026-09-01T09:30:00.000Z";
+  const comments = { kol70: [c(`${PLAN_MARKER} (iso):\n${goodPlan}`, planAt), c(TG_APPROVE, after)] };
+  const patchCalls = [];
+  const postUrls = [];
+  const { deps } = makeSweepDeps({
+    issues: [issue({ id: "kol70", identifier: "KOL-70" })],
+    comments,
+    extra: {
+      // No patchIssue: force the real default binding.
+      patchIssue: undefined,
+      addIssueLabel: async () => ({ ok: true }),
+      executeDirective: async () => ({ outcome: "done", filesChanged: ["ops-watcher/foo.mjs"], verifyTail: "ok" }),
+      httpPatch: async (url, patch) => { patchCalls.push({ url, patch }); return { status: 200, body: { id: "kol70", ...patch }, networkError: false }; },
+      httpPost: async (url, body2) => {
+        postUrls.push(url);
+        const id = url.match(/\/api\/issues\/([^/]+)\/comments$/)?.[1];
+        if (!id) return { status: 404, body: null, networkError: false };
+        comments[id] = comments[id] || [];
+        comments[id].push({ id: `p${postUrls.length}`, body: body2.body, createdAt: new Date(NOW).toISOString() });
+        return { status: 201, body: comments[id].at(-1), networkError: false };
+      },
+    },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.executed, 1);
+  assert.equal(patchCalls.length, 1, "the status update must go through httpPatch");
+  assert.match(patchCalls[0].url, /\/api\/issues\/kol70$/);
+  assert.deepEqual(patchCalls[0].patch, { status: "done" });
+  assert.equal(
+    postUrls.some((u) => /\/api\/issues\/kol70$/.test(u)),
+    false,
+    "nothing may POST to the issue URL - that is not the update endpoint",
+  );
+  assert.equal(res.errors.length, 0);
+});
+
+await t("S2 a rejected status patch is reported, not swallowed", async () => {
+  await resetTmp();
+  const planAt = "2026-09-01T09:00:00.000Z";
+  const after = "2026-09-01T09:30:00.000Z";
+  const comments = { kol70: [c(`${PLAN_MARKER} (iso):\n${goodPlan}`, planAt), c(TG_APPROVE, after)] };
+  const { deps, posts } = makeSweepDeps({
+    issues: [issue({ id: "kol70", identifier: "KOL-70" })],
+    comments,
+    extra: {
+      executeDirective: async () => ({ outcome: "done", filesChanged: ["ops-watcher/foo.mjs"], verifyTail: "ok" }),
+      patchIssue: async () => ({ status: 401, body: null, authRequired: true, networkError: false }),
+    },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.executed, 1, "the work itself did finish");
+  assert.equal(posts.filter((p) => /^DIRECTIVE RESULT/.test(p.body.body)).length, 1, "the result comment still stands");
+  assert.equal(res.errors.some((e) => /status NOT set to done/.test(e)), true);
+  assert.equal(res.errors.some((e) => /auth required/.test(e)), true);
+});
+
+await t("S3 a DONE_VERIFIED label that did not land is reported", async () => {
+  await resetTmp();
+  const planAt = "2026-09-01T09:00:00.000Z";
+  const after = "2026-09-01T09:30:00.000Z";
+  const comments = { kol70: [c(`${PLAN_MARKER} (iso):\n${goodPlan}`, planAt), c(TG_APPROVE, after)] };
+  const { deps } = makeSweepDeps({
+    issues: [issue({ id: "kol70", identifier: "KOL-70" })],
+    comments,
+    extra: {
+      executeDirective: async () => ({ outcome: "done", filesChanged: ["ops-watcher/foo.mjs"], verifyTail: "ok" }),
+      // addIssueLabelReal reports failure this way instead of throwing.
+      addIssueLabel: async () => ({ ok: false, reason: "status 404" }),
+    },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.errors.some((e) => /DONE_VERIFIED label NOT added \(status 404\)/.test(e)), true);
+});
+
 await resetTmp();
 console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);
