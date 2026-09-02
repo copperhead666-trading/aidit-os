@@ -17,6 +17,7 @@ import {
   validateVerifyCommand,
   runDirectiveSweepOnce,
   capturePlanForExecution,
+  nodeCommandToArgv,
   commentsOldestFirst,
   readStateOutcome,
   UNEXECUTABLE_MARKER,
@@ -1918,6 +1919,62 @@ await t("O5 runDirectiveSweepOnce accepts newest-first approved comments without
   assert.equal(summary.unexecutable.length, 0);
   assert.equal(summary.errors.some((e) => /plan-parse-failed/.test(e)), false);
   assert.equal(getExecuteCalls(), 1);
+});
+
+// ---- Q-series: a VERIFY argument that contains spaces -----------------------
+// nodeCommandToArgv used to be split(/\s+/), so any quoted argument was
+// shattered and its quotes were left attached to the fragments. KOL-73's plan
+// hit this on 2026-09-02: its VERIFY regex arrived as seven arguments, never
+// matched, and the executor reverted work that was actually correct.
+
+await t("Q1 a quoted argument containing spaces stays one argument", () => {
+  const argv = nodeCommandToArgv('node ops-watcher/verify-file.mjs --path a.txt --matches "^AHMAD E2E SOAK TEST PASS - [0-9]{4}"');
+  assert.deepEqual(argv, [
+    "ops-watcher/verify-file.mjs",
+    "--path",
+    "a.txt",
+    "--matches",
+    "^AHMAD E2E SOAK TEST PASS - [0-9]{4}",
+  ]);
+});
+
+await t("Q2 single quotes group the same way and are stripped", () => {
+  const argv = nodeCommandToArgv("node x.mjs --contains 'two words'");
+  assert.deepEqual(argv, ["x.mjs", "--contains", "two words"]);
+});
+
+await t("Q3 a backslash is literal, so Windows paths survive intact", () => {
+  const argv = nodeCommandToArgv('node ops-watcher\\verify-file.mjs --path "C:\\tmp\\a b.txt"');
+  assert.deepEqual(argv, ["ops-watcher\\verify-file.mjs", "--path", "C:\\tmp\\a b.txt"]);
+});
+
+await t("Q4 an explicitly empty quoted argument is kept, not dropped", () => {
+  assert.deepEqual(nodeCommandToArgv('node x.mjs --matches ""'), ["x.mjs", "--matches", ""]);
+});
+
+await t("Q5 unquoted commands tokenise exactly as before", () => {
+  assert.deepEqual(
+    nodeCommandToArgv("node ops-watcher/run-all-tests.mjs --only x.test.mjs"),
+    ["ops-watcher/run-all-tests.mjs", "--only", "x.test.mjs"],
+  );
+  assert.deepEqual(nodeCommandToArgv("  node   a.mjs   b  "), ["a.mjs", "b"]);
+  assert.deepEqual(nodeCommandToArgv(""), []);
+  assert.deepEqual(nodeCommandToArgv(null), []);
+});
+
+await t("Q6 an unterminated quote keeps the rest of the line instead of losing it", () => {
+  assert.deepEqual(nodeCommandToArgv('node x.mjs --matches "abc def'), ["x.mjs", "--matches", "abc def"]);
+});
+
+await t("Q7 the executor's VERIFY runs the command the plan actually wrote", async () => {
+  // The seam the executor uses: runVerify receives the VERIFY string and the
+  // default binding tokenises it. Assert on the argv the tokeniser produces for
+  // the exact VERIFY line KOL-73 was reverted on.
+  const verify = 'node ops-watcher/verify-file.mjs --path ops-watcher/e2e-soak/soak-test-2026-08-31.txt --matches "^AHMAD E2E SOAK TEST PASS - [0-9]{4}-[0-9]{2}-[0-9]{2}T"';
+  const argv = nodeCommandToArgv(verify);
+  assert.equal(argv.length, 5, "five arguments, not eleven");
+  assert.equal(argv[4], "^AHMAD E2E SOAK TEST PASS - [0-9]{4}-[0-9]{2}-[0-9]{2}T");
+  assert.equal(argv[4].includes('"'), false, "the quotes must not survive into the argument");
 });
 
 await resetTmp();

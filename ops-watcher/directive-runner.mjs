@@ -1312,10 +1312,45 @@ export function buildExecutionPrompt(issue, plan) {
 
 // Splits a "node ops-watcher/..." command string into argv, replacing the
 // leading "node" with the real executable path for a shell:false spawn.
-function nodeCommandToArgv(cmd) {
-  const parts = String(cmd || "").trim().split(/\s+/).filter(Boolean);
-  if (parts[0] === "node") parts.shift();
-  return parts;
+// Split a VERIFY / execution command into argv.
+//
+// This used to be split(/\s+/), which shatters any argument containing a space
+// and leaves the surrounding quotes attached to the fragments. A real plan hit
+// it on 2026-09-02: KOL-73's VERIFY was
+//
+//   node ops-watcher/verify-file.mjs --path <file> --matches "^AHMAD E2E SOAK TEST PASS - [0-9]{4}..."
+//
+// and verify-file.mjs received `--matches` followed by `"^AHMAD`, `E2E`,
+// `SOAK`, `TEST`, `PASS`, `-`, and the rest as SEVEN separate arguments. The
+// pattern never matched, VERIFY went red, and the executor reverted a directive
+// whose work was actually correct — the same command passes when run by hand.
+//
+// Everything here is spawned with shell:false, so nothing downstream interprets
+// this string: the only job is grouping. A single- or double-quoted run is ONE
+// argument and its surrounding quotes are removed. A backslash is a literal
+// character, never an escape, because these commands carry Windows paths.
+// An unterminated quote takes the rest of the line rather than dropping it.
+export function nodeCommandToArgv(cmd) {
+  const src = String(cmd || "");
+  const argv = [];
+  let cur = "";
+  let started = false;
+  let quote = null;
+  const flush = () => { if (started) argv.push(cur); cur = ""; started = false; };
+  for (const ch of src) {
+    if (quote) {
+      if (ch === quote) { quote = null; continue; }
+      cur += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; started = true; continue; }
+    if (/\s/.test(ch)) { flush(); continue; }
+    cur += ch;
+    started = true;
+  }
+  flush();
+  if (argv[0] === "node") argv.shift();
+  return argv;
 }
 
 // Shared spawn-with-capture helper used by the default runVerify / runFullSuite
