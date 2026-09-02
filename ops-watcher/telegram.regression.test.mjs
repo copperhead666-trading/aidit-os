@@ -45,6 +45,7 @@ import {
   parseDecisionOptionsFromComments,
   DECISION_OPTIONS_MARKER,
 } from "./telegram-decision-options.mjs";
+import { PLAN_MARKER } from "./directive-runner.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Fake token — realistic shape (9 digits, colon, ~35 alnum/_ chars). NEVER a real
@@ -209,6 +210,25 @@ function ownerRequiredIssue({ id, identifier, title = "SELFTEST demo", descripti
   };
 }
 
+function directivePlanBody({ objective = "Menjalankan perubahan terarah.", files = [], steps = [], verify = "node ops-watcher/run-all-tests.mjs --only telegram.regression.test.mjs", outOfScope = "Tidak mengubah branch keputusan lain.", risk = "low" } = {}) {
+  return [
+    `OBJECTIVE: ${objective}`,
+    `FILES: ${files.length ? files.join(", ") : "NONE"}`,
+    "STEPS:",
+    ...steps.map((step) => `- ${step}`),
+    `VERIFY: ${verify}`,
+    `OUT OF SCOPE: ${outOfScope}`,
+    `RISK: ${risk}`,
+  ].join("\n");
+}
+
+function planComment(id, planBody, createdAt) {
+  return { id, body: `${PLAN_MARKER} (${createdAt}):\n${planBody}`, authorType: "agent", authorAgentId: "agent-ahmad", createdAt };
+}
+
+function userComment(id, body, createdAt) {
+  return { id, body, authorType: "user", createdAt };
+}
 function cbqUpdate(updateId, actionLetter, shortId, messageId) {
   return cbqDataUpdate(updateId, `${actionLetter}:${shortId}`, messageId);
 }
@@ -443,6 +463,72 @@ async function testDetailsShowsNewestFromNewestFirstApiOrder() {
   } catch (e) { bad(name, e); }
 }
 
+async function testDetailsShowsFullDirectivePlan() {
+  const name = "(5c) DETAILS shows full directive plan with 12 files and 9 steps from newest-first comments";
+  const files = Array.from({ length: 12 }, (_, i) => `ops-watcher/detail-plan-file-${String(i + 1).padStart(2, "0")}.mjs`);
+  const steps = Array.from({ length: 9 }, (_, i) => `jalankan langkah detail ${i + 1}`);
+  const commentsNewestFirst = [
+    userComment("c-new", "komentar sesudah plan", "2026-09-01T00:03:00.000Z"),
+    planComment("c-plan", directivePlanBody({ objective: "Tampilkan semua detail plan ke owner.", files, steps }), "2026-09-01T00:02:00.000Z"),
+    userComment("c-old", "komentar sebelum plan", "2026-09-01T00:01:00.000Z"),
+  ];
+  try {
+    const { result, tgCalls, pc } = await runOneAction("d", { comments: commentsNewestFirst });
+    assert.equal(result.results[0].outcome, "details-sent");
+    assert.equal(pc.patchLog.length, 0, "no issue PATCH on DETAILS");
+    assert.equal(tgCalls.editMessageText.length, 0, "original message not edited on DETAILS");
+    const text = tgCalls.sendMessage.map((m) => m.text).join("\n");
+    assert.ok(text.includes("Tampilkan semua detail plan ke owner."), "objective should be shown");
+    for (const file of files) assert.ok(text.includes(file), `${file} should be shown`);
+    assert.ok(text.includes(files[11]), "12th file must be shown despite card cap at 8");
+    for (const step of steps) assert.ok(text.includes(step), `${step} should be shown`);
+    assert.ok(text.includes("Tidak mengubah branch keputusan lain."), "out-of-scope should be shown");
+    assert.ok(text.includes("node ops-watcher/run-all-tests.mjs --only telegram.regression.test.mjs"), "verify command should be shown");
+    assert.ok(text.includes("low"), "risk should be shown");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testDetailsSplitsLongDirectivePlan() {
+  const name = "(5d) DETAILS splits directive plan over 4096 chars and preserves the last file";
+  const files = Array.from({ length: 170 }, (_, i) => `ops-watcher/very-long-detail-plan-file-${String(i + 1).padStart(3, "0")}-kept-in-full.mjs`);
+  const steps = Array.from({ length: 12 }, (_, i) => `langkah panjang ${i + 1} memastikan detail tetap lengkap untuk owner`);
+  const commentsNewestFirst = [
+    userComment("c-new", "komentar terbaru", "2026-09-01T00:03:00.000Z"),
+    planComment("c-plan", directivePlanBody({ objective: "Plan ini sengaja panjang untuk menguji chunk Telegram.", files, steps }), "2026-09-01T00:02:00.000Z"),
+    userComment("c-old", "komentar lama", "2026-09-01T00:01:00.000Z"),
+  ];
+  try {
+    const { result, tgCalls } = await runOneAction("d", { comments: commentsNewestFirst });
+    assert.equal(result.results[0].outcome, "details-sent");
+    assert.ok(tgCalls.sendMessage.length > 1, "long detail must be sent as multiple messages");
+    for (const msg of tgCalls.sendMessage) assert.ok(msg.text.length < 4096, "each Telegram detail chunk must stay under 4096 chars");
+    assert.ok(tgCalls.sendMessage[0].text.includes("Detail 1/"), "first chunk should be numbered");
+    assert.ok(tgCalls.sendMessage.map((m) => m.text).join("\n").includes(files.at(-1)), "last file name must survive chunking");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testDetailsNoPlanStatesCaptureReason() {
+  const name = "(5e) DETAILS without plan keeps comment view and states plan-comment-missing";
+  const commentsNewestFirst = [
+    userComment("c-3", "comment-3 newest fallback-kept", "2026-09-01T00:03:00.000Z"),
+    userComment("c-2", "comment-2 fallback-kept", "2026-09-01T00:02:00.000Z"),
+    userComment("c-1", "comment-1 fallback-kept", "2026-09-01T00:01:00.000Z"),
+  ];
+  try {
+    const { result, tgCalls, pc } = await runOneAction("d", { comments: commentsNewestFirst });
+    assert.equal(result.results[0].outcome, "details-sent");
+    assert.equal(pc.patchLog.length, 0, "no issue PATCH on DETAILS");
+    assert.equal(tgCalls.editMessageText.length, 0, "original message not edited on DETAILS");
+    assert.equal(tgCalls.sendMessage.length, 1, "fallback detail fits in one message");
+    const text = tgCalls.sendMessage[0].text;
+    assert.ok(text.includes("Rencana directive tidak terbaca (plan-comment-missing)."), "missing-plan reason must be explicit");
+    assert.ok(text.includes("comment-3 newest fallback-kept"), "newest comment should still be shown");
+    assert.ok(text.includes("comment-1 fallback-kept"), "fallback comment view should remain");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
 async function testRejectEditInvitesReasonReply() {
   const name = "(5b) REJECT edited card invites owner to reply with a reason";
   try {
@@ -1095,6 +1181,9 @@ async function main() {
     await testReject();
     await testDetails();
     await testDetailsShowsNewestFromNewestFirstApiOrder();
+    await testDetailsShowsFullDirectivePlan();
+    await testDetailsSplitsLongDirectivePlan();
+    await testDetailsNoPlanStatesCaptureReason();
     await testRejectEditInvitesReasonReply();
     await testDefer();
     await testAskAhmad();

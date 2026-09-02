@@ -166,7 +166,7 @@ import {
 import { parseDecisionOptionsFromComments } from "./telegram-decision-options.mjs";
 import { COMMANDS, handleCommand, parseCommand } from "./telegram-commands.mjs";
 import { pauseBanner, readPause } from "./pause-gate.mjs";
-import { commentsOldestFirst } from "./directive-runner.mjs";
+import { capturePlanForExecution, commentsOldestFirst } from "./directive-runner.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -212,6 +212,8 @@ const DECISION_COMMENT_PREFIX = {
 // 10 taps in a few seconds) while not suppressing a genuinely new decision hours
 // later (whose most-recent comment would be something else by then).
 const DEDUPE_WINDOW_MS = 60_000;
+const TELEGRAM_MESSAGE_LIMIT = 4096;
+const TELEGRAM_DETAIL_BODY_LIMIT = 3800;
 
 const iso = () => new Date().toISOString();
 
@@ -376,6 +378,72 @@ export function escMd(s) {
   return String(s == null ? "" : s).replace(/([\\*_`\[])/g, "\\$1");
 }
 
+function renderDirectivePlanDetail(plan) {
+  const files = Array.isArray(plan?.files) ? plan.files : [];
+  const steps = Array.isArray(plan?.steps) ? plan.steps : [];
+  return [
+    "*Rencana directive:*",
+    `*Objective:* ${escMd(plan?.objective || "(kosong)")}`,
+    "",
+    "*Files:*",
+    ...(files.length ? files.map((f, i) => `${i + 1}. ${escMd(f)}`) : ["(tidak ada file)"]),
+    "",
+    "*Steps:*",
+    ...(steps.length ? steps.map((s, i) => `${i + 1}. ${escMd(s)}`) : ["(tidak ada langkah)"]),
+    "",
+    `*Out of scope:* ${escMd(plan?.outOfScope || "(kosong)")}`,
+    `*Verify:* ${escMd(plan?.verify || "(kosong)")}`,
+    `*Risk:* ${escMd(plan?.risk || "(kosong)")}`,
+  ].join("\n");
+}
+
+function splitTelegramDetailText(text) {
+  const raw = String(text == null ? "" : text);
+  if (raw.length <= TELEGRAM_MESSAGE_LIMIT) return [raw];
+  const chunks = [];
+  let current = "";
+  const pushCurrent = () => {
+    if (current) chunks.push(current);
+    current = "";
+  };
+  for (const line of raw.replace(/\r\n/g, "\n").split("\n")) {
+    const next = current ? `${current}\n${line}` : line;
+    if (next.length <= TELEGRAM_DETAIL_BODY_LIMIT) {
+      current = next;
+      continue;
+    }
+    pushCurrent();
+    if (line.length <= TELEGRAM_DETAIL_BODY_LIMIT) {
+      current = line;
+      continue;
+    }
+    for (let i = 0; i < line.length; i += TELEGRAM_DETAIL_BODY_LIMIT) {
+      chunks.push(line.slice(i, i + TELEGRAM_DETAIL_BODY_LIMIT));
+    }
+  }
+  pushCurrent();
+  return chunks.map((chunk, i) => `*Detail ${i + 1}/${chunks.length}*\n${chunk}`);
+}
+
+async function sendDetailMessages(_sendMessage, text, upOpts, log, shortId) {
+  const chunks = splitTelegramDetailText(text);
+  let sent = 0;
+  for (let i = 0; i < chunks.length; i += 1) {
+    let r = null;
+    try {
+      r = await _sendMessage(chunks[i], { ...upOpts });
+    } catch (err) {
+      log(`telegram-listener: ${shortId} DETAILS chunk ${i + 1}/${chunks.length} send threw: ${err && err.message}`);
+      continue;
+    }
+    if (!r || r.sent === false || r.ok === false || (typeof r.status === "number" && (r.status < 200 || r.status >= 300))) {
+      log(`telegram-listener: ${shortId} DETAILS chunk ${i + 1}/${chunks.length} send FAILED (status=${r && r.status != null ? r.status : "?"})`);
+      continue;
+    }
+    sent += 1;
+  }
+  return { chunks: chunks.length, sent };
+}
 // Detect a "bare slash command": a message whose ENTIRE trimmed content is a
 // single line starting with `/` (optionally followed by arguments on that same
 // line) — e.g. "/pause" or "/stop extra args". A message that merely CONTAINS
@@ -1050,23 +1118,32 @@ export async function applyAction(ctx) {
     const status = fresh ? fresh.status : issue.status;
     const title = fresh ? fresh.title : issue.title;
     const labelIds = (fresh ? fresh.labelIds : issue.labelIds) || [];
-    const detail = [
+    const capture = capturePlanForExecution(comments);
+    const detailParts = [
       `*Detail* \`${shortId}\``,
       "",
       `*Judul:* ${escMd(title || "(tanpa judul)")}`,
       `*Status:* ${escMd(status)}`,
       `*Label:* ${escMd(labelIds.join(", "))}`,
-      "",
-      `*Komentar terbaru (${comments.length}):*`,
-      recent,
-    ].join("\n");
-    await _sendMessage(detail, { ...upOpts }).catch(() => ({ sent: false }));
-    log(`telegram-listener: ${shortId} DETAILS -> sent follow-up message (${comments.length} comments)`);
+    ];
+    if (capture.ok) {
+      detailParts.push("", renderDirectivePlanDetail(capture.plan));
+    } else {
+      detailParts.push(
+        "",
+        `Rencana directive tidak terbaca (${escMd(capture.reason || "unknown")}).`,
+        "",
+        `*Komentar terbaru (${comments.length}):*`,
+        recent,
+      );
+    }
+    const detail = detailParts.join("\n");
+    const sent = await sendDetailMessages(_sendMessage, detail, upOpts, log, shortId);
+    log(`telegram-listener: ${shortId} DETAILS -> sent follow-up message (${comments.length} comments, chunks=${sent.sent}/${sent.chunks}, plan=${capture.ok ? "ok" : capture.reason})`);
     await toast("📋 detail terkirim");
     // Intentionally do NOT edit or change Paperclip state.
     return { outcome: "details-sent" };
   }
-
   if (action === "DEFER") {
     // Deliberately non-durable: only a comment. Label + buttons stay.
     const dup = hasRecentInProcessDecision(decisionDedupe, decisionKey, now(), dedupeWindowMs) ||
