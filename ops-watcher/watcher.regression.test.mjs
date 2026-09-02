@@ -10,7 +10,7 @@
 
 import assert from "node:assert/strict";
 import http from "node:http";
-import { discoverPaperclipPort, httpGet } from "./watcher.mjs";
+import { discoverPaperclipPort, httpGet, emitEvent } from "./watcher.mjs";
 
 const FIXTURE_FINGERPRINT = "REGRESSION-FIXTURE-BACKUP-DIR-12345";
 const HEALTH_PATH = "/api/health";
@@ -284,6 +284,40 @@ async function testDefaultOneSweepNoSleep() {
   }
 }
 
+async function testUnwrittenEventIsNotDeduped() {
+  const name = "(e1) an event whose append failed is not marked seen, and is retried";
+  try {
+    const ev = { detector: "d1", target_role: "OPS-WATCHER", payload: { issueId: "i1" } };
+    const state = { cursor: 0, seen: [], seenSet: {} };
+    let fail = true;
+    const written = [];
+    const fakeFs = {
+      appendFile: async (_file, line) => {
+        if (fail) throw new Error("EACCES");
+        written.push(line);
+      },
+    };
+
+    const first = await emitEvent(state, ev, fakeFs, "events.test.jsonl");
+    assert.equal(first, false, "a failed append is not an emitted event");
+    assert.equal(state.seen.length, 0, "a failed append must not be marked seen");
+    assert.equal(Object.keys(state.seenSet).length, 0, "seenSet must stay empty");
+
+    fail = false;
+    const second = await emitEvent(state, ev, fakeFs, "events.test.jsonl");
+    assert.equal(second, true, "the retry emits it");
+    assert.equal(written.length, 1, "exactly one line written");
+    assert.equal(state.seen.length, 1, "now it is marked seen");
+
+    const third = await emitEvent(state, ev, fakeFs, "events.test.jsonl");
+    assert.equal(third, false, "a written event is still deduped");
+    assert.equal(written.length, 1, "no duplicate line");
+    ok(name);
+  } catch (err) {
+    bad(name, err);
+  }
+}
+
 async function main() {
   console.log("# ops-watcher regression tests");
   await testCorrectInstanceWhenMultiplePortsRespond();
@@ -295,6 +329,7 @@ async function main() {
   await testRetryAllFailReturnsNull();
   await testRetrySuccessFirstSweepNoSleep();
   await testDefaultOneSweepNoSleep();
+  await testUnwrittenEventIsNotDeduped();
 
   console.log("");
   console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);

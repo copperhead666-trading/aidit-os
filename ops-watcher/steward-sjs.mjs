@@ -45,6 +45,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { deliverAlert } from "./alert-delivery.mjs";
 import {
   acquireLock as acquireLockReal,
   releaseLock as releaseLockReal,
@@ -657,12 +658,39 @@ export async function runStewardSjsOnce(deps) {
       // else: same finding within cooldown -> suppressed.
     }
 
+    // ---- Alerting: ONE bundled ahmad-notify spawn if any criticals to alert ----
+    // Attempt the alert BEFORE stamping the cooldown, and let the spawn result
+    // decide whether it went out: spawnNotify reports a failed spawn by return
+    // value, not by throwing, so the old try/catch caught nothing and the
+    // `notified = true` under it stamped an hour of silence on an alert the
+    // owner never received.
+    let notified = false;
+    let notifyPid = null;
+    if (toAlert.length > 0) {
+      const message = buildAlertMessage(toAlert, warnings, gaps);
+      const delivery = await deliverAlert(() => spawnNotify(message));
+      notified = delivery.delivered;
+      notifyPid = delivery.pid ?? null;
+      if (notified) {
+        log(`steward-sjs: spawned ahmad-notify (pid=${notifyPid}) with ${toAlert.length} critical finding(s)`);
+      } else {
+        log(`steward-sjs: ahmad-notify spawn FAILED (${delivery.reason}) — critical findings not relayed, cooldown not advanced`);
+      }
+    } else {
+      log(
+        criticals.length > 0
+          ? `steward-sjs: ${criticals.length} critical finding(s) suppressed (within ${COOLDOWN_MS / 60000}min re-alert cooldown)`
+          : `steward-sjs: no critical findings — no alert spawned`,
+      );
+    }
+
+    // Only a finding that actually went out advances its cooldown.
     const newAlerts = {};
     for (const f of criticals) {
       const prev = alerts[f.key];
-      if (toAlert.includes(f)) {
+      if (notified && toAlert.includes(f)) {
         newAlerts[f.key] = { lastAlertedAt: now(), finding: f.detail };
-      } else {
+      } else if (prev) {
         newAlerts[f.key] = prev; // keep prev record so cooldown keeps counting
       }
     }
@@ -671,27 +699,6 @@ export async function runStewardSjsOnce(deps) {
       await writeState(stateFile, newState);
     } catch (err) {
       log(`steward-sjs: state write threw (${err && err.message}) — dedupe may repeat on next run`);
-    }
-
-    // ---- Alerting: ONE bundled ahmad-notify spawn if any criticals to alert ----
-    let notified = false;
-    let notifyPid = null;
-    if (toAlert.length > 0) {
-      const message = buildAlertMessage(toAlert, warnings, gaps);
-      try {
-        const spawned = spawnNotify(message);
-        notified = true;
-        notifyPid = spawned && spawned.pid;
-        log(`steward-sjs: spawned ahmad-notify (pid=${notifyPid}) with ${toAlert.length} critical finding(s)`);
-      } catch (err) {
-        log(`steward-sjs: ahmad-notify spawn FAILED (${err && err.message}) — critical findings not relayed`);
-      }
-    } else {
-      log(
-        criticals.length > 0
-          ? `steward-sjs: ${criticals.length} critical finding(s) suppressed (within ${COOLDOWN_MS / 60000}min re-alert cooldown)`
-          : `steward-sjs: no critical findings — no alert spawned`,
-      );
     }
 
     return {

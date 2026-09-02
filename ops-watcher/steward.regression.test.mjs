@@ -1146,6 +1146,58 @@ async function t28_stewardPassesRetryOptsToDiscoverPort() {
 // =====================================================================
 // Runner
 // =====================================================================
+// =====================================================================
+// T29: a notify spawn that never started must not advance the cooldown.
+// spawnNotify reports that by RETURN VALUE ({ pid: undefined }), not by
+// throwing, so the old try/catch caught nothing and alerted=true stamped an
+// hour of silence on an alert the owner never received.
+// =====================================================================
+async function t29_failedSpawnDoesNotAdvanceCooldown() {
+  let clock = 1_000_000;
+  let spawnOk = false;
+  let spawnCalls = 0;
+  const deps = baseDeps({
+    now: () => clock,
+    discoverPort: async () => null, // Paperclip down -> a CRITICAL finding
+    isAlive: () => true,
+    spawnNotify: () => { spawnCalls += 1; return spawnOk ? { pid: 4242 } : { pid: undefined }; },
+  });
+
+  const r1 = await runStewardOnce(deps);
+  assert.ok(r1.criticalCount >= 1, "T29: at least one critical was found");
+  assert.equal(r1.alerted, false, "T29: a spawn with no pid is not a delivered alert");
+
+  // One minute later, far inside the 1-hour cooldown. The finding never
+  // reached the owner, so it must be retried rather than suppressed.
+  clock += 60 * 1000;
+  spawnOk = true;
+  const r2 = await runStewardOnce(deps);
+  assert.equal(r2.alerted, true, "T29: an undelivered finding is retried on the next sweep");
+  assert.equal(r2.suppressedCount, 0, "T29: it was never counted as suppressed");
+  assert.equal(spawnCalls, 2, "T29: both attempts really called spawnNotify");
+  ok("T29: a failed notify spawn does not stamp the cooldown");
+}
+
+// =====================================================================
+// T30: the restart cooldown must survive the alert-state write. The two live
+// under separate keys and the alert path rewrites the state object.
+// =====================================================================
+async function t30_failedSpawnKeepsRestartState() {
+  let clock = 1_000_000;
+  const deps = baseDeps({
+    now: () => clock,
+    discoverPort: async () => null,
+    isAlive: () => true,
+    spawnNotify: () => ({ pid: null, error: "spawn ENOENT" }),
+  });
+  await deps.writeState(null, { alerts: {}, restarts: { "pm2:heartbeat": { at: 123 } } });
+  const r = await runStewardOnce(deps);
+  assert.equal(r.alerted, false, "T30: an errored spawn is not a delivered alert");
+  const saved = await deps.readState(null);
+  assert.deepEqual(saved.restarts, { "pm2:heartbeat": { at: 123 } }, "T30: restart cooldown preserved");
+  ok("T30: an undelivered alert still preserves the separate restart cooldown");
+}
+
 async function main() {
   const tests = [
     t0_identityExport,
@@ -1177,6 +1229,8 @@ async function main() {
     t26_paperclipDownCriticalWithRetryDetail,
     t27_paperclipUpNoFindingWithRetry,
     t28_stewardPassesRetryOptsToDiscoverPort,
+    t29_failedSpawnDoesNotAdvanceCooldown,
+    t30_failedSpawnKeepsRestartState,
   ];
   for (const t of tests) await t();
   await fs.unlink(TMP_LOCK).catch(() => {});

@@ -12,6 +12,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { deliverAlert } from "./alert-delivery.mjs";
 import {
   acquireLock as acquireLockReal,
   releaseLock as releaseLockReal,
@@ -602,30 +603,22 @@ export async function runStewardCavemanOnce(deps = {}) {
       else if (now() - (prev.lastAlertedAt || 0) >= COOLDOWN_MS) toAlert.push(f);
     }
 
-    const newAlerts = {};
-    for (const f of criticals) {
-      const prev = alerts[f.key];
-      newAlerts[f.key] = toAlert.includes(f)
-        ? { lastAlertedAt: now(), finding: f.detail }
-        : prev;
-    }
-    try {
-      await writeState(stateFile, { alerts: newAlerts });
-    } catch (err) {
-      log(`steward-caveman: state write threw (${err && err.message}) - dedupe may repeat on next run`);
-    }
-
+    // Attempt the alert BEFORE stamping the cooldown, and let the spawn result
+    // decide whether it went out: spawnNotify reports a failed spawn by return
+    // value, not by throwing, so the old try/catch caught nothing and the
+    // `notified = true` under it stamped an hour of silence on an alert the
+    // owner never received.
     let notified = false;
     let notifyPid = null;
     if (toAlert.length > 0) {
       const message = buildAlertMessage(toAlert, warnings, gaps);
-      try {
-        const spawned = spawnNotify(message);
-        notified = true;
-        notifyPid = spawned && spawned.pid;
+      const delivery = await deliverAlert(() => spawnNotify(message));
+      notified = delivery.delivered;
+      notifyPid = delivery.pid ?? null;
+      if (notified) {
         log(`steward-caveman: spawned ahmad-notify (pid=${notifyPid}) with ${toAlert.length} critical finding(s)`);
-      } catch (err) {
-        log(`steward-caveman: ahmad-notify spawn FAILED (${err && err.message}) - critical findings not relayed`);
+      } else {
+        log(`steward-caveman: ahmad-notify spawn FAILED (${delivery.reason}) - critical findings not relayed, cooldown not advanced`);
       }
     } else {
       log(
@@ -633,6 +626,19 @@ export async function runStewardCavemanOnce(deps = {}) {
           ? `steward-caveman: ${criticals.length} critical finding(s) suppressed (within ${COOLDOWN_MS / 60000}min re-alert cooldown)`
           : "steward-caveman: no critical findings - no alert spawned",
       );
+    }
+
+    // Only a finding that actually went out advances its cooldown.
+    const newAlerts = {};
+    for (const f of criticals) {
+      const prev = alerts[f.key];
+      if (notified && toAlert.includes(f)) newAlerts[f.key] = { lastAlertedAt: now(), finding: f.detail };
+      else if (prev) newAlerts[f.key] = prev;
+    }
+    try {
+      await writeState(stateFile, { alerts: newAlerts });
+    } catch (err) {
+      log(`steward-caveman: state write threw (${err && err.message}) - dedupe may repeat on next run`);
     }
 
     return {

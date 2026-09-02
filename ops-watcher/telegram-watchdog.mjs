@@ -36,13 +36,31 @@ export function startDaemonReal({
   daemonScript = DAEMON_SCRIPT,
   cwd = ROOT,
   log = () => {},
+  spawn: spawnFn = spawn,
 } = {}) {
-  const child = spawn(nodePath, [daemonScript], {
-    cwd,
-    detached: true,
-    stdio: "ignore",
-    windowsHide: true,
+  // A spawn that fails to start (ENOENT on node, missing script) does not throw
+  // here — it emits an async 'error' event and leaves pid undefined. Returning
+  // ok:true regardless meant the watchdog logged "started daemon pid=undefined"
+  // and counted a start that never happened.
+  let child;
+  try {
+    child = spawnFn(nodePath, [daemonScript], {
+      cwd,
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+  } catch (err) {
+    log(`telegram-watchdog: daemon spawn FAILED (${err && err.message ? err.message : err})`);
+    return { ok: false, pid: null, reason: String((err && err.message) || err) };
+  }
+  child.on("error", (err) => {
+    log(`telegram-watchdog: daemon spawn error (${err && err.message ? err.message : err})`);
   });
+  if (!child.pid) {
+    log("telegram-watchdog: daemon did not start (no pid)");
+    return { ok: false, pid: null, reason: "no pid" };
+  }
   child.unref();
   log(`telegram-watchdog: started daemon pid=${child.pid}`);
   return { ok: true, pid: child.pid };
@@ -101,6 +119,7 @@ export async function runWatchdog(deps = {}) {
         log(`telegram-watchdog: daemon not running (${status.reason}) -> starting`);
         const started = await startDaemon({ log });
         if (started && started.ok) starts += 1;
+        else log(`telegram-watchdog: daemon NOT started (${(started && started.reason) || "no result"}) — will retry next check`);
       }
       if (once) break;
       const remaining = deadline - now();

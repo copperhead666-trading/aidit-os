@@ -68,6 +68,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { deliverAlert } from "./alert-delivery.mjs";
 import { discoverPaperclipPort } from "./watcher.mjs";
 import {
   acquireLock as acquireLockReal,
@@ -938,20 +939,51 @@ export async function runStewardOnce(deps) {
       // else: same finding within cooldown -> suppressed.
     }
 
+    // ---- Alerting: ONE bundled ahmad-notify spawn if any criticals to alert ----
+    // The alert is attempted BEFORE the cooldown is stamped, and the spawn's
+    // own result decides whether it went out. spawnNotify reports a failed
+    // spawn by RETURN VALUE ({ pid: undefined }, or { pid: null, error }), not
+    // by throwing, so the try/catch that used to guard this caught nothing and
+    // the `notified = true` beneath it claimed a delivery nobody checked. That
+    // claim then stamped a 1-hour cooldown, so the first failed alert silenced
+    // the finding for an hour instead of retrying on the next sweep.
+    let notified = false;
+    let notifyPid = null;
+    if (toAlert.length > 0) {
+      const message = buildAlertMessage(toAlert, warnings, gaps);
+      const delivery = await deliverAlert(() => spawnNotify(message));
+      notified = delivery.delivered;
+      notifyPid = delivery.pid ?? null;
+      if (notified) {
+        log(`steward: spawned ahmad-notify (pid=${notifyPid}) with ${toAlert.length} critical finding(s)`);
+      } else {
+        log(`steward: ahmad-notify spawn FAILED (${delivery.reason}) — critical findings not relayed, cooldown not advanced`);
+      }
+    } else {
+      log(
+        criticals.length > 0
+          ? `steward: ${criticals.length} critical finding(s) suppressed (within ${COOLDOWN_MS / 60000}min re-alert cooldown)`
+          : `steward: no critical findings — no alert spawned`,
+      );
+    }
+
     // Build new state: keep only currently-critical keys. Keys no longer
     // critical are dropped -> their alerted-state is cleared, so a fresh
     // recurrence alerts immediately (not after a cooldown wait). The `restarts`
     // key (written by the auto-restart logic in Check 5) is PRESERVED here so
     // the 5-minute restart cooldown survives the alert-cooldown write — the
     // two purposes use separate keys and must not clobber each other.
+    //
+    // Only a finding that actually went out advances its cooldown. One that did
+    // not keeps its previous stamp, so the next sweep tries again.
     const newAlerts = {};
     for (const f of criticals) {
       const prev = alerts[f.key];
-      if (toAlert.includes(f)) {
+      if (notified && toAlert.includes(f)) {
         newAlerts[f.key] = { lastAlertedAt: now(), finding: f.detail };
-      } else {
-        // Suppressed this run — keep the previous record so the cooldown
-        // continues to count from the original alert time.
+      } else if (prev) {
+        // Suppressed this run, or attempted and not delivered — keep the
+        // previous record so the cooldown counts from the last real alert.
         newAlerts[f.key] = prev;
       }
     }
@@ -960,27 +992,6 @@ export async function runStewardOnce(deps) {
       await writeState(stateFile, newState);
     } catch (err) {
       log(`steward: state write threw (${err && err.message}) — dedupe may repeat on next run`);
-    }
-
-    // ---- Alerting: ONE bundled ahmad-notify spawn if any criticals to alert ----
-    let notified = false;
-    let notifyPid = null;
-    if (toAlert.length > 0) {
-      const message = buildAlertMessage(toAlert, warnings, gaps);
-      try {
-        const spawned = spawnNotify(message);
-        notified = true;
-        notifyPid = spawned && spawned.pid;
-        log(`steward: spawned ahmad-notify (pid=${notifyPid}) with ${toAlert.length} critical finding(s)`);
-      } catch (err) {
-        log(`steward: ahmad-notify spawn FAILED (${err && err.message}) — critical findings not relayed`);
-      }
-    } else {
-      log(
-        criticals.length > 0
-          ? `steward: ${criticals.length} critical finding(s) suppressed (within ${COOLDOWN_MS / 60000}min re-alert cooldown)`
-          : `steward: no critical findings — no alert spawned`,
-      );
     }
 
     return {

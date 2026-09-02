@@ -2,7 +2,7 @@
 // Offline tests for telegram-watchdog.mjs. No real daemon process is spawned.
 
 import assert from "node:assert/strict";
-import { runWatchdog, inspectDaemon } from "./telegram-watchdog.mjs";
+import { runWatchdog, inspectDaemon, startDaemonReal } from "./telegram-watchdog.mjs";
 
 let passed = 0;
 let failed = 0;
@@ -109,7 +109,59 @@ async function t6_recoversMidFlight() {
   ok("T6 daemon death during watchdog runtime -> automatic restart");
 }
 
-const tests = [t1_missingLockStartsDaemon, t2_aliveLockDoesNotStart, t3_staleLockStartsDaemon, t4_refusesSecondWatchdog, t5_inspectInvalidLock, t6_recoversMidFlight];
+// A spawn that never started reports { ok: false, pid: null }. startDaemonReal
+// used to return ok:true unconditionally, so a daemon that did not start was
+// counted as started and logged with pid=undefined.
+async function t7_failedStartIsNotCounted() {
+  const logs = [];
+  const r = await runWatchdog({
+    once: true,
+    readLock: async () => ({ ok: false, code: "ENOENT" }),
+    isAlive: () => false,
+    startDaemon: async () => ({ ok: false, pid: null, reason: "no pid" }),
+    acquireLock: async () => ({ acquired: true, pid: 1 }),
+    releaseLock: async () => {},
+    log: (m) => logs.push(m),
+  });
+  assert.equal(r.starts, 0, "a daemon that did not start is not a start");
+  assert.equal(r.checks, 1);
+  assert.ok(logs.some((m) => /NOT started/.test(m)), "the failure is said out loud");
+  ok("T7 a daemon spawn that never started is not counted as a start");
+}
+
+// startDaemonReal is exercised against an injected spawn, so no real process is
+// created: a child with no pid must be reported as a failure, not a start.
+async function t8_startDaemonRealJudgesThePid() {
+  const noPid = startDaemonReal({
+    nodePath: "node",
+    daemonScript: "does-not-matter.mjs",
+    log: () => {},
+    spawn: () => ({ pid: undefined, unref() {}, on() {} }),
+  });
+  assert.equal(noPid.ok, false, "no pid means the daemon did not start");
+  assert.equal(noPid.pid, null);
+
+  const withPid = startDaemonReal({
+    nodePath: "node",
+    daemonScript: "does-not-matter.mjs",
+    log: () => {},
+    spawn: () => ({ pid: 4242, unref() {}, on() {} }),
+  });
+  assert.equal(withPid.ok, true);
+  assert.equal(withPid.pid, 4242);
+
+  const threw = startDaemonReal({
+    nodePath: "node",
+    daemonScript: "does-not-matter.mjs",
+    log: () => {},
+    spawn: () => { throw new Error("EACCES"); },
+  });
+  assert.equal(threw.ok, false);
+  assert.ok(/EACCES/.test(threw.reason));
+  ok("T8 startDaemonReal reports a start only when the child has a pid");
+}
+
+const tests = [t1_missingLockStartsDaemon, t2_aliveLockDoesNotStart, t3_staleLockStartsDaemon, t4_refusesSecondWatchdog, t5_inspectInvalidLock, t6_recoversMidFlight, t7_failedStartIsNotCounted, t8_startDaemonRealJudgesThePid];
 for (const t of tests) {
   try { await t(); } catch (err) { bad(t.name, err); }
 }

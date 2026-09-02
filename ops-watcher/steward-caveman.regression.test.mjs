@@ -353,6 +353,35 @@ async function t7_alertBundlingAndCooldown() {
   ok("T7: criticals are bundled once and deduped by cooldown");
 }
 
+// A spawn that never started reports { pid: undefined } — it does not throw.
+// The old code set notified = true regardless and stamped the 1-hour cooldown,
+// so one failed alert silenced the finding for an hour.
+async function t8_failedSpawnDoesNotAdvanceCooldown() {
+  let clock = 20_000_000;
+  let spawnOk = false;
+  const deps = baseDeps({
+    now: () => clock,
+    spawnNotify: () => (spawnOk ? { pid: 4242 } : { pid: undefined }),
+    checkSafetyCompliance: async () => ({
+      findings: [{ key: "live-trading-allowed", check: "safety-compliance", severity: "CRITICAL", detail: "live flag true" }],
+      structuralState: null,
+    }),
+  });
+
+  const r1 = await runStewardCavemanOnce(deps);
+  assert.equal(r1.criticalCount, 1, "T8: the critical was found");
+  assert.equal(r1.alerted, false, "T8: a spawn with no pid is not a delivered alert");
+
+  // One minute later — far inside the 1-hour cooldown. Because the first alert
+  // never went out, the finding must be retried, not suppressed.
+  clock += 60 * 1000;
+  spawnOk = true;
+  const r2 = await runStewardCavemanOnce(deps);
+  assert.equal(r2.alerted, true, "T8: an undelivered finding is retried on the next sweep");
+  assert.equal(r2.suppressedCount, 0, "T8: it was never counted as suppressed");
+  ok("T8: a failed notify spawn does not stamp the cooldown");
+}
+
 async function main() {
   const tests = [
     t0_identityExport,
@@ -363,6 +392,7 @@ async function main() {
     t5_readOrGitFailureGapNoCrash,
     t6_singleInstanceLockOnlyOneRuns,
     t7_alertBundlingAndCooldown,
+    t8_failedSpawnDoesNotAdvanceCooldown,
   ];
   for (const t of tests) await t();
   console.log(`\nsteward-caveman.regression.test.mjs: ${pass}/${tests.length} passed`);

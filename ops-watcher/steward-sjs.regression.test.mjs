@@ -654,6 +654,37 @@ function t17_buildSnapshotReportVariants() {
 // =====================================================================
 // Runner
 // =====================================================================
+// =====================================================================
+// T18: a notify spawn that never started must not advance the cooldown.
+// The failure arrives as a return value ({ pid: undefined }), not a throw.
+// =====================================================================
+async function t18_failedSpawnDoesNotAdvanceCooldown() {
+  let clock = 1_000_000;
+  let spawnOk = false;
+  const criticalGit = async () => ({
+    branch: "dev", detached: false, ahead: 0, behind: 0, fetchOk: true,
+    dirtyFiles: [], recentCommits: [], findings: [
+      { key: "git-critical-A", check: "git-state", severity: "CRITICAL", detail: "critical A detail" },
+    ],
+  });
+  const deps = baseDeps({
+    now: () => clock,
+    checkGitState: criticalGit,
+    spawnNotify: () => (spawnOk ? { pid: 4242 } : { pid: undefined }),
+  });
+
+  const r1 = await runStewardSjsOnce(deps);
+  assert.equal(r1.criticalCount, 1, "T18: the critical was found");
+  assert.equal(r1.alerted, false, "T18: a spawn with no pid is not a delivered alert");
+
+  clock += 60 * 1000;
+  spawnOk = true;
+  const r2 = await runStewardSjsOnce(deps);
+  assert.equal(r2.alerted, true, "T18: an undelivered finding is retried on the next sweep");
+  assert.equal(r2.suppressedCount, 0, "T18: it was never counted as suppressed");
+  ok("T18: a failed notify spawn does not stamp the cooldown");
+}
+
 async function main() {
   const tests = [
     t0_identityExport,
@@ -674,6 +705,7 @@ async function main() {
     t15_singleInstanceLockOnlyOneRuns,
     t16_lockAcquireThrowsRefuses,
     t17_buildSnapshotReportVariants,
+    t18_failedSpawnDoesNotAdvanceCooldown,
   ];
   for (const t of tests) await t();
   await fs.unlink(TMP_LOCK).catch(() => {});

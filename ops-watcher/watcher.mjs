@@ -228,14 +228,24 @@ function eventKey(ev) {
   const p = ev.payload || {};
   return `${ev.detector}|${ev.target_role}|${p.issueId || p.key || p.target || ""}`;
 }
-async function emitEvent(state, ev) {
+// The append happens BEFORE the key is marked seen. Marking first meant that a
+// failed append still recorded the event as emitted: in the polling loop the
+// state object lives across sweeps and the sweep error is caught, so the next
+// successful saveState persisted a seen key for an event that was never
+// written. The event could then never be emitted again.
+export async function emitEvent(state, ev, _fs = fs, _eventsFile = EVENTS_FILE) {
   const key = eventKey(ev);
   if (state.seenSet[key]) return false;
+  try {
+    await _fs.appendFile(_eventsFile, JSON.stringify({
+      ts: nowMs(), detector: ev.detector, target_role: ev.target_role, payload: ev.payload,
+    }) + "\n", "utf8");
+  } catch (err) {
+    console.error(`ops-watcher: event NOT written (${ev.detector}): ${err && err.message ? err.message : err} — not marked seen, will retry next sweep`);
+    return false;
+  }
   state.seen.push(key);
   state.seenSet[key] = true;
-  await fs.appendFile(EVENTS_FILE, JSON.stringify({
-    ts: nowMs(), detector: ev.detector, target_role: ev.target_role, payload: ev.payload,
-  }) + "\n", "utf8");
   return true;
 }
 
