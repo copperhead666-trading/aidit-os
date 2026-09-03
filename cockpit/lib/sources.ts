@@ -397,12 +397,34 @@ export async function readPauseState(): Promise<PauseState> {
 export interface OpenDecision {
   identifier: string;
   title: string;
+  // The body of the issue — where the actual question lives. Fourteen of the
+  // seventeen waiting items carry no plan, so without this a card shows a
+  // title and nothing the owner can decide on.
+  description: string | null;
   status: string;
   labels: string[];
   ownerRequired: boolean;
   planBody: string | null;
   planAt: string | null;
   cardSent: boolean;
+}
+
+// The title prefixes the runner and the owner both use when the question is the
+// owner's to answer. Labels alone are not enough: eight live decisions
+// (KOL-50/52/53/62/63/65/66/72) carry no label at all, so a label-only gate made
+// every one of them invisible on every surface that reads this.
+const OWNER_DECISION_TITLE_PREFIXES = [
+  'APPROVE:',
+  'DECISION:',
+  'P4 DECISION NEEDED:',
+  'FYI/DECISION:',
+  'OWNER DIRECTIVE:',
+];
+
+/** Pure: does this issue title, on its face, put the question to the owner? */
+export function asksOwnerByTitle(title: string): boolean {
+  const head = title.trimStart();
+  return OWNER_DECISION_TITLE_PREFIXES.some((prefix) => head.startsWith(prefix));
 }
 
 // Everything actually waiting on the owner, in one place. A Telegram decision
@@ -443,13 +465,14 @@ export async function readOpenDecisions(): Promise<OpenDecision[] | null> {
       const labels = (Array.isArray(issue.labelIds) ? issue.labelIds : [])
         .map((id) => (typeof id === 'string' ? labelNames.get(id) : undefined))
         .filter((name): name is string => typeof name === 'string');
-      const ownerRequired = labels.includes('OWNER_REQUIRED');
-      const isDirective = labels.includes('DIRECTIVE');
-      if (!ownerRequired && !isDirective) continue;
-
       const identifier = typeof issue.identifier === 'string' ? issue.identifier : String(issue.id ?? '');
       const title = typeof issue.title === 'string' ? issue.title : '(untitled)';
       const issueId = typeof issue.id === 'string' ? issue.id : null;
+
+      const ownerRequired = labels.includes('OWNER_REQUIRED');
+      const isDirective = labels.includes('DIRECTIVE');
+      const titleAsksOwner = asksOwnerByTitle(title);
+      if (!ownerRequired && !isDirective && !titleAsksOwner) continue;
 
       let planBody: string | null = null;
       let planAt: string | null = null;
@@ -485,9 +508,14 @@ export async function readOpenDecisions(): Promise<OpenDecision[] | null> {
         }
       }
 
-      // Waiting means: the owner is asked by label, or a plan sits undecided.
-      if (!ownerRequired && !(planBody !== null && !decidedAfterPlan)) continue;
-      open.push({ identifier, title, status, labels, ownerRequired, planBody, planAt, cardSent });
+      // Waiting means: the owner is asked by label, the title itself puts the
+      // question to him, or a plan sits undecided.
+      if (!ownerRequired && !titleAsksOwner && !(planBody !== null && !decidedAfterPlan)) continue;
+      const description =
+        typeof issue.description === 'string' && issue.description.trim() !== ''
+          ? issue.description.trim()
+          : null;
+      open.push({ identifier, title, description, status, labels, ownerRequired, planBody, planAt, cardSent });
     }
 
     open.sort((a, b) => a.identifier.localeCompare(b.identifier, undefined, { numeric: true }));

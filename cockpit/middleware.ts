@@ -4,6 +4,11 @@ const SESSION_COOKIE_NAME = "__founderos_cockpit_session";
 const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 const TELEGRAM_BOT_TOKEN_ENV = "TELEGRAM_BOT_TOKEN_AHMAD";
 const ALLOWED_TELEGRAM_USER_IDS_ENV = "COCKPIT_ALLOWED_TELEGRAM_USER_IDS";
+// Source of truth: lib/session.ts DEFAULT_OWNER_TELEGRAM_USER_ID. The minting
+// route falls back to this owner when the allowlist env var is unset; a
+// middleware that refused everyone in the same case issued sessions it then
+// rejected on every request, which read as a login loop.
+const DEFAULT_OWNER_TELEGRAM_USER_ID = 8987077084;
 
 interface SessionPayload {
   uid: number;
@@ -19,6 +24,7 @@ function redirectToEnter(request: NextRequest): NextResponse {
 }
 
 function parseAllowedIds(raw: string | undefined): number[] | null {
+  if (typeof raw === "undefined") return [DEFAULT_OWNER_TELEGRAM_USER_ID];
   if (typeof raw !== "string" || raw.trim() === "") return null;
 
   const parts = raw.split(",").map((part) => part.trim());
@@ -30,13 +36,17 @@ function parseAllowedIds(raw: string | undefined): number[] | null {
   return Array.from(new Set(ids));
 }
 
-function base64UrlToBytes(value: string): Uint8Array | null {
+function base64UrlToBytes(value: string): Uint8Array<ArrayBuffer> | null {
   try {
     if (!/^[A-Za-z0-9_-]+$/.test(value)) return null;
 
     const padded = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
     const binary = atob(padded);
-    const bytes = new Uint8Array(binary.length);
+    // Backed by a real ArrayBuffer on purpose: a plain `new Uint8Array(n)` is
+    // typed over ArrayBufferLike, which is not a BufferSource, and crypto.subtle
+    // takes BufferSource. TextEncoder.encode() already returns the narrow form.
+    const buffer = new ArrayBuffer(binary.length);
+    const bytes = new Uint8Array(buffer);
     for (let index = 0; index < binary.length; index += 1) {
       bytes[index] = binary.charCodeAt(index);
     }
@@ -67,12 +77,6 @@ function parsePayload(payloadBase64: string): SessionPayload | null {
   }
 }
 
-function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  const copy = new Uint8Array(bytes.byteLength);
-  copy.set(bytes);
-  return copy.buffer;
-}
-
 async function verifySignature(signedValue: string, receivedSignature: string, botToken: string): Promise<boolean> {
   try {
     const signatureBytes = base64UrlToBytes(receivedSignature);
@@ -87,7 +91,10 @@ async function verifySignature(signedValue: string, receivedSignature: string, b
       ["verify"],
     );
 
-    return crypto.subtle.verify("HMAC", key, toArrayBuffer(signatureBytes), encoder.encode(signedValue));
+    // Pass the Uint8Array itself: the Edge sandbox rejects an ArrayBuffer built
+    // in its own realm, and `await` here is what lets the catch below turn a
+    // rejection into "not a valid session" instead of a 500.
+    return await crypto.subtle.verify("HMAC", key, signatureBytes, encoder.encode(signedValue));
   } catch {
     return false;
   }

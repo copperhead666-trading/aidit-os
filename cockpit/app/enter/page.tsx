@@ -2,7 +2,6 @@
 
 import Script from "next/script";
 import { useCallback, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 
 declare global {
   interface Window {
@@ -15,6 +14,24 @@ declare global {
   }
 }
 
+// Landing back here means the cookie from the last POST never came back with
+// the next request. Counting the visits turns an invisible redirect loop into
+// a message that names the cause.
+const ATTEMPT_KEY = "founderos-enter-attempt";
+const MAX_ATTEMPTS = 2;
+
+function bumpAttempt(): number {
+  try {
+    const previous = Number(sessionStorage.getItem(ATTEMPT_KEY) ?? "0");
+    const next = Number.isFinite(previous) ? previous + 1 : 1;
+    sessionStorage.setItem(ATTEMPT_KEY, String(next));
+    return next;
+  } catch {
+    // Private mode, or storage disabled: one attempt, no loop detection.
+    return 1;
+  }
+}
+
 type EnterState =
   | { kind: "loading"; message: string }
   | { kind: "outside"; message: string }
@@ -22,7 +39,6 @@ type EnterState =
   | { kind: "denied"; message: string };
 
 export default function EnterPage() {
-  const router = useRouter();
   const [state, setState] = useState<EnterState>({
     kind: "loading",
     message: "Membuka sesi Telegram...",
@@ -41,14 +57,30 @@ export default function EnterPage() {
       return;
     }
 
+    const attempt = bumpAttempt();
+    if (attempt > MAX_ATTEMPTS) {
+      setState({
+        kind: "denied",
+        message:
+          "Sesi Telegram berhasil dibuat, tapi browser di dalam Telegram tidak menyimpannya, jadi halaman ini terus terbuka lagi. Tutup Mini App, buka lagi dari tombol Cockpit; kalau tetap begini, buka lewat browser HP biasa.",
+      });
+      return;
+    }
+
     setState({ kind: "verifying", message: "Memverifikasi sesi Telegram..." });
     window.Telegram?.WebApp?.ready?.();
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
 
     try {
       const response = await fetch("/api/session", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ initData }),
+        credentials: "same-origin",
+        cache: "no-store",
+        signal: controller.signal,
       });
 
       if (!response.ok) {
@@ -66,14 +98,21 @@ export default function EnterPage() {
         return;
       }
 
-      router.replace("/");
-    } catch {
+      // A hard navigation, not the client router: it forces a fresh request
+      // that actually carries the cookie the response just set.
+      window.location.replace("/");
+    } catch (error) {
+      const timedOut = error instanceof DOMException && error.name === "AbortError";
       setState({
         kind: "denied",
-        message: "Tidak bisa membuat sesi Telegram saat ini.",
+        message: timedOut
+          ? "Server tidak menjawab dalam 12 detik. Laptop mungkin tidur atau Tailscale mati."
+          : "Tidak bisa menghubungi server sesi. Periksa koneksi, lalu buka lagi.",
       });
+    } finally {
+      clearTimeout(timeout);
     }
-  }, [router]);
+  }, []);
 
   useEffect(() => {
     document.body.dataset.enterStandalone = "true";
