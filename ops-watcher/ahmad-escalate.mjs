@@ -22,6 +22,11 @@ import {
   patchIssue,
 } from "./paperclip-write-client.mjs";
 import { judgeWrite } from "./write-delivery.mjs";
+import {
+  validateDecisionBrief,
+  buildDecisionBriefCommentBody,
+  renderRefusal,
+} from "./decision-brief.mjs";
 
 export const COMPANY_ID = "a7011f31-8891-4581-b8fb-bbda8ac6a890";
 const OWNER_REQUIRED_COLOR = "#b91c1c";
@@ -42,6 +47,8 @@ export async function runEscalateOnce(deps) {
     postComment: _postComment = postComment,
     patchIssue: _patchIssue = patchIssue,
     log = (m) => console.log(m),
+    brief = null,
+    recordRefusal = true,
   } = deps;
 
   if (!base) {
@@ -68,6 +75,44 @@ export async function runEscalateOnce(deps) {
     const out = { ok: false, reason: `issue not found: ${issueIdentifier}` };
     log(`ahmad-escalate: ${out.reason}`);
     return out;
+  }
+
+  // THE GATE. Checked before any write, so a refused escalation leaves the
+  // board exactly as it found it: no label, no interrupt.
+  //
+  // Why refuse at all, when the whole point of this script is that escalations
+  // must not be lost: because an escalation that names a topic is already lost.
+  // KOL-67 has been sitting labelled and card-sent for days and the owner still
+  // cannot act on it, because it never said what the current rules are, what the
+  // options are, or what waiting costs. A card he cannot answer is not reach.
+  //
+  // The refusal is not silence. It is written back onto the issue as a comment,
+  // so the attempt is on the record and the issue stays visible in the daily
+  // digest, and it names the missing slots so AHMAD can send a real one.
+  const verdict = validateDecisionBrief(brief);
+  if (!verdict.ok) {
+    const refusal = renderRefusal(verdict);
+    log(`ahmad-escalate: ${issueIdentifier} REFUSED — missing: ${verdict.missing.join(", ") || "(shape)"}`);
+    if (recordRefusal) {
+      const rec = await _postComment(
+        base,
+        it.id,
+        `AHMAD ESCALATION REFUSED (brief incomplete)\n${refusal}`,
+        { authorType: "user" },
+      );
+      if (!judgeWrite(rec).ok) {
+        log(`ahmad-escalate: ${issueIdentifier} refusal comment did not land — the attempt is unrecorded`);
+      }
+    }
+    return {
+      ok: false,
+      reason: "brief-incomplete",
+      identifier: issueIdentifier,
+      escalated: false,
+      missing: verdict.missing,
+      reasons: verdict.reasons,
+      refusal,
+    };
   }
 
   // 2. ensureLabel for OWNER_REQUIRED (color "#b91c1c" — same color used in
@@ -119,21 +164,73 @@ export async function runEscalateOnce(deps) {
   }
   log(`ahmad-escalate: ${issueIdentifier} escalation comment posted`);
 
-  return { ok: true, identifier: issueIdentifier, escalated: true };
+  // The brief itself, as structured data the cockpit can read back into the
+  // decision record's five empty slots. Posted after the human-readable reason
+  // so a person reading only Paperclip sees the sentence first.
+  const briefRes = await _postComment(base, it.id, buildDecisionBriefCommentBody(verdict.brief), {
+    authorType: "user",
+  });
+  const briefLanded = judgeWrite(briefRes);
+  if (!briefLanded.ok) {
+    // The label and the reason ARE on the board, so the owner is reached; only
+    // the structure is missing. Reporting that as a full failure would invite a
+    // retry that double-escalates, so it is reported as what it is.
+    const out = {
+      ok: false,
+      reason: `brief comment did not land (${briefLanded.reason})`,
+      identifier: issueIdentifier,
+      escalated: true,
+      briefPosted: false,
+    };
+    log(`ahmad-escalate: ${out.reason} — escalation itself DID land, do not re-run blindly`);
+    return out;
+  }
+  log(`ahmad-escalate: ${issueIdentifier} decision brief posted`);
+
+  return { ok: true, identifier: issueIdentifier, escalated: true, briefPosted: true };
 }
 
 // ---- CLI ----
+// The third argument is the brief: either inline JSON or a path to a .json
+// file. A path is offered because a full brief is long, and HATTA's harness
+// word-splits multi-word arguments on Windows — a caller that can write a file
+// and pass its path never has to fight the shell.
+async function readBriefArg(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+  if (s.startsWith("{")) {
+    try {
+      return JSON.parse(s);
+    } catch (err) {
+      return { __parseError: err && err.message ? err.message : String(err) };
+    }
+  }
+  try {
+    const fs = await import("node:fs/promises");
+    return JSON.parse(await fs.readFile(s, "utf8"));
+  } catch (err) {
+    return { __parseError: `could not read brief file ${s}: ${err && err.message ? err.message : err}` };
+  }
+}
+
 async function main() {
   const issueIdentifier = process.argv[2];
   const reason = process.argv[3];
+  const briefArg = process.argv[4];
   if (!issueIdentifier || !reason) {
-    console.error('usage: node ops-watcher/ahmad-escalate.mjs "<issueIdentifier>" "<reason text>"');
+    console.error('usage: node ops-watcher/ahmad-escalate.mjs "<issueIdentifier>" "<reason text>" \'<brief JSON>\' | <path/to/brief.json>');
+    process.exit(2);
+  }
+  const brief = await readBriefArg(briefArg);
+  if (brief && brief.__parseError) {
+    console.error(`ahmad-escalate: brief could not be read — ${brief.__parseError}`);
     process.exit(2);
   }
   const port = await discoverPaperclipPort();
   const base = port ? `http://127.0.0.1:${port}` : null;
-  const r = await runEscalateOnce({ base, issueIdentifier, reason, log: (m) => console.log(m) });
-  console.log(JSON.stringify(r));
+  const r = await runEscalateOnce({ base, issueIdentifier, reason, brief, log: (m) => console.log(m) });
+  if (r.reason === "brief-incomplete") console.error(r.refusal);
+  console.log(JSON.stringify({ ...r, refusal: undefined }));
   process.exit(r.ok ? 0 : 1);
 }
 
