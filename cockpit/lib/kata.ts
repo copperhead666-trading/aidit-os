@@ -66,8 +66,18 @@ export function statusLabel(status: string): string {
  * The Indonesian half: the eight slots of a decision record.
  * ------------------------------------------------------------------ */
 
-/** THE QUESTION — what, exactly, is being put to him. */
+/**
+ * THE QUESTION — what, exactly, is being put to him.
+ *
+ * A brief, when one exists, wins over every derived sentence below. Those
+ * sentences are the best the cockpit could do from a case that arrived as a
+ * subject line; a brief is the escalation actually saying what it wants
+ * decided, in the words whoever escalated it chose. Derived text is a fallback
+ * for the cases written before ops-watcher/decision-brief.mjs began refusing
+ * escalations that carry none.
+ */
 export function pertanyaannya(m: Menunggu): string {
+  if (m.d.brief) return m.d.brief.pertanyaan;
   if (m.d.planBody !== null) {
     return 'Menyetujui atau menolak rencana yang sudah tertulis di bawah ini.';
   }
@@ -90,6 +100,7 @@ export function kenapaSampaiKeAnda(m: Menunggu): string {
  * consequence the data already establishes, not a prediction.
  */
 export function kalauDidiamkan(m: Menunggu): string {
+  if (m.d.brief) return m.d.brief.kalau_didiamkan;
   if (m.inbox?.state === 'stuck') {
     return `Perkara ini tetap macet. Sudah gagal ${m.inbox.attempts} kali dengan sebab yang sama.`;
   }
@@ -111,11 +122,44 @@ export function kalauDidiamkan(m: Menunggu): string {
  * already failed the same way more than once should not be waved through.
  */
 export function rekomendasi(m: Menunggu): string | null {
+  // A written recommendation outranks a derived one. It came with reasoning
+  // someone had to produce before the escalation was allowed through.
+  if (m.d.brief) {
+    const { pilihan, alasan } = m.d.brief.rekomendasi;
+    const dipilih = m.d.brief.pilihan.find((o) => o.key === pilihan);
+    return `${dipilih ? dipilih.label : pilihan}. ${alasan}`;
+  }
   if (m.inbox?.state === 'stuck' && m.inbox.attempts > 1) {
     return `Jangan disetujui apa adanya. Sudah gagal ${m.inbox.attempts} kali dengan sebab yang sama: ${m.inbox.reason}`;
   }
   return null;
 }
+
+/**
+ * WHAT ALREADY EXISTS — quoted, with the source it was read from.
+ *
+ * Returns null when the case carries no brief, so the caller keeps its existing
+ * description-or-empty-state behaviour. Quotes are never rewritten: a tidied
+ * quote stops being evidence.
+ */
+export function yangSudahAda(m: Menunggu): { kutipan: string; sumber: string }[] | null {
+  if (!m.d.brief || m.d.brief.yang_sudah_ada.length === 0) return null;
+  return m.d.brief.yang_sudah_ada;
+}
+
+/**
+ * THE CHOICES ON THE TABLE — the domain options the escalation offered, each
+ * with what follows from it. These are not the four answer buttons; those are
+ * how he replies, these are what he is replying about.
+ */
+export function pilihanPerkara(m: Menunggu): { label: string; konsekuensi: string }[] | null {
+  if (!m.d.brief || m.d.brief.pilihan.length === 0) return null;
+  return m.d.brief.pilihan.map((o) => ({ label: o.label, konsekuensi: o.konsekuensi }));
+}
+
+/** Heading for the quoted current state, and for the choices on the table. */
+export const KEADAAN_SEKARANG = 'Keadaan sekarang, dikutip dari sumbernya:';
+export const PILIHAN_PERKARA = 'Pilihan yang ditawarkan:';
 
 /** The sentence shown where a recommendation should be and is not. */
 export const REKOMENDASI_KOSONG =

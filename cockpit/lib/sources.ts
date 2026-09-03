@@ -407,6 +407,45 @@ export interface OpenDecision {
   planBody: string | null;
   planAt: string | null;
   cardSent: boolean;
+  brief: DecisionBrief | null;
+}
+
+/**
+ * The five slots an escalation now has to carry, read off the board.
+ *
+ * The RULES for a brief live in ops-watcher/decision-brief.mjs and are enforced
+ * at write time by ops-watcher/ahmad-escalate.mjs, which refuses an escalation
+ * that does not satisfy them. This file therefore does not re-validate: anything
+ * carrying the marker was already checked, and a second copy of the rules here
+ * is precisely the duplication that let three interpreters of the same board
+ * disagree. This is a decoder of a format, not a second judge of it.
+ */
+export interface DecisionBrief {
+  pertanyaan: string;
+  yang_sudah_ada: { kutipan: string; sumber: string }[];
+  pilihan: { key: string; label: string; konsekuensi: string }[];
+  rekomendasi: { pilihan: string; alasan: string };
+  kalau_didiamkan: string;
+}
+
+const DECISION_BRIEF_MARKER = '[DECISION BRIEF]';
+
+function readBrief(body: string): DecisionBrief | null {
+  const trimmed = body.trimStart();
+  if (!trimmed.startsWith(DECISION_BRIEF_MARKER)) return null;
+  try {
+    const parsed: unknown = JSON.parse(trimmed.slice(DECISION_BRIEF_MARKER.length).trim());
+    if (!isRecord(parsed)) return null;
+    const b = parsed.decision_brief;
+    if (!isRecord(b)) return null;
+    // Shape check only — enough that the renderer cannot crash on a malformed
+    // payload, not a re-implementation of the write-time contract.
+    if (typeof b.pertanyaan !== 'string') return null;
+    if (!Array.isArray(b.pilihan) || b.pilihan.length === 0) return null;
+    return b as unknown as DecisionBrief;
+  } catch {
+    return null;
+  }
 }
 
 // The title prefixes the runner and the owner both use when the question is the
@@ -478,6 +517,7 @@ export async function readOpenDecisions(): Promise<OpenDecision[] | null> {
       let planAt: string | null = null;
       let cardSent = false;
       let decidedAfterPlan = false;
+      let brief: DecisionBrief | null = null;
 
       if (issueId !== null) {
         const cRes = await fetchWithTimeout(`${base}/api/issues/${issueId}/comments`, 2000);
@@ -496,6 +536,16 @@ export async function readOpenDecisions(): Promise<OpenDecision[] | null> {
             .sort((a, b) => a.ms - b.ms);
 
           cardSent = dated.some((c) => c.body.trimStart().startsWith('[TELEGRAM SENT]'));
+          // Newest brief wins. `dated` is oldest-first, so walk it backwards —
+          // a re-escalation supersedes the one before it, and reading the older
+          // one would put a superseded recommendation in front of the owner.
+          for (let i = dated.length - 1; i >= 0; i -= 1) {
+            const parsed = readBrief(dated[i].body);
+            if (parsed) {
+              brief = parsed;
+              break;
+            }
+          }
           for (const c of dated) {
             if (c.body.includes('DIRECTIVE PLAN') && !c.body.includes('DIRECTIVE PLAN APPROVED')) {
               planBody = c.body;
@@ -515,7 +565,7 @@ export async function readOpenDecisions(): Promise<OpenDecision[] | null> {
         typeof issue.description === 'string' && issue.description.trim() !== ''
           ? issue.description.trim()
           : null;
-      open.push({ identifier, title, description, status, labels, ownerRequired, planBody, planAt, cardSent });
+      open.push({ identifier, title, description, status, labels, ownerRequired, planBody, planAt, cardSent, brief });
     }
 
     open.sort((a, b) => a.identifier.localeCompare(b.identifier, undefined, { numeric: true }));

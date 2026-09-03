@@ -3,15 +3,19 @@ import { umurMs, kenapaGabisaDisetujui, type Menunggu } from '@/components/keput
 import {
   FRAME,
   ISI_KOSONG,
+  KEADAAN_SEKARANG,
   OPSI,
+  PILIHAN_PERKARA,
   REKOMENDASI_KOSONG,
   STATE_LABEL,
   kalauDidiamkan,
   kenapaSampaiKeAnda,
   pertanyaannya,
+  pilihanPerkara,
   rekomendasi,
   sejakInggris,
   tanggalInggris,
+  yangSudahAda,
 } from '@/lib/kata';
 
 /**
@@ -55,6 +59,8 @@ export function CaseDetail({ m }: { m: Menunggu }) {
   const age = sejakInggris(umurMs(m));
   const raised = tanggalInggris(m.d.planAt ?? m.inbox?.sinceIso ?? null);
   const saran = rekomendasi(m);
+  const keadaan = yangSudahAda(m);
+  const opsiPerkara = pilihanPerkara(m);
   const terkunci = kenapaGabisaDisetujui(m);
   const sisa = sisaJudul(m.d.title);
   const state = m.inbox?.state === 'stuck' ? STATE_LABEL.blocked : STATE_LABEL.awaiting;
@@ -84,8 +90,24 @@ export function CaseDetail({ m }: { m: Menunggu }) {
 
       <Slot k={FRAME.theQuestion}>{pertanyaannya(m)}</Slot>
 
-      <Slot k={FRAME.whatExists} dim={m.d.description === null}>
-        {m.d.description ?? ISI_KOSONG}
+      <Slot k={FRAME.whatExists} dim={keadaan === null && m.d.description === null}>
+        {keadaan ? (
+          <>
+            <p className="mb-2 text-os-muted">{KEADAAN_SEKARANG}</p>
+            <ul className="space-y-2.5">
+              {keadaan.map((k, i) => (
+                <li key={i}>
+                  {/* Verbatim, like the plan below it. A quote the cockpit
+                      tidied is no longer evidence of anything. */}
+                  <span className="text-os-text">{k.kutipan}</span>
+                  <span className="block font-mono text-[10px] text-os-dim">{k.sumber}</span>
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : (
+          m.d.description ?? ISI_KOSONG
+        )}
       </Slot>
 
       {sisa && (
@@ -108,6 +130,26 @@ export function CaseDetail({ m }: { m: Menunggu }) {
       )}
 
       <Slot k={FRAME.yourOptions}>
+        {/* The choices the escalation put on the table, above the four ways to
+            answer. These are what he is deciding about; the list below is how
+            he replies. Absent for cases written before escalations had to
+            carry them. */}
+        {opsiPerkara && (
+          <div className="mb-3.5">
+            <p className="mb-2 text-os-muted">{PILIHAN_PERKARA}</p>
+            <ul className="space-y-2">
+              {opsiPerkara.map((o, i) => (
+                <li key={i} className="flex gap-2.5">
+                  <span className="mt-[7px] h-[6px] w-[6px] shrink-0 rounded-full bg-os-border-strong" />
+                  <span>
+                    <span className="font-semibold text-os-text">{o.label}</span>
+                    <span className="text-os-muted"> — {o.konsekuensi}</span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         <ul className="space-y-2">
           {OPSI.filter((o) => !(terkunci && o.aksi === 'SETUJU')).map((o) => (
             <li key={o.aksi} className="flex gap-2.5">
