@@ -1,0 +1,44 @@
+{"type":"repair-attempt","name":"canary-step","outcome":"skipped","reason":"lane-quota","ts":1788245557751}
+{"type":"repair-attempt","name":"canary-step","outcome":"skipped","reason":"cooldown","ts":1788245643887}
+{"type":"repair-attempt","name":"canary-step","outcome":"reverted","reason":"scoped-suite-red","ts":1788246080045}
+{"type":"repair-attempt","name":"canary-step","outcome":"reverted","reason":"scoped-suite-red","ts":1788246164111}
+{"type":"repair-attempt","name":"canary-step","outcome":"reverted","reason":"scoped-suite-red","ts":1788246229463}
+{"type":"repair-attempt","name":"canary-step","outcome":"reverted","reason":"scoped-suite-red","ts":1788246930224}
+{"type":"repair-attempt","name":"canary-step","outcome":"reverted","reason":"scoped-suite-red","ts":1788246983666}
+{"type":"repair-attempt","name":"canary-step","outcome":"skipped","reason":"lane-cooldown","lane":"hatta","ts":1788248571045}
+{"type":"repair-attempt","name":"canary-step","outcome":"repaired","suite":"canary-step.regression.test.mjs","durationMs":40619,"lane":"hatta","ts":1788248738045}
+{"type":"directive-execution","identifier":"KOL-70","outcome":"refused","reason":"verify-out-of-scope","lane":null,"ts":1788263817487}
+{"type":"directive-execution","identifier":"KOL-70","outcome":"refused","reason":"verify-out-of-scope","lane":null,"ts":1788264802747}
+{"type":"directive-execution","identifier":"KOL-70","outcome":"refused","reason":"verify-out-of-scope","lane":null,"ts":1788265782317}
+{"type":"directive-execution","identifier":"KOL-70","outcome":"refused","reason":"verify-out-of-scope","lane":null,"ts":1788266733718}
+{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"hatta","ts":1788267986402}
+{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"corleone","ts":1788269128357}
+{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"corleone","ts":1788269131042}
+{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"corleone","ts":1788269150628}
+{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"corleone","ts":1788269160245}
+{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"corleone","ts":1788269174948}
+{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"corleone","ts":1788270160930}
+{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"hatta","ts":1788271109911}
+{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"hatta","ts":1788272070504}
+{"type":"directive-execution","identifier":"KOL-69","outcome":"skipped","reason":"lane-cooldown","lane":"hatta","ts":1788272980112}
+{"type":"directive-execution","identifier":"KOL-69","outcome":"skipped","reason":"lane-cooldown","lane":"hatta","ts":1788272980111}
+{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"hatta","ts":1788273966769}
+{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"corleone","ts":1788275064541}
+{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"corleone","ts":1788276016056}
+{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"corleone","ts":1788276986254}
+{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"corleone","ts":1788277930860}
+{"type":"directive-capture-failed","identifier":"KOL-73","reason":"plan-parse-failed","detail":"missing OUT OF SCOPE","approvedAt":"2026-09-01T11:21:32.257Z","ts":1788322240799}
+{"type":"directive-capture-failed","identifier":"KOL-73","reason":"plan-parse-failed","detail":"missing OUT OF SCOPE","approvedAt":"2026-09-01T11:21:32.257Z","ts":1788323199508}
+{"type":"directive-capture-failed","identifier":"KOL-73","reason":"plan-parse-failed","detail":"missing OUT OF SCOPE","approvedAt":"2026-09-01T11:21:32.257Z","ts":1788324165536}
+{"type":"directive-capture-failed","identifier":"KOL-73","reason":"plan-parse-failed","detail":"missing OUT OF SCOPE","approvedAt":"2026-09-01T11:21:32.257Z","ts":1788325108580}
+{"type":"directive-capture-failed","identifier":"KOL-73","reason":"plan-parse-failed","detail":"missing OUT OF SCOPE","approvedAt":"2026-09-01T11:21:32.257Z","ts":1788326049287}
+{"type":"directive-capture-failed","identifier":"KOL-73","reason":"plan-parse-failed","detail":"missing OUT OF SCOPE","approvedAt":"2026-09-02T05:16:01.452Z","ts":1788327079401}
+{"type":"directive-execution","identifier":"KOL-73","outcome":"reverted","reason":"verify-red","lane":"corleone","ts":1788328241159}
+{"type":"directive-execution","identifier":"KOL-73","outcome":"done","filesChanged":["ops-watcher/e2e-soak/soak-test-2026-08-31.txt"],"verifyTail":"VERIFY OK ops-watcher/e2e-soak/soak-test-2026-08-31.txt (47 bytes)\n","lane":"corleone","ts":1788329322150}
+{"type":"directive-execution","identifier":"KOL-36","outcome":"reverted","reason":"verify-red","lane":"corleone","ts":1788340949150}
+{"type":"directive-execution","identifier":"KOL-36","outcome":"reverted","reason":"verify-red","lane":"corleone","ts":1788341930037}
+{"type":"directive-execution","identifier":"KOL-36","outcome":"reverted","reason":"verify-red","lane":"corleone","ts":1788342898016}
+{"type":"directive-execution","identifier":"KOL-36","outcome":"reverted","reason":"verify-red","lane":"corleone","ts":1788343866933}
+{"type":"directive-execution","identifier":"KOL-36","outcome":"reverted","reason":"verify-red","lane":"corleone","ts":1788345137351}
+{"type":"directive-execution","identifier":"KOL-36","outcome":"reverted","reason":"verify-red","lane":"corleone","ts":1788346105894}
+{"type":"directive-execution","identifier":"KOL-36","outcome":"reverted","reason":"verify-red","lane":"corleone","ts":1788347075463}

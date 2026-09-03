@@ -1,0 +1,51 @@
+{
+  "schema_version": "0.1.0",
+  "scope": "FounderOS-Aidit Learning OS progress snapshot",
+  "last_updated_at": "2026-08-30T01:06:00+07:00",
+  "source_spec": "handoffs/ahmad/RECOVERED-SPECS-HEALTH-LEARNING-LAWYER-CIVILLAW-2026-08-29.md",
+  "records": [
+    {
+      "id": "civillaw.perikatan.obligations",
+      "topic": "Perikatan / Obligations",
+      "domain": "civil_law",
+      "status": "active",
+      "mastery": {
+        "understand": 0.0,
+        "apply": 0.0,
+        "produce": 0.0,
+        "oral_reasoning": 0.0,
+        "full_matter_sim": 0.0
+      },
+      "weak_areas": [],
+      "reviews": {
+        "algorithm": "sm2",
+        "last_reviewed_at": null,
+        "next_review_at": null,
+        "interval_days": 0,
+        "ease_factor": 2.5,
+        "review_count": 0
+      },
+      "canonical_pointers": [],
+      "source_material_placeholder": {
+        "status": "human_required",
+        "note": "KUHPerdata is in scope. Named textbooks, doctrine authors, cases, and corpus versioning are not decided here."
+      },
+      "session_log": [],
+      "provenance": {
+        "created_by": "learning_os_scheduler",
+        "created_at": "2026-08-30T01:06:00+07:00",
+        "updated_by": "learning_os_scheduler",
+        "updated_at": "2026-08-30T01:06:00+07:00"
+      }
+    }
+  ],
+  "boss_assessment": {
+    "type": "biweekly_comprehensive_assessment",
+    "status": "scheduled",
+    "cadence": "approximately_every_two_weeks",
+    "interval_days": 14,
+    "scheduled_at": "2026-08-30T01:06:00+07:00",
+    "due_at": "2026-09-13T01:06:00.000Z",
+    "content_status": "not_built_scheduling_only"
+  }
+}
