@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0.0",
+  "purpose": "Which store answers 'what is true about this company'. 'files' reads state/ledger.jsonl through ops-watcher/projections.mjs. 'paperclip' restores the old behaviour: every reader re-parses Paperclip issue and comment bodies. This is the kill switch — flipping it back to 'paperclip' must fully restore the pre-cutover read path, with no migration and no data loss, because the ledger is append-only and Paperclip is still written to.",
+  "source": "files",
+  "ledger_file": "state/ledger.jsonl",
+  "cut_over_at": "2026-09-03",
+  "cut_over_evidence": "scripts/migrate-to-ledger.mjs --compare over 78 issues, both ways: ZERO DIFFERENCES. Ledger seq 1..329.",
+  "notes": [
+    "Readers must fail loudly on an unknown value rather than silently defaulting. A typo here is a silent switch back to the disease this migration removed.",
+    "Paperclip is still written to (ops-watcher/paperclip-sync.mjs). Only reading moved."
+  ]
+}
