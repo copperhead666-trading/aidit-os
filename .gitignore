@@ -111,3 +111,7 @@ cockpit/.next/
 cockpit/tsconfig.tsbuildinfo
 # HATTA harness evidence (runtime artifact, rewritten every iteration of every run)
 hatta/.harness-evidence.json
+
+# Cockpit screenshots and detector cache — regenerable output
+.shots/
+.impeccable/hook.cache.json

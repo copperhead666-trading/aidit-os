@@ -1,3 +1,4 @@
 | 2026-08-28 09:02:20 UTC | BLOCKED | HOOK | Credential transmission detected | full-gate | BLOCKED | — | hook | Command reads secrets and transmits them externally. This violates NEVER rule 1. |
 | 2026-08-30 10:39:58 UTC | BLOCKED | HOOK | Credential transmission detected | full-gate | BLOCKED | — | hook | Command reads secrets and transmits them externally. This violates NEVER rule 1. |
 | 2026-09-01 15:02:53 UTC | BLOCKED | HOOK | Credential in file write detected | full-gate | BLOCKED | — | hook | Content appears to contain secrets/credentials being written to C:\Users\ASUS\.claude\projects\D--AI-Active-FounderOS-Aidit\memory\autonomous-overnight-runs-surface-only-via-telegram.md. |
+| 2026-09-03 07:34:57 UTC | BLOCKED | HOOK | Obfuscated command detected | full-gate | BLOCKED | — | hook | Command contains encoded/obfuscated execution patterns. Decode and review before running. |
