@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { readAll } from "./ledger.mjs";
 import { foldDirectives, project, indexEvents, DIRECTIVE_LABEL } from "./projections.mjs";
 import { waitingOnOwner, reachableByCard } from "./needs-owner.mjs";
+import { buildDigest } from "./owner-surface.mjs";
 import { classifyDirective } from "./directive-runner.mjs";
 import {
   discoverPaperclipPort,
@@ -104,20 +105,42 @@ function failureChecks(message) {
   ];
 }
 
+// WHAT THIS CHECK ASKS, AND WHY IT CHANGED.
+//
+// It used to ask "does everyone waiting carry the OWNER_REQUIRED label", and
+// answered 17 versus 3. That was the right alarm and it did its job: eight real
+// decisions had never been sent. But the fix was never "label all seventeen" —
+// owner-surface.mjs already ruled that something escalated on purpose, or a plan
+// the runner stopped at, EARNS an interrupt, and everything else belongs in one
+// daily summary. Sending a card for `OWNER DIRECTIVE: oke` would be asking the
+// owner to approve his own word.
+//
+// So the invariant is now the one that actually matters: nobody waiting falls
+// off BOTH surfaces. A card, or the digest — never silence. Left as a count
+// comparison against the label, this check would have failed forever, and a
+// check that always fails is noise, which is worse than no check.
 function ownerSurfaceCheck(issues, now) {
   const waiting = waitingOnOwner(issues, { now }).map((r) => r.identifier);
-  const reachable = reachableByCard(issues);
-  const waitingOnly = sortedDiff(waiting, reachable);
-  const reachableOnly = sortedDiff(reachable, waiting);
+  const summary = buildDigest(issues, { now });
+  const surfaced = [...summary.cards, ...summary.digest].map((r) => r.identifier);
+  const dropped = sortedDiff(waiting, surfaced);
+  const orphaned = sortedDiff(surfaced, waiting);
+
   const detail = [];
-  if (waitingOnly.length) detail.push(`waiting-not-reachable: ${waitingOnly.join(", ")}`);
-  if (reachableOnly.length) detail.push(`reachable-not-waiting: ${reachableOnly.join(", ")}`);
-  if (!detail.length) detail.push("none");
+  if (dropped.length) detail.push(`waiting-but-on-no-surface: ${dropped.join(", ")}`);
+  if (orphaned.length) detail.push(`surfaced-but-not-waiting: ${orphaned.join(", ")}`);
+  detail.push(
+    `split: ${summary.cards.length} card, ${summary.digest.length} digest` +
+      (reachableByCard(issues).length !== summary.cards.length
+        ? ` (label-only would have reached ${reachableByCard(issues).length})`
+        : ""),
+  );
+
   return makeCheck(
     "owner-surface",
-    waiting.length === reachable.length,
+    dropped.length === 0 && orphaned.length === 0,
     waiting.length,
-    reachable.length,
+    surfaced.length,
     detail,
   );
 }

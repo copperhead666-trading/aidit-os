@@ -98,31 +98,72 @@ async function t1_allThreeChecksPass() {
   ok("T1: all three reconcile checks pass offline");
 }
 
-// -- The owner surface detects the labelled-vs-title gap ----------------------
+// -- The owner surface covers the card + digest split -------------------------
 
-async function t2_ownerSurfaceFailsAlone() {
+async function t2_ownerSurfaceCoversCardsAndDigest() {
   const issues = [
     issue({ identifier: "KOL-29", title: "OWNER DIRECTIVE: labelled", labels: [{ name: "OWNER_REQUIRED" }] }),
+    issue({ identifier: "KOL-30", title: "OWNER DIRECTIVE: another labelled", labels: [{ name: "OWNER_REQUIRED" }] }),
+    issue({ identifier: "KOL-67", title: "OWNER DIRECTIVE: escalated", labels: [{ name: "OWNER_REQUIRED" }] }),
     issue({ identifier: "KOL-50", title: "P4 DECISION NEEDED: Health OS" }),
+    issue({ identifier: "KOL-51", title: "P4 DECISION NEEDED: Health OS storage" }),
+    issue({ identifier: "KOL-52", title: "P4 DECISION NEEDED: Lawyer Copilot" }),
+    issue({ identifier: "KOL-53", title: "P4 DECISION NEEDED: Civil Law" }),
+    issue({ identifier: "KOL-54", title: "DECISION: runtime shape" }),
+    issue({ identifier: "KOL-55", title: "DECISION NEEDED: agent roster" }),
+    issue({ identifier: "KOL-56", title: "FYI/DECISION: KPI rules" }),
+    issue({ identifier: "KOL-57", title: "APPROVE: start learning lane?" }),
+    issue({ identifier: "KOL-58", title: "APPROVE: migrate ledger?" }),
+    issue({ identifier: "KOL-59", title: "DECISION: cockpit threshold" }),
+    issue({ identifier: "KOL-60", title: "OWNER DIRECTIVE: oke" }),
     issue({ identifier: "KOL-62", title: "APPROVE: start real work on SJS SuperApps now?" }),
+    issue({ identifier: "KOL-63", title: "APPROVE: start real work on Trading OS now?" }),
+    issue({ identifier: "KOL-72", title: "DECISION: Caveman route" }),
   ];
 
   const result = await runWith({ issues });
   const ownerSurface = checkNamed(result, "owner-surface");
+  const detail = ownerSurface.detail.join("; ");
 
-  assert.equal(result.ok, false, "T2: the suite result is red");
-  assert.equal(result.differences, 1, "T2: exactly one check differs");
-  assert.equal(ownerSurface.ok, false, "T2: owner-surface is the failed check");
-  assert.equal(ownerSurface.expected, 3, "T2: expected carries the needsOwner count");
-  assert.equal(ownerSurface.actual, 1, "T2: actual carries the OWNER_REQUIRED-card count");
-  assert.match(ownerSurface.detail.join("; "), /KOL-50/, "T2: detail names the first unreachable issue");
-  assert.match(ownerSurface.detail.join("; "), /KOL-62/, "T2: detail names the second unreachable issue");
+  assert.equal(result.ok, true, "T2: the suite result is green");
+  assert.equal(result.differences, 0, "T2: no check differs");
+  assert.equal(ownerSurface.ok, true, "T2: owner-surface passes when every waiting issue reaches one surface");
+  assert.equal(ownerSurface.expected, 17, "T2: expected carries the needsOwner count");
+  assert.equal(ownerSurface.actual, 17, "T2: actual carries the card plus digest count");
+  assert.match(detail, /split: 3 card, 14 digest/, "T2: detail reports the split");
+  assert.doesNotMatch(detail, /waiting-but-on-no-surface/, "T2: no waiting issue is silent");
   assert.equal(checkNamed(result, "projection-vs-parser").ok, true, "T2: projection-vs-parser stays green");
   assert.equal(checkNamed(result, "fold-determinism").ok, true, "T2: fold-determinism stays green");
-  ok("T2: owner-surface fails alone and names the unreachable identifiers");
+  ok("T2: owner-surface passes when the 3 card and 14 digest surfaces cover all waiting issues");
 }
 
 // -- The folded ledger and parser disagreement is loud -------------------------
+
+// The honest failing case, and it is not contrived: an issue with no identifier
+// is counted as waiting on the owner, and can reach NO surface at all. buildDigest
+// skips it because there is nothing to name it by, and telegram-notify already
+// logs that it has to skip such an issue too — a UUID does not fit in a Telegram
+// callback. So it waits forever, silently, which is precisely the failure this
+// whole check exists to make loud.
+async function t2b_waitingWithNoIdentifierReachesNoSurface() {
+  const issues = [
+    issue({ id: "uuid-a", identifier: "KOL-1", title: "APPROVE: reachable", labels: [{ name: "OWNER_REQUIRED" }] }),
+    issue({ id: "uuid-b", identifier: null, title: "APPROVE: unreachable", labels: [{ name: "OWNER_REQUIRED" }] }),
+  ];
+
+  const result = await runWith({ issues });
+  const ownerSurface = checkNamed(result, "owner-surface");
+  const detail = ownerSurface.detail.join("; ");
+
+  assert.equal(result.ok, false, "T2b: the probe reports a difference");
+  assert.equal(ownerSurface.ok, false, "T2b: owner-surface is the failed check");
+  assert.equal(ownerSurface.expected, 2, "T2b: two issues are waiting");
+  assert.equal(ownerSurface.actual, 1, "T2b: only one of them reaches a surface");
+  assert.match(detail, /waiting-but-on-no-surface/, "T2b: the detail names the failure mode");
+  assert.equal(checkNamed(result, "projection-vs-parser").ok, true, "T2b: the other checks stay green");
+  assert.equal(checkNamed(result, "fold-determinism").ok, true, "T2b: the other checks stay green");
+  ok("T2b: an issue with no identifier is waiting and reaches no surface");
+}
 
 async function t3_projectionVsParserFailsAlone() {
   const issues = [
@@ -267,7 +308,8 @@ async function t6_probeDoesNotMutateOrWrite() {
 async function main() {
   const tests = [
     t1_allThreeChecksPass,
-    t2_ownerSurfaceFailsAlone,
+    t2_ownerSurfaceCoversCardsAndDigest,
+    t2b_waitingWithNoIdentifierReachesNoSurface,
     t3_projectionVsParserFailsAlone,
     t4_foldDeterminismCannotBeForcedThroughDeps,
     t5_readLedgerFailureReportsEveryCheck,

@@ -70,6 +70,7 @@ import {
   buildDecisionOptionsCommentBody,
   parseDecisionOptionsFromComments,
 } from "./telegram-decision-options.mjs";
+import { cardWorthy, buildDigest, renderDigest } from "./owner-surface.mjs";
 
 export { buildDecisionOptionsCommentBody };
 
@@ -77,6 +78,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const COMPANY_ID = "a7011f31-8891-4581-b8fb-bbda8ac6a890";
 const SENT_MARKER = "[TELEGRAM SENT]";
+
+// Where the daily digest remembers it already went out. Same shape and the same
+// gitignore rule as every other ops-watcher state file.
+const DIGEST_STATE_FILE = path.join(__dirname, "owner-digest-state.json");
 const LABEL_SPECS = {
   OWNER_REQUIRED: "#b91c1c",
 };
@@ -148,6 +153,10 @@ export async function runNotifyOnce(deps) {
     sendMessage: _sendMessage = sendMessage,
     log = (m) => console.log(m),
     tokenStatusFn = tokenStatus,
+    now: _now = Date.now,
+    digestState: _digestState = null,
+    sendDigest = false,
+    cockpitUrl = null,
   } = deps;
 
   const results = [];
@@ -185,16 +194,35 @@ export async function runNotifyOnce(deps) {
     return { results, error: "network" };
   }
   const issues = Array.isArray(issuesRes.body) ? issuesRes.body : [];
-  log(`telegram-notify: ${issues.length} issues in company; scanning for OWNER_REQUIRED`);
 
-  for (const it of issues) {
-    const labelIds = Array.isArray(it.labelIds) ? it.labelIds : [];
-    const labelNames = (it.labels || [])
-      .map((l) => (typeof l === "string" ? l : l.name || ""))
-      .map((s) => String(s).toUpperCase());
-    const hasOwnerRequired =
-      labelIds.includes(labelMap.OWNER_REQUIRED) || labelNames.includes("OWNER_REQUIRED");
-    if (!hasOwnerRequired) continue;
+  // The board returns labels as ids; needsOwner reads names. Invert the map we
+  // just built rather than re-deriving names from a second shape.
+  const idToName = new Map(
+    Object.entries(labelMap).map(([name, id]) => [id, name]),
+  );
+
+  // WHY THIS IS NOT A LABEL CHECK ANY MORE.
+  //
+  // This loop used to select on "carries the OWNER_REQUIRED label". Measured
+  // against the live board on 2026-09-03 that was 3 issues, while 17 met this
+  // repo's own definition of waiting on the owner — among them eight real
+  // decisions that had been sitting in `todo` and had never been sent:
+  // KOL-50/52/53 (P4 DECISION NEEDED), KOL-62/63 (APPROVE: start real work),
+  // KOL-65/66/72 (DECISION: Caveman). The other fourteen were invisible purely
+  // because nobody had remembered to apply a label.
+  //
+  // The fix is not "send all seventeen". owner-surface.mjs already drew the
+  // right line and had no caller: something escalated on purpose, or a plan the
+  // runner posted and stopped at, EARNS an interrupt; everything else earns a
+  // place in one daily summary. Sending a card for `OWNER DIRECTIVE: oke` —
+  // the owner's own word, wrapped by the listener — would be asking the owner
+  // to approve himself.
+  const cards = issues.filter((it) => cardWorthy(it, { idToName, now: _now }));
+  log(
+    `telegram-notify: ${issues.length} issues in company; ${cards.length} card-worthy (owner-surface)`,
+  );
+
+  for (const it of cards) {
 
     const shortId = it.identifier || null;
     if (!shortId) {
@@ -250,7 +278,109 @@ export async function runNotifyOnce(deps) {
     results.push({ id: it.id, identifier: shortId, outcome: "sent", message_id: messageId });
   }
 
-  return { results };
+  // The other surface. Everything that is waiting but did not earn an interrupt
+  // gets counted in one message a day — that is the whole reason fourteen items
+  // stayed invisible: there was nowhere quieter than a card for them to go.
+  // Once a day, not once a sweep: the heartbeat runs every five minutes, and a
+  // summary that arrives 288 times is a flood wearing a summary's clothes.
+  //
+  // OPT-IN ON PURPOSE. The digest keeps state in a real file, and the first
+  // version of this ran during the existing telegram suite, wrote
+  // owner-digest-state.json, and marked the day already sent — a test quietly
+  // eating the owner's only summary of the day. A caller now has to ask.
+  if (!sendDigest && !_digestState) {
+    return { results, digest: { outcome: "not-requested" } };
+  }
+  const digest = await maybeSendDigest({
+    issues,
+    idToName,
+    now: _now,
+    state: _digestState,
+    sendMessage: _sendMessage,
+    telegramBase,
+    cockpitUrl,
+    log,
+  });
+
+  return { results, digest };
+}
+
+/** Local calendar day, so "once a day" means what the owner means by it. */
+export function dayKey(ms) {
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+// Injected wholesale in tests so no test ever touches the real state file.
+const fileDigestState = {
+  async read() {
+    try {
+      const fs = await import("node:fs/promises");
+      return JSON.parse(await fs.readFile(DIGEST_STATE_FILE, "utf8"));
+    } catch {
+      return {};
+    }
+  },
+  async write(next) {
+    const fs = await import("node:fs/promises");
+    await fs.writeFile(DIGEST_STATE_FILE, JSON.stringify(next, null, 2) + "\n", "utf8");
+  },
+};
+
+export async function maybeSendDigest(opts = {}) {
+  const {
+    issues = [],
+    idToName = null,
+    now = Date.now,
+    state = null,
+    sendMessage: _send = sendMessage,
+    telegramBase = null,
+    cockpitUrl = null,
+    log = () => {},
+  } = opts;
+  const store = state || fileDigestState;
+  const nowMs = typeof now === "function" ? now() : now;
+  const today = dayKey(nowMs);
+
+  const prior = (await store.read()) || {};
+  if (prior.lastSentDay === today) {
+    return { outcome: "already-sent-today", day: today };
+  }
+
+  const summary = buildDigest(issues, { now: () => nowMs, idToName });
+
+  // Nothing waiting is not a reason to say good morning. Silence is the correct
+  // message when there is no message.
+  if (!summary || summary.total === 0) {
+    await store.write({ ...prior, lastSentDay: today });
+    return { outcome: "nothing-waiting", day: today, total: 0 };
+  }
+
+  const text = renderDigest(summary, { cockpitUrl });
+  const sendOpts = {};
+  if (telegramBase) sendOpts.baseUrl = telegramBase;
+  const s = await _send(text, sendOpts);
+  if (!s.sent) {
+    const why = s.networkError
+      ? `network error: ${s.networkErrorMessage}`
+      : s.reason || `Telegram API status ${s.status}`;
+    // Deliberately NOT marking the day done: a digest that failed to send has
+    // not been sent, and the next sweep should try again.
+    log(`telegram-notify: digest send FAILED (${why}) — will retry next sweep`);
+    return { outcome: "send-failed", day: today, total: summary.total, reason: why };
+  }
+
+  await store.write({ ...prior, lastSentDay: today });
+  log(`telegram-notify: digest sent — ${summary.total} waiting, ${summary.cards.length} of them on cards`);
+  return {
+    outcome: "sent",
+    day: today,
+    total: summary.total,
+    cards: summary.cards.length,
+    digest: summary.digest.length,
+    message_id: s.result && s.result.message_id,
+  };
 }
 
 // ---- CLI ----
@@ -268,10 +398,11 @@ async function main() {
   }
   const port = await discoverPaperclipPort();
   const base = port ? `http://127.0.0.1:${port}` : null;
-  const r = await runNotifyOnce({ base, log: (m) => console.log(m) });
+  const r = await runNotifyOnce({ base, log: (m) => console.log(m), sendDigest: true });
   const sent = r.results.filter((x) => x.outcome === "sent").length;
   const skipped = r.results.length - sent;
   console.log(`telegram-notify --once: sent=${sent} skipped/other=${skipped} (error=${r.error || "none"})`);
+  if (r.digest) console.log(`telegram-notify --once: digest ${r.digest.outcome}${r.digest.total !== undefined ? " total=" + r.digest.total : ""}`);
   for (const x of r.results)
     console.log(`  - ${x.identifier || x.id}: ${x.outcome}${x.message_id ? " (message_id=" + x.message_id + ")" : ""}`);
 }
