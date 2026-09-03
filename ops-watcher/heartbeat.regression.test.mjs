@@ -7,7 +7,7 @@
 //   node ops-watcher/heartbeat.regression.test.mjs
 //
 // Covers:
-//   (H1) all 15 steps are attempted even if step 2 fails (the sweep must never
+//   (H1) all 16 steps are attempted even if step 2 fails (the sweep must never
 //        abort on a single step's non-zero exit).
 //   (H2) a compact real summary line is produced after each step and a final
 //        summary (succeeded/failed counts) is produced.
@@ -32,7 +32,7 @@
 //        after gbrain-curator, invoked with its mandated argv.
 //   (H11) the self-repair step is the 14th step (index 13) with argv
 //        ["ops-watcher/self-repair.mjs", "--once"], still right after audit-clerk.
-//   (H12) the STEPS pipeline has 15 entries and the LAST one is the
+//   (H12) the STEPS pipeline has 16 entries and the LAST one is the
 //        directive-runner step with argv
 //        ["ops-watcher/directive-runner.mjs", "--once"].
 //
@@ -179,6 +179,7 @@ const SCRIPTS = {
   gbrainCurator:     "ops-watcher/gbrain-curator.mjs",
   auditClerk:        "ops-watcher/audit-clerk.mjs",
   selfRepair:        "ops-watcher/self-repair.mjs",
+  reconcile:         "ops-watcher/reconcile.mjs",
   directiveRunner:   "ops-watcher/directive-runner.mjs",
 };
 
@@ -199,6 +200,7 @@ function happyTable() {
     [SCRIPTS.gbrainCurator]:      { code: 0, stdout: "gbrain-curator --once DONE 2026-09-01T00:00:00.000Z — ingested=0 up-to-date=0 skipped=0 failed=0\n" },
     [SCRIPTS.auditClerk]:         { code: 0, stdout: "audit-clerk --once: findings=0 alerted=false suppressed=0\n" },
     [SCRIPTS.selfRepair]:         { code: 0, stdout: "self-repair: skipped (next run after 2026-09-01T00:30:00.000Z)\n" },
+    [SCRIPTS.reconcile]:          { code: 0, stdout: "reconcile owner-surface: OK expected=17 actual=17 detail=split: 3 card, 14 digest\n" },
     [SCRIPTS.directiveRunner]:    { code: 0, stdout: "directive-runner --once: skipped (next sweep after 2026-09-01T00:15:00.000Z)\n" },
   };
 }
@@ -266,23 +268,24 @@ const STEPS = [
   { name: "gbrain-curator", argv: [SCRIPTS.gbrainCurator, "--once"] },
   { name: "audit-clerk", argv: [SCRIPTS.auditClerk, "--once"] },
   { name: "self-repair", argv: [SCRIPTS.selfRepair, "--once"] },
+  { name: "reconcile", argv: [SCRIPTS.reconcile, "--once"] },
   { name: "directive-runner", argv: [SCRIPTS.directiveRunner, "--once"] },
 ];
 const STEP_NAMES = STEPS.map((s) => s.name);
 
 // =====================================================================
-// H1: all 15 steps attempted even if step 2 (test-runner) fails
+// H1: all 16 steps attempted even if step 2 (test-runner) fails
 // =====================================================================
 async function testAllStepsAttemptedOnStep2Fail() {
-  const name = "H1 all 15 steps attempted even when step 2 (test-runner) fails";
+  const name = "H1 all 16 steps attempted even when step 2 (test-runner) fails";
   const table = happyTable();
   // Make step 2 FAIL with a non-zero exit + stderr (as a crashing test would).
   table[SCRIPTS.testRunner] = { code: 1, stdout: "test-runner --once: processed 1 issue(s)\n", stderr: "AssertionError: expected 2 === 3\n" };
   const { lines, log } = makeLogCapture();
   try {
     const r = await runHeartbeatOnce({ runStep: makeFakeRunStep(table), log, now: () => 1700000000000, shouldRunTelegramListenerStep: alwaysRunFallback, appendStepLog: noopAppendStepLog });
-    assert.equal(r.total, STEPS.length, "exactly 15 steps in the pipeline");
-    assert.equal(r.results.length, STEPS.length, "all 15 steps produced a result");
+    assert.equal(r.total, STEPS.length, "exactly 16 steps in the pipeline");
+    assert.equal(r.results.length, STEPS.length, "all 16 steps produced a result");
     // Step ordering preserved and names correct.
     assert.deepEqual(r.results.map((x) => x.name), STEP_NAMES);
     // Step 2 failed, all others succeeded.
@@ -307,23 +310,23 @@ async function testSummaryLinesProduced() {
   const { lines, log } = makeLogCapture();
   try {
     await runHeartbeatOnce({ runStep: makeFakeRunStep(table), log, now: () => 1700000000000, shouldRunTelegramListenerStep: alwaysRunFallback, appendStepLog: noopAppendStepLog });
-    // One START line, one per-step line (15), one final DONE line.
+    // One START line, one per-step line (16), one final DONE line.
     const startLines = lines.filter((l) => /heartbeat --once START/.test(l));
     const stepLines = lines.filter((l) => /^\s+\[/.test(l));
     const doneLines = lines.filter((l) => /heartbeat --once DONE/.test(l));
     assert.equal(startLines.length, 1, "one START line");
-    assert.equal(stepLines.length, STEPS.length, "one summary line per step (15)");
+    assert.equal(stepLines.length, STEPS.length, "one summary line per step (16)");
     assert.equal(doneLines.length, 1, "one final DONE line");
     // Each per-step line carries the step name, an exit code, and OK/FAIL.
     for (const sl of stepLines) {
-      assert.match(sl, /\[(watcher|test-runner|review-runner|telegram-notify|telegram-listener|cockpit-status|ahmad-dispatch|steward|steward-sjs|steward-caveman|escalation-sec|gbrain-curator|audit-clerk|self-repair|directive-runner)\]/, "step line has step name");
+      assert.match(sl, /\[(watcher|test-runner|review-runner|telegram-notify|telegram-listener|cockpit-status|ahmad-dispatch|steward|steward-sjs|steward-caveman|escalation-sec|gbrain-curator|audit-clerk|self-repair|reconcile|directive-runner)\]/, "step line has step name");
       assert.match(sl, /exit=/, "step line has exit code");
       assert.match(sl, /(OK|FAIL)/, "step line has OK/FAIL");
     }
-    // Final summary reports succeeded=15/15 failed=0/15.
+    // Final summary reports succeeded=16/16 failed=0/16.
     const done = doneLines[0];
-    assert.match(done, new RegExp(`succeeded=${STEPS.length}/${STEPS.length}`), "final summary succeeded=15/15");
-    assert.match(done, new RegExp(`failed=0/${STEPS.length}`), "final summary failed=0/15");
+    assert.match(done, new RegExp(`succeeded=${STEPS.length}/${STEPS.length}`), "final summary succeeded=16/16");
+    assert.match(done, new RegExp(`failed=0/${STEPS.length}`), "final summary failed=0/16");
     // The per-step line for telegram-notify carries its real stdout excerpt.
     const notifyLine = stepLines.find((l) => /\[telegram-notify\]/.test(l));
     assert.ok(notifyLine, "telegram-notify step line present");
@@ -344,7 +347,7 @@ async function testMissingScriptDoesNotCrash() {
   const { lines, log } = makeLogCapture();
   try {
     const r = await runHeartbeatOnce({ runStep: makeFakeRunStep(table), log, now: () => 1700000000000, shouldRunTelegramListenerStep: alwaysRunFallback, appendStepLog: noopAppendStepLog });
-    assert.equal(r.results.length, STEPS.length, "still 15 results — sweep ran to completion");
+    assert.equal(r.results.length, STEPS.length, "still 16 results — sweep ran to completion");
     // The review-runner step reports a missing-script failure (code null) but
     // did NOT abort the sweep.
     const rr = r.results.find((x) => x.name === "review-runner");
@@ -354,7 +357,7 @@ async function testMissingScriptDoesNotCrash() {
     assert.ok(rr.error, "missing script step records an error");
     assert.match(String(rr.error), /ENOENT/, "error mentions ENOENT");
     // The steps AFTER the missing one still ran and succeeded.
-    const after = r.results.filter((x) => ["telegram-notify", "telegram-listener", "cockpit-status", "ahmad-dispatch", "steward", "steward-sjs", "steward-caveman", "escalation-sec", "gbrain-curator", "audit-clerk", "self-repair", "directive-runner"].includes(x.name));
+    const after = r.results.filter((x) => ["telegram-notify", "telegram-listener", "cockpit-status", "ahmad-dispatch", "steward", "steward-sjs", "steward-caveman", "escalation-sec", "gbrain-curator", "audit-clerk", "self-repair", "reconcile", "directive-runner"].includes(x.name));
     assert.equal(after.length, STEPS.length - 3);
     for (const a of after) {
       assert.equal(a.code, 0, `${a.name} (after missing step) still ran and exited 0`);
@@ -427,7 +430,8 @@ async function testArgvDrift() {
     assert.deepEqual(seen[11], ["ops-watcher/gbrain-curator.mjs", "--once"]);
     assert.deepEqual(seen[12], ["ops-watcher/audit-clerk.mjs", "--once"]);
     assert.deepEqual(seen[13], ["ops-watcher/self-repair.mjs", "--once"]);
-    assert.deepEqual(seen[14], ["ops-watcher/directive-runner.mjs", "--once"]);
+    assert.deepEqual(seen[14], ["ops-watcher/reconcile.mjs", "--once"]);
+    assert.deepEqual(seen[15], ["ops-watcher/directive-runner.mjs", "--once"]);
     ok(name);
   } catch (err) { bad(name, err); }
 }
@@ -443,8 +447,8 @@ async function testTelegramListenerSkippedWhenDaemonHealthy() {
   const { lines, log } = makeLogCapture();
   try {
     const r = await runHeartbeatOnce({ runStep, log, now: () => 1700000000000, shouldRunTelegramListenerStep: async () => false, appendStepLog: noopAppendStepLog });
-    assert.equal(r.total, STEPS.length, "still 15 steps reported");
-    assert.equal(r.results.length, STEPS.length, "still 15 results produced");
+    assert.equal(r.total, STEPS.length, "still 16 steps reported");
+    assert.equal(r.results.length, STEPS.length, "still 16 results produced");
     assert.deepEqual(r.results.map((x) => x.name), STEP_NAMES);
 
     const tl = r.results.find((x) => x.name === "telegram-listener");
@@ -606,15 +610,15 @@ async function testAuditClerkIsThirteenthStep() {
 // no real child process.
 // =====================================================================
 async function testSelfRepairIsFourteenthStep() {
-  const name = "H11 STEPS has 15 entries; 14th is self-repair; last is directive-runner with mandated argv";
+  const name = "H11 STEPS has 16 entries; 14th is self-repair; last is directive-runner with mandated argv";
   const seen = [];
   const runStep = async (argv) => { seen.push(argv.slice()); return { code: 0, stdout: "", stderr: "", error: null }; };
   try {
     const r = await runHeartbeatOnce({ runStep, log: () => {}, now: () => 1700000000000, shouldRunTelegramListenerStep: alwaysRunFallback, appendStepLog: noopAppendStepLog });
-    assert.equal(STEPS.length, 15, "expected STEPS fixture has 15 entries");
-    assert.equal(r.total, STEPS.length, "pipeline total is 15");
-    assert.equal(seen.length, STEPS.length, "15 steps were dispatched");
-    assert.equal(r.results.length, STEPS.length, "15 results produced");
+    assert.equal(STEPS.length, 16, "expected STEPS fixture has 16 entries");
+    assert.equal(r.total, STEPS.length, "pipeline total is 16");
+    assert.equal(seen.length, STEPS.length, "16 steps were dispatched");
+    assert.equal(r.results.length, STEPS.length, "16 results produced");
     // The 14th dispatched argv is exactly the self-repair --once invocation.
     assert.deepEqual(seen[13], ["ops-watcher/self-repair.mjs", "--once"], "14th argv is the self-repair --once invocation");
     // And the 14th result carries the same name + argv for observability.
@@ -637,21 +641,21 @@ async function testSelfRepairIsFourteenthStep() {
 }
 
 // =====================================================================
-// H12: the STEPS pipeline has 15 entries and the LAST one is the
+// H12: the STEPS pipeline has 16 entries and the LAST one is the
 // directive-runner step with argv ["ops-watcher/directive-runner.mjs",
 // "--once"]. Verified by running a sweep with a capturing runStep (so the
 // count + ordering + last argv are observed exactly as the heartbeat
 // dispatches them) — no real child process.
 // =====================================================================
 async function testDirectiveRunnerIsFifteenthStep() {
-  const name = "H12 STEPS has 15 entries; last is directive-runner with argv [\"ops-watcher/directive-runner.mjs\", \"--once\"]";
+  const name = "H12 STEPS has 16 entries; last is directive-runner with argv [\"ops-watcher/directive-runner.mjs\", \"--once\"]";
   const seen = [];
   const runStep = async (argv) => { seen.push(argv.slice()); return { code: 0, stdout: "", stderr: "", error: null }; };
   try {
     const r = await runHeartbeatOnce({ runStep, log: () => {}, now: () => 1700000000000, shouldRunTelegramListenerStep: alwaysRunFallback, appendStepLog: noopAppendStepLog });
-    assert.equal(r.total, STEPS.length, "pipeline total is 15");
-    assert.equal(seen.length, STEPS.length, "15 steps were dispatched");
-    assert.equal(r.results.length, STEPS.length, "15 results produced");
+    assert.equal(r.total, STEPS.length, "pipeline total is 16");
+    assert.equal(seen.length, STEPS.length, "16 steps were dispatched");
+    assert.equal(r.results.length, STEPS.length, "16 results produced");
     // The last dispatched argv is exactly the directive-runner --once invocation.
     assert.deepEqual(seen[STEPS.length - 1], ["ops-watcher/directive-runner.mjs", "--once"], "15th (last) argv is the directive-runner --once invocation");
     // And the last result carries the same name + argv for observability.
@@ -894,7 +898,7 @@ async function testRotationHelper() {
 // the durable step-log append.
 // =====================================================================
 async function testHeartbeatLockFreeRunsAndReleases() {
-  const name = "L1 lock-free heartbeat runs all 15 steps and releases after step-log append";
+  const name = "L1 lock-free heartbeat runs all 16 steps and releases after step-log append";
   const events = [];
   const seen = [];
   const runStep = async (argv) => { seen.push(argv.slice()); return makeDefaultSuccessfulRunStep()(argv); };
@@ -910,8 +914,8 @@ async function testHeartbeatLockFreeRunsAndReleases() {
       releaseLock: async () => { events.push("release-lock"); },
       lockPid: 99101,
     });
-    assert.equal(r.results.length, STEPS.length, "all 15 steps produced results");
-    assert.equal(seen.length, STEPS.length, "all 15 steps ran");
+    assert.equal(r.results.length, STEPS.length, "all 16 steps produced results");
+    assert.equal(seen.length, STEPS.length, "all 16 steps ran");
     assert.equal(r.failed, 0, "lock-free happy sweep succeeds");
     assert.equal(events.filter((e) => e === "acquire-lock").length, 1, "_acquireLock called exactly once");
     assert.equal(events.filter((e) => e === "release-lock").length, 1, "_releaseLock called exactly once");
@@ -958,7 +962,7 @@ async function testHeartbeatLiveLockRefusesSuccessfully() {
 // 15-step sweep runs.
 // =====================================================================
 async function testHeartbeatDeadLockIsReclaimedBySharedPrimitive() {
-  const name = "L3 dead-held heartbeat lock is reclaimed by shared primitive and all 15 steps run";
+  const name = "L3 dead-held heartbeat lock is reclaimed by shared primitive and all 16 steps run";
   const lockFile = "memory-heartbeat.lock";
   const deadPid = 33333;
   const fakeFs = makeMemoryLockFs({
@@ -980,8 +984,8 @@ async function testHeartbeatDeadLockIsReclaimedBySharedPrimitive() {
       lockFile,
       _fs: fakeFs,
     });
-    assert.equal(r.results.length, STEPS.length, "all 15 steps produced results after stale lock reclaim");
-    assert.equal(seen.length, STEPS.length, "all 15 steps ran after stale lock reclaim");
+    assert.equal(r.results.length, STEPS.length, "all 16 steps produced results after stale lock reclaim");
+    assert.equal(seen.length, STEPS.length, "all 16 steps ran after stale lock reclaim");
     assert.equal(r.failed, 0, "reclaimed-lock happy sweep succeeds");
     assert.equal(fakeFs.files.has(lockFile), false, "lock released after the sweep");
     const staleUnlinks = fakeFs.calls.filter((c) => c.op === "unlink" && c.file === lockFile);
@@ -1132,7 +1136,7 @@ async function testPausedStopsAllStepsAndWritesRecord() {
 // 15-step pipeline when the owner has not paused the system.
 // =====================================================================
 async function testNotPausedRunsAllFifteenSteps() {
-  const name = "P4 not paused heartbeat still dispatches all 15 steps";
+  const name = "P4 not paused heartbeat still dispatches all 16 steps";
   const seen = [];
   const runStep = async (argv) => { seen.push(argv.slice()); return makeDefaultSuccessfulRunStep()(argv); };
   try {
@@ -1145,7 +1149,7 @@ async function testNotPausedRunsAllFifteenSteps() {
       checkPause: async () => ({ paused: false }),
     });
     assert.equal(r.results.length, STEPS.length, "all 15 results produced");
-    assert.equal(seen.length, STEPS.length, "all 15 steps dispatched");
+    assert.equal(seen.length, STEPS.length, "all 16 steps dispatched");
     assert.deepEqual(seen, STEPS.map((s) => s.argv), "step order and argv unchanged");
     assert.equal(r.failed, 0, "happy not-paused sweep still succeeds");
     ok(name);

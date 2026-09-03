@@ -209,6 +209,11 @@ const STEPS = [
   { name: "gbrain-curator",    argv: ["ops-watcher/gbrain-curator.mjs", "--once"] },
   { name: "audit-clerk",       argv: ["ops-watcher/audit-clerk.mjs", "--once"] },
   { name: "self-repair",       argv: ["ops-watcher/self-repair.mjs", "--once"] },
+  // Read-only. Exits 1 when the ledger's projection and the live board disagree,
+  // so a drift shows up as a failed step instead of as a number nobody checked.
+  // Sits before directive-runner on purpose: it reports on the state every other
+  // step just finished writing, and the runner stays last.
+  { name: "reconcile",         argv: ["ops-watcher/reconcile.mjs", "--once"] },
   { name: "directive-runner",  argv: ["ops-watcher/directive-runner.mjs", "--once"] },
 ];
 
