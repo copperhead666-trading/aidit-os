@@ -1,6 +1,9 @@
 /**
- * UI themes. Mono (Monolith Signal — white on black, color = status only) is
- * the default identity; the others are full re-skins the user can pick. The
+ * UI themes. The default identity follows DESIGN.md at the repo root (Zapier),
+ * carried into a dark room: the owner opens this at six in the morning on a
+ * phone, where a cream page is a flashlight. Same hue family, same single
+ * orange accent, dark ground. The others are full re-skins
+ * the user can pick, Monolith among them. The
  * active theme lives as `data-theme` on <html>, persisted to localStorage.
  * Tailwind os.* tokens read CSS vars, so flipping the attribute re-themes the
  * whole UI with no per-component work — each theme is a token block in
@@ -10,12 +13,12 @@ export const THEMES = ['mono', 'mono-light', 'dark', 'light', 'midnight', 'ember
 export type Theme = (typeof THEMES)[number];
 
 /** What every fresh load gets until the user picks something else. */
-export const DEFAULT_THEME: Theme = 'mono';
+export const DEFAULT_THEME: Theme = 'dark';
 
 /** Picker metadata: display name, one-line feel, [bg, accent, text] swatch. */
 export const THEME_META: Record<Theme, { name: string; blurb: string; swatch: [string, string, string] }> = {
-  dark: { name: 'Terminal', blurb: 'phosphor green on near-black', swatch: ['#050807', '#3df08c', '#e4efe6'] },
-  light: { name: 'Clay', blurb: 'warm paper with clay orange', swatch: ['#ece3d2', '#c96442', '#2b2722'] },
+  dark: { name: 'Malam', blurb: 'krem gelap, aksen oranye', swatch: ['#17120f', '#ff6a26', '#f6f1ea'] },
+  light: { name: 'Siang', blurb: 'krem hangat, aksen oranye', swatch: ['#fffefb', '#ff4f00', '#201515'] },
   midnight: { name: 'Midnight', blurb: 'deep navy, signal blue', swatch: ['#070d1f', '#5ec9f8', '#e8ecf9'] },
   ember: { name: 'Ember', blurb: 'coal dark, vault orange', swatch: ['#0c0806', '#e35c35', '#f2e9e2'] },
   mono: { name: 'Monolith', blurb: 'white on black, color = status only', swatch: ['#0a0a0a', '#f2f2f2', '#2fd36f'] },

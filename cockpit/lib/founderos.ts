@@ -102,6 +102,8 @@ export interface RoutingState {
 export interface RepairEntry {
   ts: number;
   type: string;
+  /** The writer emitted `name` until 31 Aug and `identifier` after it; a
+      validator that demanded `name` silently hid every newer row. */
   name: string;
   outcome: string;
   reason: string;
@@ -321,13 +323,20 @@ function isRoutingState(v: unknown): v is RoutingState {
 
 function isRepairEntry(v: unknown): v is RepairEntry {
   if (!isRecord(v)) return false;
+  const named = typeof v.name === 'string' || typeof v.identifier === 'string';
   return (
     typeof v.type === 'string' &&
-    typeof v.name === 'string' &&
+    named &&
     typeof v.outcome === 'string' &&
     typeof v.reason === 'string' &&
     typeof v.ts === 'number'
   );
+}
+
+/** `name` wins when both are present; otherwise `identifier` stands in. */
+function repairName(v: Record<string, unknown>): string {
+  if (typeof v.name === 'string' && v.name !== '') return v.name;
+  return typeof v.identifier === 'string' ? v.identifier : '';
 }
 
 function isProjectLayerStatus(v: unknown): v is ProjectLayerStatus {
@@ -481,7 +490,9 @@ export async function readSelfRepair(limit = 10): Promise<RepairEntry[] | null> 
       limit,
       isRepairEntry
     );
-    return entries.reverse();
+    return entries
+      .map((entry) => ({ ...entry, name: repairName(entry as unknown as Record<string, unknown>) }))
+      .reverse();
   } catch {
     return null;
   }

@@ -18,11 +18,11 @@ export function PageHeader({
     <header className={`mb-6 flex justify-between gap-4 ${rightWide ? 'items-start' : 'items-end'}`}>
       <div className="min-w-0 shrink-0">
         {eyebrow && (
-          <div className="page-eyebrow mb-2 flex items-center gap-2 font-mono text-[9.5px] uppercase tracking-[0.32em] text-os-dim">
+          <div className="page-eyebrow mb-2 flex items-center gap-2 font-sans text-[12px] font-semibold uppercase tracking-[0.1em] text-os-muted">
             {eyebrow}
           </div>
         )}
-        <h1 className={`text-[25px] font-bold uppercase leading-[1.1] tracking-[0.06em]${caret ? ' caret-blink' : ''}`}>
+        <h1 className={`text-[24px] font-extrabold leading-[1.15] tracking-[-0.02em] sm:text-[24px]${caret ? ' caret-blink' : ''}`}>
           {title}
         </h1>
       </div>

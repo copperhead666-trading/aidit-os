@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from 'next';
-import { JetBrains_Mono } from 'next/font/google';
+import { Inter, JetBrains_Mono } from 'next/font/google';
 import { cookies } from 'next/headers';
 import './globals.css';
 import { PauseBanner } from '@/components/PauseBanner';
@@ -21,6 +21,12 @@ const fontMono = JetBrains_Mono({
   subsets: ['latin'],
   weight: ['400', '500', '600', '700'],
   variable: '--font-mono',
+});
+
+const fontSans = Inter({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700'],
+  variable: '--font-sans',
 });
 
 export const viewport: Viewport = {
@@ -49,7 +55,7 @@ function hasValidSession(): boolean {
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   if (!hasValidSession()) {
     return (
-      <html lang="en" className={fontMono.variable} suppressHydrationWarning>
+      <html lang="en" className={`${fontSans.variable} ${fontMono.variable}`} suppressHydrationWarning>
         <head>
           {/* Apply the persisted theme before first paint — no dark↔light flash. */}
           <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
@@ -62,7 +68,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const pauseState = await readPauseState();
 
   return (
-    <html lang="en" className={fontMono.variable} suppressHydrationWarning>
+    <html lang="en" className={`${fontSans.variable} ${fontMono.variable}`} suppressHydrationWarning>
       <head>
         {/* Apply the persisted theme before first paint — no dark↔light flash. */}
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />

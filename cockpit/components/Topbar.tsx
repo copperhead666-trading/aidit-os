@@ -6,17 +6,20 @@ import { ThemeToggle } from '@/components/ThemeToggle';
 import { OsMark } from '@/components/OsMark';
 import { SIDEBAR_TOGGLE_EVENT } from '@/components/Sidebar';
 
+// Page names the owner would use, not the route slugs. He is not an engineer
+// and 'founder-os / home' told him nothing he did not already know.
 const SEGMENT_LABELS: Record<string, string> = {
-  '': 'home',
-  social: 'social',
-  comms: 'comms',
-  agents: 'agents',
-  org: 'org-chart',
-  brain: 'g-brain',
-  integrations: 'connections',
-  roadmap: 'roadmap',
-  analytics: 'analytics',
-  reference: 'reference-model',
+  '': 'Beranda',
+  decisions: 'Keputusan',
+  inbox: 'Perlu perhatian',
+  tasks: 'Kerjaan',
+  agents: 'Tenaga kerja',
+  doctor: 'Kesehatan sistem',
+  brain: 'Ingatan',
+  roadmap: 'Rencana',
+  skills: 'Kemampuan',
+  reference: 'Acuan',
+  how: 'Cara pakai',
 };
 
 export function openPalette() {
@@ -35,13 +38,11 @@ export function Topbar() {
         onClick={() => window.dispatchEvent(new CustomEvent(SIDEBAR_TOGGLE_EVENT))}
         title="Toggle navigation"
         aria-label="Toggle navigation"
-        className="grid h-[30px] w-[30px] shrink-0 place-items-center rounded-sm-t border border-os-border bg-os-surface text-os-muted transition-colors hover:border-os-border-strong hover:text-os-text md:hidden"
+        className="grid h-11 w-11 shrink-0 place-items-center rounded-sm-t border border-os-border bg-os-surface text-os-muted transition-colors hover:border-os-border-strong hover:text-os-text md:hidden"
       >
         <Menu className="h-3.5 w-3.5" />
       </button>
-      <div className="flex min-w-0 items-center gap-[7px] overflow-hidden font-mono text-[11px] tracking-[0.04em] text-os-dim">
-        <span className="shrink-0">founder-os</span>
-        <span className="shrink-0 opacity-45">/</span>
+      <div className="flex min-w-0 items-center gap-[7px] overflow-hidden font-sans text-[13px] text-os-muted">
         <span className="truncate text-os-text">{here}</span>
       </div>
       <div className="ml-auto flex shrink-0 items-center gap-2 sm:gap-2.5">
@@ -49,7 +50,7 @@ export function Topbar() {
         <button
           onClick={openPalette}
           title="Command palette (⌘K)"
-          className="grid h-[30px] w-[30px] place-items-center rounded-sm-t border border-os-border bg-os-surface text-os-muted transition-colors hover:border-os-border-strong hover:text-os-text"
+          className="grid h-11 w-11 place-items-center rounded-sm-t border border-os-border bg-os-surface text-os-muted transition-colors hover:border-os-border-strong hover:text-os-text"
         >
           <Search className="h-3.5 w-3.5" />
         </button>

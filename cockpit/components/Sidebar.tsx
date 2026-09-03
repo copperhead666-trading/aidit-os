@@ -27,7 +27,7 @@ function NavGroup({
       {collapsed ? (
         <div className="mx-2 my-1.5 border-t border-os-border" aria-label={title} />
       ) : (
-        <div className="px-2.5 pb-1.5 pt-3.5 font-mono text-[9px] uppercase tracking-[0.18em] text-os-dim">
+        <div className="px-2.5 pb-1.5 pt-3.5 font-sans text-[12px] font-semibold uppercase tracking-[0.09em] text-os-muted">
           {title}
         </div>
       )}
@@ -43,8 +43,8 @@ function NavGroup({
                 : undefined
             }
             onMouseLeave={() => (collapsed ? onTip(null) : undefined)}
-            className={`group relative flex items-center rounded-sm-t border text-[13.5px] font-medium transition-colors ${
-              collapsed ? 'justify-center px-0 py-[9px]' : 'gap-2.5 px-2.5 py-[7px]'
+            className={`group relative flex items-center rounded-sm-t border text-[14px] font-medium transition-colors ${
+              collapsed ? 'min-h-[44px] justify-center px-0' : 'min-h-[44px] gap-2.5 px-2.5'
             } ${
               active
                 ? 'border-[var(--accent-line)] bg-[var(--accent-soft)] text-os-accent'
@@ -193,8 +193,8 @@ export function Sidebar() {
           <div className="flex items-center gap-[11px]">
             <OsMark size={34} className="shrink-0" />
             <div>
-              <div className="text-[13px] font-bold tracking-[0.14em]">FOUNDER OS</div>
-              <div className="mt-[3px] whitespace-nowrap font-mono text-[9px] uppercase tracking-[0.16em] text-os-dim">
+              <div className="text-[14px] font-extrabold tracking-[-0.01em]">FOUNDER OS</div>
+              <div className="mt-[3px] whitespace-nowrap font-sans text-[12px] font-medium text-os-muted">
                 Read-Only Cockpit
               </div>
             </div>
@@ -206,7 +206,7 @@ export function Sidebar() {
           title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           aria-expanded={!collapsed}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-sm-t border border-transparent text-os-dim transition-colors hover:border-os-border hover:bg-os-surface2 hover:text-os-text"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-sm-t border border-transparent text-os-muted transition-colors hover:border-os-border hover:bg-os-surface2 hover:text-os-text"
         >
           <PanelLeft className="h-[15px] w-[15px]" strokeWidth={1.7} />
         </button>
@@ -228,7 +228,7 @@ export function Sidebar() {
           // off the edge of the rail. Nothing else belongs here: the previous
           // "systems live" dot was fed by a value nothing ever supplied, so it
           // pulsed green forever regardless of the real state.
-          <div className="break-words font-mono text-[10px] leading-relaxed text-os-dim">
+          <div className="break-words font-mono text-[12px] leading-relaxed text-os-muted">
             {host ?? '…'}
           </div>
         )}
@@ -236,7 +236,7 @@ export function Sidebar() {
 
       {collapsed && tip && (
         <div
-          className="pointer-events-none fixed z-50 -translate-y-1/2 whitespace-nowrap rounded-sm-t border border-os-border-strong bg-os-surface px-2 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-os-text"
+          className="pointer-events-none fixed z-50 -translate-y-1/2 whitespace-nowrap rounded-sm-t border border-os-border-strong bg-os-surface px-2 py-1 font-sans text-[12px] font-medium text-os-text"
           style={{ left: COLLAPSED_W + 8, top: tip.y + 15 }}
         >
           {tip.label}

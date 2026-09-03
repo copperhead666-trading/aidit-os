@@ -40,15 +40,18 @@ const config: Config = {
         },
       },
       fontFamily: {
-        // Monolith lettering: mono everywhere — Space Grotesk is retired.
-        sans: ['var(--font-mono)', '"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+        // DESIGN.md: Degular Display is proprietary; its own substitute note
+        // names Inter — which is also the brand's real second face — for both
+        // display and body. Mono stays for data only.
+        sans: ['var(--font-sans)', 'Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
         mono: ['var(--font-mono)', '"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
       },
       borderRadius: {
-        // class names stay so no component edits; the values go sharp
-        'sm-t': '0px',
-        'md-t': '0px',
-        'lg-t': '0px',
+        // DESIGN.md radius scale: 6px inline pills and inputs, 12px the
+        // canonical button and card radius.
+        'sm-t': '6px',
+        'md-t': '12px',
+        'lg-t': '12px',
       },
     },
   },

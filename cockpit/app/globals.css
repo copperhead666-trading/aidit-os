@@ -13,28 +13,31 @@
 }
 
 /* Dark (phosphor terminal). */
+/* The default identity; bare :root rides along so a pre-script or no-JS load
+   already renders it instead of flashing another skin. */
+:root,
 :root[data-theme='dark'] {
   color-scheme: dark;
-  --bg: #050807;
-  --bg-2: #070b09;
-  --surface: #0a0f0c;
-  --surface-2: #0f1511;
-  --surface-3: #141c17;
-  --border: #18211b;
-  --border-strong: #243029;
-  --text: #e4efe6;
-  --text-2: #8fa295;
-  --text-3: #54665b;
-  --accent: #3df08c;
-  --accent-2: #35d97e;
-  --accent-ink: #03140a;
-  --accent-soft: rgba(61, 240, 140, 0.08);
-  --accent-line: rgba(61, 240, 140, 0.25);
-  --ok: #3df08c;
-  --warn: #ffc53d;
-  --err: #ff6259;
-  --glow: 0 0 24px rgba(61, 240, 140, 0.18);
-  --grid: rgba(228, 239, 230, 0.018);
+  --bg: #100c0a;
+  --bg-2: #151110;
+  --surface: #211a16;
+  --surface-2: #2b231e;
+  --surface-3: #362c25;
+  --border: #332a24;
+  --border-strong: #4a3e34;
+  --text: #f6f1ea;
+  --text-2: #c0b5a8;
+  --text-3: #9d9284;
+  --accent: #ff6a26;
+  --accent-2: #ff8043;
+  --accent-ink: #1a0e07;
+  --accent-soft: rgba(255, 106, 38, 0.11);
+  --accent-line: rgba(255, 106, 38, 0.28);
+  --ok: #63b183;
+  --warn: #d9a24a;
+  --err: #e8705a;
+  --glow: 0 0 20px rgba(255, 106, 38, 0.13);
+  --grid: rgba(246, 241, 234, 0.02);
   --brain-1: #8b7cff;
   --brain-2: #5ec9f8;
   --brain-3: #4ade96;
@@ -63,26 +66,26 @@
    reads "green" in both themes; only the accent shifts cool→warm. */
 :root[data-theme='light'] {
   color-scheme: light;
-  --bg: #ece3d2;
-  --bg-2: #f1ead9;
-  --surface: #f6f0e4;
-  --surface-2: #efe7d6;
-  --surface-3: #e7decb;
-  --border: #ddd3bf;
-  --border-strong: #c9bda4;
-  --text: #2b2722;
-  --text-2: #6f675a;
-  --text-3: #9a9082;
-  --accent: #c96442;
-  --accent-2: #a84e30;
-  --accent-ink: #fdf7ee;
-  --accent-soft: rgba(201, 100, 66, 0.12);
-  --accent-line: rgba(201, 100, 66, 0.32);
-  --ok: #0b8a52;
-  --warn: #b7791f;
-  --err: #c0392b;
-  --glow: 0 1px 3px rgba(43, 39, 34, 0.14);
-  --grid: rgba(43, 39, 34, 0.04);
+  --bg: #fffefb;
+  --bg-2: #f8f4f0;
+  --surface: #f8f4f0;
+  --surface-2: #f2ebe4;
+  --surface-3: #ebe3da;
+  --border: #e8e1d7;
+  --border-strong: #c5c0b1;
+  --text: #201515;
+  --text-2: #605d52;
+  --text-3: #6b6858;
+  --accent: #bd3900;
+  --accent-2: #ff4f00;
+  --accent-ink: #fffefb;
+  --accent-soft: rgba(255, 79, 0, 0.08);
+  --accent-line: rgba(189, 57, 0, 0.30);
+  --ok: #2e6f4e;
+  --warn: #8f5406;
+  --err: #b3311c;
+  --glow: 0 1px 3px rgba(32, 21, 21, 0.10);
+  --grid: rgba(32, 21, 21, 0.03);
   --brain-1: #7a5cf0;
   --brain-2: #2b8fd8;
   --brain-3: #c96442;
@@ -184,9 +187,8 @@
 /* Mono — MONOLITH SIGNAL (design handoff 2026-07-10): white/grey structure
    on bare black, boxes flattened, zero glow/grid, and a strict traffic-light
    rule — color only ever means status: green good · yellow degraded · red bad. */
-/* Mono (Monolith Signal) — the default identity; bare :root rides along so a
-   pre-script or no-JS load already renders Monolith. */
-:root,
+/* Mono (Monolith Signal) — a pickable skin. The bare :root alias moved to the
+   light block below when Jakarta Clean became the default. */
 :root[data-theme='mono'] {
   color-scheme: dark;
   --bg: #0a0a0a;
@@ -281,10 +283,10 @@
 /* Row-divider hairlines for every theme (mono sets its own above, and the
    bare :root default already carries it). */
 :root[data-theme='dark'] {
-  --hairline: #141b16;
+  --hairline: #3a3029;
 }
 :root[data-theme='light'] {
-  --hairline: #e4dbc9;
+  --hairline: #ece5db;
 }
 :root[data-theme='midnight'] {
   --hairline: #131c3a;
@@ -738,14 +740,9 @@ body {
   }
 }
 
-/* The content column glides aside for the Conductor dock (same ease as the
-   panel slide); while the panel is being drag-resized both move 1:1. */
-.os-shell {
-  transition: margin-right 420ms var(--ease);
-}
-html.conductor-dragging .os-shell {
-  transition: none;
-}
+/* No Conductor dock exists in this cockpit — nothing ever sets --conductor-w,
+   so the old margin-right glide was dead code that only animated a layout
+   property. A dock built here adds its motion with transform instead. */
 
 /* G-Brain graph motion: flowing synapses on the edges, orbiting live agents,
    breathing task nodes, and the synthesizing shimmer. */
@@ -773,10 +770,6 @@ html.conductor-dragging .os-shell {
 @keyframes task-dot-flash {
   0%, 100% { opacity: 0.35; }
   50% { opacity: 1; }
-}
-@keyframes synth-sweep {
-  from { background-position: 180% 0; }
-  to { background-position: -20% 0; }
 }
 .kg-synapse {
   stroke-dasharray: 0.14 0.86;
@@ -826,12 +819,4 @@ html.conductor-dragging .os-shell {
 }
 .task-live-dot {
   animation: task-dot-flash 1.5s ease-in-out infinite;
-}
-.synth-shimmer {
-  background: linear-gradient(90deg, var(--dim) 0%, var(--text) 50%, var(--dim) 100%);
-  background-size: 200% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  animation: synth-sweep 1.6s linear infinite;
 }

@@ -1,284 +1,310 @@
 export const dynamic = 'force-dynamic';
 
-import { readHeartbeat, readLanes, readSelfRepair, readDecisions, readLayers } from '@/lib/founderos';
+import Link from 'next/link';
+import { Activity, CheckCheck, Inbox, TriangleAlert } from 'lucide-react';
+import { readHeartbeat, readLanes, readSelfRepair, type LaneStat } from '@/lib/founderos';
+import { readOpenDecisions, readIssues, type IssueSummary } from '@/lib/sources';
+import { readInbox } from '@/lib/inbox';
 import { PageHeader } from '@/components/PageHeader';
-import { Dot, Badge, SectionHead } from '@/components/terminal';
-import type { LaneStat, RepairEntry } from '@/lib/founderos';
+import { Dot, SectionTitle } from '@/components/terminal';
+import { Tile, TileGrid, type TileMark } from '@/components/Tile';
+import { DecisionCard, DecisionRow, statusIndonesia } from '@/components/DecisionCard';
+import {
+  butuhJawaban,
+  gabung,
+  nyangkut,
+  umurMs,
+  urutkan,
+  type Menunggu,
+} from '@/components/keputusan';
+import { durasi, judulSingkat, sapaan, umurSingkat } from '@/components/waktu';
 
-function formatRelativeTime(value: string | number): string {
-  const then = typeof value === 'number' ? new Date(value).getTime() : new Date(value).getTime();
-  const now = Date.now();
-  const diffMs = Math.max(0, now - then);
-  const sec = Math.floor(diffMs / 1000);
-  if (sec < 60) return `sejak ${sec} detik lalu`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `sejak ${min} menit lalu`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `sejak ${hr} jam lalu`;
-  const day = Math.floor(hr / 24);
-  return `sejak ${day} hari lalu`;
-}
+const FOKUS =
+  'focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-os-accent';
 
-function formatDuration(ms: number): string {
-  const totalMinutes = Math.max(0, Math.round(ms / 60000));
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  return `${minutes}m`;
-}
+/** How many of the waiting queue to preview under the one being answered. */
+const PRATINJAU = 4;
 
-// Derives the status cell for a lane from its real numbers, not from a single
-// flag. A lane that has run and never succeeded must never read "ok"; a lane
-// whose success rate is at or below half is degraded, not healthy. Quota state
-// is reported separately and never reads as "ready" once the flag is set, even
-// when the cooldown window has elapsed.
-function laneStatus(lane: LaneStat): { tone: 'ok' | 'warn' | 'err'; label: string; ghost?: boolean } {
-  if (lane.quotaExhausted) {
-    if (lane.cooldownRemainingMs > 0) {
-      return { tone: 'warn', label: `cooldown ${formatDuration(lane.cooldownRemainingMs)}` };
-    }
-    return { tone: 'warn', label: 'quota exhausted' };
-  }
-  if (lane.runs === 0) {
-    return { tone: 'warn', label: 'no runs', ghost: true };
-  }
-  if (lane.ok === 0) {
-    return { tone: 'err', label: 'no successful runs' };
-  }
-  const successRate = Math.round((lane.ok / lane.runs) * 100);
-  if (successRate <= 50) {
-    return { tone: 'warn', label: `${successRate}% — degraded` };
-  }
-  return { tone: 'ok', label: 'ok', ghost: true };
-}
+/** The line between "waiting" and "waiting too long", in the tiles. */
+const EMPAT_HARI = 4 * 24 * 60 * 60 * 1000;
 
-// Maps a repair outcome to a Dot state. `repaired`/`ok` are healthy, `reverted`/
-// `failed` are errors, `skipped` is inert (off), anything else is uncertain.
-// Matching is anchored to avoid false positives (e.g. "broken" containing "ok").
-function repairState(outcome: string): 'ok' | 'warn' | 'err' | 'off' {
-  const o = outcome.toLowerCase();
-  if (o === 'ok' || o === 'repaired' || o.includes('repair')) return 'ok';
-  if (o.includes('revert') || o.includes('fail')) return 'err';
-  if (o.includes('skip')) return 'off';
-  return 'warn';
-}
+/** "Last night" for the repair tile: the window the owner slept through. */
+const SEMALAM = 24 * 60 * 60 * 1000;
 
-interface CollapsedRepair {
-  name: string;
-  type: string;
-  outcome: string;
-  reason: string;
-  ts: number;
-  repeat: number;
-}
+const DAFTAR = 'overflow-hidden rounded-md-t border border-os-border bg-os-surface';
+const BARIS = 'flex min-h-[44px] items-center gap-3 border-b border-os-hairline px-3 last:border-b-0';
 
-// Collapses consecutive repair entries that share name, outcome and reason into
-// a single line carrying a repeat count. `repairs` arrives newest-first, so the
-// first entry of each run is the most recent — its timestamp is the one shown.
-function collapseRepairs(repairs: RepairEntry[]): CollapsedRepair[] {
-  const out: CollapsedRepair[] = [];
-  for (const r of repairs) {
-    const last = out[out.length - 1];
-    if (last && last.name === r.name && last.outcome === r.outcome && last.reason === r.reason) {
-      last.repeat += 1;
-      continue;
-    }
-    out.push({ name: r.name, type: r.type, outcome: r.outcome, reason: r.reason, ts: r.ts, repeat: 1 });
-  }
-  return out;
-}
-
-function EmptyState({ file }: { file: string }) {
+function Kosong({ children }: { children: React.ReactNode }) {
   return (
-    <div className="border border-os-border bg-os-surface p-4 text-xs text-os-muted">
-      <span className="inline-flex items-center gap-2">
-        <Dot state="off" />
-        source missing — <span className="text-os-dim">{file}</span> not found
-      </span>
-    </div>
+    <p className="flex min-h-[44px] items-center gap-2.5 rounded-md-t border border-os-border bg-os-surface px-4 py-3 text-[13px] text-os-muted">
+      <Dot state="ok" />
+      {children}
+    </p>
   );
 }
 
+function SumberMati({ apa }: { apa: string }) {
+  return (
+    <p className="flex min-h-[44px] items-center gap-2.5 rounded-md-t border border-os-border bg-os-surface px-4 py-3 text-[13px] text-os-muted">
+      <Dot state="off" />
+      <span className="min-w-0">
+        <span className="font-semibold text-os-text">{apa} nggak kebaca.</span> Angkanya sengaja
+        dikosongin.
+      </span>
+    </p>
+  );
+}
+
+// A lane is only called out when its own numbers say something is wrong: the
+// quota is spent, or it has been called enough times to know the failures are a
+// pattern and not one bad night.
+function laneBermasalah(lane: LaneStat): string | null {
+  if (lane.quotaExhausted) {
+    return lane.cooldownRemainingMs > 0
+      ? `jatah habis · pulih ${durasi(lane.cooldownRemainingMs)} lagi`
+      : 'jatah mingguannya habis';
+  }
+  if (lane.runs >= 3 && lane.ok === 0) return `${lane.runs}x dipanggil, nol jadi`;
+  if (lane.runs >= 3 && lane.ok / lane.runs <= 0.5) {
+    return `cuma ${Math.round((lane.ok / lane.runs) * 100)}% yang jadi`;
+  }
+  return null;
+}
+
+// One mark per real item, ordered ok / warn / bad. Nothing is padded and nothing
+// is invented — the row length is exactly the count the tile already shows, so
+// the marks cannot drift away from the number above them.
+function tanda(ok: number, warn: number, bad: number, idle = 0): TileMark[] {
+  return [
+    ...Array<TileMark>(Math.max(0, ok)).fill('ok'),
+    ...Array<TileMark>(Math.max(0, warn)).fill('warn'),
+    ...Array<TileMark>(Math.max(0, bad)).fill('bad'),
+    ...Array<TileMark>(Math.max(0, idle)).fill('idle'),
+  ];
+}
+
 export default async function Page() {
-  const [heartbeat, lanes, repairs, decisions, layers] = await Promise.all([
+  const [heartbeat, lanes, openDecisions, inbox, issues, repairs] = await Promise.all([
     readHeartbeat(),
     readLanes(),
-    readSelfRepair(5),
-    readDecisions(),
-    readLayers(),
+    readOpenDecisions(),
+    readInbox(),
+    readIssues(),
+    readSelfRepair(150),
   ]);
 
-  const overallState = heartbeat === null ? 'off' : heartbeat.failed === 0 ? 'ok' : 'err';
-  const overallLabel =
-    heartbeat === null ? 'unknown' : heartbeat.failed === 0 ? 'operational' : 'degraded';
+  const semua = openDecisions === null ? null : gabung(openDecisions, inbox);
+  const antre = semua === null ? null : urutkan(butuhJawaban(semua));
+  const macet = semua === null ? null : nyangkut(semua);
+  const paling: Menunggu | null = antre && antre.length > 0 ? antre[0] : null;
+  const sisanya = antre ? antre.slice(1) : [];
 
-  const statusOrder = ['implemented', 'partial', 'not-started', 'deferred'] as const;
-  const statusCounts =
-    layers?.reduce<Record<string, number>>((acc, l) => {
-      acc[l.status] = (acc[l.status] ?? 0) + 1;
-      return acc;
-    }, {}) ?? null;
-  const layerBreakdown =
-    statusCounts &&
-    statusOrder
-      .filter((s) => statusCounts[s])
-      .map((s) => `${statusCounts[s]} ${s}`)
-      .join(' · ');
+  const jalan: IssueSummary[] =
+    issues?.filter((i) => i.status === 'in_progress' || i.status === 'in_review') ?? [];
+  const laneRusak = (lanes ?? [])
+    .map((l) => ({ lane: l, sebab: laneBermasalah(l) }))
+    .filter((x): x is { lane: LaneStat; sebab: string } => x.sebab !== null);
+  const totalMacet = (macet?.length ?? 0) + laneRusak.length;
 
-  const collapsedRepairs = repairs ? collapseRepairs(repairs) : null;
+  // Tile 1 — the queue, and how much of it has gone stale on him.
+  const lamaNunggu = (antre ?? []).filter((m) => {
+    const ms = umurMs(m);
+    return ms !== null && ms > EMPAT_HARI;
+  }).length;
+
+  // Tile 2 — what last night's runs actually kept, and what they took back.
+  const semalamIni = (repairs ?? []).filter((r) => Date.now() - r.ts < SEMALAM);
+  const disimpan = semalamIni.filter(
+    (r) => r.outcome === 'repaired' || r.outcome === 'done',
+  ).length;
+  const dibalikin = semalamIni.filter((r) => r.outcome === 'reverted').length;
+
+  // Tile 3 — the oldest thing that is jammed, since that is the one that rots.
+  const capMacet = (macet ?? [])
+    .map((m) => (m.inbox?.sinceIso ? Date.parse(m.inbox.sinceIso) : NaN))
+    .filter((t) => Number.isFinite(t));
+  const tertua = capMacet.length > 0 ? umurSingkat(Math.min(...capMacet)) : null;
 
   return (
-    <main className="min-h-screen bg-os-bg text-os-text px-4 py-6 sm:px-6 sm:py-8 max-w-3xl mx-auto space-y-8">
-      <PageHeader
-        eyebrow="FOUNDEROS"
-        title="Cockpit"
-        right={
-          <div className="flex items-center gap-2 text-xs text-os-muted">
-            <Dot state={overallState} pulse={overallState === 'err'} />
-            <span>{overallLabel}</span>
-          </div>
-        }
-      />
+    <div className="view max-w-[900px] pb-4">
+      {/* No status line under the title: the four tiles below say it in numbers. */}
+      <PageHeader title={`${sapaan()}, Adit`} />
 
-      <section className="space-y-2">
-        <SectionHead label="Heartbeat" />
-        {heartbeat ? (
-          <div className="border border-os-border bg-os-surface p-4 space-y-2">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <Dot state={heartbeat.failed === 0 ? 'ok' : 'err'} pulse={heartbeat.failed !== 0} />
-                <span className="text-sm">
-                  {heartbeat.succeeded}/{heartbeat.total} steps
+      <TileGrid>
+        <Tile
+          icon={Inbox}
+          label="Butuh lo"
+          href="/decisions"
+          tone={antre !== null && antre.length > 0 ? 'butuh' : 'netral'}
+          // Grey, not green: an unanswered decision is not a success. Only the
+          // ones past four days earn a colour, and it is the warning one.
+          marks={antre === null ? undefined : tanda(0, lamaNunggu, 0, antre.length - lamaNunggu)}
+          value={antre === null ? '—' : String(antre.length)}
+          sub={
+            antre === null
+              ? 'papan kerja nggak kebaca'
+              : antre.length === 0
+                ? 'kosong'
+                : lamaNunggu > 0
+                  ? `${lamaNunggu} lewat 4 hari`
+                  : 'semua masih baru'
+          }
+        />
+        <Tile
+          icon={CheckCheck}
+          label="Beres semalam"
+          href="/doctor"
+          value={repairs === null ? '—' : String(disimpan)}
+          marks={repairs === null ? undefined : tanda(disimpan, 0, dibalikin)}
+          sub={
+            repairs === null
+              ? 'catatan nggak kebaca'
+              : dibalikin > 0
+                ? `${dibalikin} dibalikin sendiri`
+                : 'nggak ada yang dibalikin'
+          }
+        />
+        <Tile
+          icon={TriangleAlert}
+          label="Macet"
+          href="/inbox"
+          tone={totalMacet > 0 ? 'buruk' : 'netral'}
+          marks={semua === null && lanes === null ? undefined : tanda(0, 0, totalMacet)}
+          value={semua === null && lanes === null ? '—' : String(totalMacet)}
+          sub={
+            semua === null && lanes === null
+              ? 'sumbernya nggak kebaca'
+              : totalMacet === 0
+                ? 'semua gerak'
+                : tertua
+                  ? `paling lama ${tertua}`
+                  : 'umurnya nggak kecatat'
+          }
+        />
+        <Tile
+          icon={Activity}
+          label="Cek rutin"
+          href="/doctor"
+          value={heartbeat === null ? '—' : `${heartbeat.succeeded}/${heartbeat.total}`}
+          marks={heartbeat === null ? undefined : tanda(heartbeat.succeeded, 0, heartbeat.failed)}
+          sub={
+            heartbeat === null
+              ? 'denyut nggak kebaca'
+              : heartbeat.failed === 0
+                ? 'semua lolos'
+                : `${heartbeat.failed} gagal`
+          }
+        />
+      </TileGrid>
+
+      <section className="mb-8">
+        <SectionTitle count={antre?.length} link="Semua" href="/decisions">
+          Butuh keputusan lo
+        </SectionTitle>
+        {antre === null ? (
+          <SumberMati apa="Papan kerja" />
+        ) : antre.length === 0 ? (
+          <Kosong>Nggak ada yang nunggu lo.</Kosong>
+        ) : (
+          <div className="space-y-4">
+            {paling && <DecisionCard m={paling} />}
+            {sisanya.length > 0 && (
+              <div className={DAFTAR}>
+                <ul>
+                  {sisanya.slice(0, PRATINJAU).map((m) => (
+                    <DecisionRow key={m.d.identifier} m={m} />
+                  ))}
+                </ul>
+                {sisanya.length > PRATINJAU && (
+                  <Link
+                    href="/decisions"
+                    className={`hoverable flex min-h-[44px] items-center border-t border-os-border px-3 text-[13px] font-medium text-os-muted hover:bg-os-surface2 hover:text-os-text ${FOKUS}`}
+                  >
+                    {sisanya.length - PRATINJAU} lagi
+                  </Link>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
+      <section className="mb-8">
+        <SectionTitle
+          count={issues === null ? undefined : jalan.length}
+          link="Semua tugas"
+          href="/tasks"
+        >
+          Lagi dikerjain
+        </SectionTitle>
+        {issues === null ? (
+          <SumberMati apa="Papan kerja" />
+        ) : jalan.length === 0 ? (
+          <Kosong>Lagi nggak ada yang jalan.</Kosong>
+        ) : (
+          <ul className={DAFTAR}>
+            {jalan.map((i) => (
+              <li key={i.identifier} className={BARIS}>
+                <Dot state="warn" />
+                <span className="shrink-0 font-mono text-[12px] text-os-muted">{i.identifier}</span>
+                <span className="min-w-0 flex-1 truncate text-[13px] text-os-text">
+                  {judulSingkat(i.title)}
                 </span>
-              </div>
-              <span className="text-xs text-os-dim">{formatRelativeTime(heartbeat.finishedAt)}</span>
-            </div>
-            {heartbeat.failed > 0 && (
-              <div className="text-xs text-os-err">
-                failing:{' '}
-                {heartbeat.steps
-                  .filter((s) => !s.ok && !s.skipped)
-                  .map((s) => s.name)
-                  .join(', ')}
-              </div>
-            )}
-          </div>
-        ) : (
-          <EmptyState file="heartbeat.json" />
+                <span className="shrink-0 text-[12px] text-os-muted">
+                  {umurSingkat(i.updatedAt) ?? statusIndonesia(i.status)}
+                </span>
+              </li>
+            ))}
+          </ul>
         )}
       </section>
 
-      <section className="space-y-2">
-        <SectionHead label="Lanes" count={lanes?.length} />
-        {lanes ? (
-          <div className="overflow-x-auto border border-os-border bg-os-surface">
-            <table className="w-full text-xs min-w-[480px]">
-              <thead>
-                <tr className="border-b border-os-border text-os-dim">
-                  <th className="text-left font-normal px-3 py-2">lane</th>
-                  <th className="text-right font-normal px-3 py-2">runs</th>
-                  <th className="text-right font-normal px-3 py-2">success</th>
-                  <th className="text-right font-normal px-3 py-2">avg</th>
-                  <th className="text-right font-normal px-3 py-2">status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {lanes.map((lane) => {
-                  const successRate = lane.runs > 0 ? Math.round((lane.ok / lane.runs) * 100) : null;
-                  const status = laneStatus(lane);
-                  return (
-                    <tr key={lane.lane} className="border-b border-os-border last:border-b-0">
-                      <td className="px-3 py-2">{lane.lane}</td>
-                      <td className="px-3 py-2 text-right">{lane.runs}</td>
-                      <td className="px-3 py-2 text-right">
-                        {lane.runs === 0 ? (
-                          <span className="text-os-warn">idle</span>
-                        ) : (
-                          `${successRate}%`
-                        )}
-                      </td>
-                      <td className="px-3 py-2 text-right">
-                        {(lane.avgDurationMs / 1000).toFixed(1)}s
-                      </td>
-                      <td className="px-3 py-2 text-right">
-                        <Badge tone={status.tone} ghost={status.ghost}>
-                          {status.label}
-                        </Badge>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+      <section>
+        <SectionTitle
+          count={semua === null && lanes === null ? undefined : totalMacet}
+          link="Inbox"
+          href="/inbox"
+        >
+          Nyangkut
+        </SectionTitle>
+        {semua === null && lanes === null ? (
+          <SumberMati apa="Papan kerja dan catatan jalur" />
+        ) : totalMacet === 0 ? (
+          <Kosong>Nggak ada yang mentok.</Kosong>
         ) : (
-          <EmptyState file="lanes.json" />
+          <ul className={DAFTAR}>
+            {(macet ?? []).map((m) => {
+              // Only the parts that exist, so a missing attempt count never
+              // leaves a separator hanging on its own.
+              const jejak = [
+                m.inbox && m.inbox.attempts > 0 ? `gagal ${m.inbox.attempts}x` : null,
+                umurSingkat(m.inbox?.sinceIso ?? null),
+              ].filter((s): s is string => s !== null);
+              return (
+                <li key={m.d.identifier} className={BARIS}>
+                  <Dot state="err" />
+                  <span className="shrink-0 font-mono text-[12px] text-os-muted">
+                    {m.d.identifier}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-[13px] text-os-text">
+                    {judulSingkat(m.d.title)}
+                  </span>
+                  {jejak.length > 0 && (
+                    <span className="shrink-0 text-[12px] text-os-muted">{jejak.join(' · ')}</span>
+                  )}
+                </li>
+              );
+            })}
+            {laneRusak.map(({ lane, sebab }) => (
+              <li key={lane.lane} className={BARIS}>
+                <Dot state="warn" />
+                <span className="shrink-0 font-mono text-[12px] text-os-muted">{lane.lane}</span>
+                <span className="min-w-0 flex-1 truncate text-[13px] text-os-text">{sebab}</span>
+              </li>
+            ))}
+          </ul>
         )}
       </section>
-
-      <section className="space-y-2">
-        <SectionHead label="Self-repair" count={repairs?.length} />
-        {repairs ? (
-          repairs.length === 0 ? (
-            <div className="border border-os-border bg-os-surface p-4 flex items-center gap-2 text-xs text-os-muted">
-              <Dot state="ok" />
-              no repair attempts recorded
-            </div>
-          ) : (
-            <ul className="border border-os-border bg-os-surface divide-y divide-os-border">
-              {collapsedRepairs!.map((r, i) => {
-                const state = repairState(r.outcome);
-                return (
-                  <li key={`${r.ts}-${i}`} className="p-3 flex items-start gap-2 text-xs">
-                    <Dot state={state} />
-                    <div className="min-w-0">
-                      <div className="text-os-text">
-                        {r.name} <span className="text-os-dim">· {r.type}</span>
-                        <span className="text-os-dim"> · {r.outcome}</span>
-                        {r.repeat > 1 && (
-                          <span className="text-os-dim"> · ×{r.repeat}</span>
-                        )}
-                      </div>
-                      <div className="text-os-muted">{r.reason}</div>
-                      <div className="text-os-dim">{formatRelativeTime(r.ts)}</div>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          )
-        ) : (
-          <EmptyState file="self-repair.json" />
-        )}
-      </section>
-
-      <section className="space-y-2">
-        <SectionHead label="Ledger" />
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div className="border border-os-border bg-os-surface p-4">
-            {decisions ? (
-              <>
-                <div className="text-2xl text-os-text">{decisions.records.length}</div>
-                <div className="text-xs text-os-muted">decisions logged</div>
-              </>
-            ) : (
-              <EmptyState file="decisions.json" />
-            )}
-          </div>
-          <div className="border border-os-border bg-os-surface p-4">
-            {layers ? (
-              <>
-                <div className="text-2xl text-os-text">{layers.length}</div>
-                <div className="text-xs text-os-muted">
-                  layers{layerBreakdown ? ` · ${layerBreakdown}` : ''}
-                </div>
-              </>
-            ) : (
-              <EmptyState file="layers.json" />
-            )}
-          </div>
-        </div>
-      </section>
-    </main>
+    </div>
   );
 }

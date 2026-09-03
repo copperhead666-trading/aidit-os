@@ -2,6 +2,7 @@
  * Terminal-direction primitives shared across screens.
  * Server-component friendly: no state, no handlers.
  */
+import Link from 'next/link';
 
 export type DotState = 'ok' | 'warn' | 'err' | 'off';
 
@@ -31,12 +32,16 @@ export function Dot({ state, pulse = false }: { state: string; pulse?: boolean }
 
 export type BadgeTone = 'default' | 'accent' | 'ok' | 'warn' | 'err';
 
+// The tone lives in the border and the wash; the label itself stays --text so a
+// 9.5px chip is legible on every skin. As coloured text, --warn reaches only
+// 3.7:1 and --ok 3.9:1 on the warm-paper and daylight backgrounds — both under
+// the 4.5:1 floor for text this small.
 const BADGE_TONE: Record<BadgeTone, string> = {
   default: 'border-os-border-strong text-os-muted',
-  accent: 'border-[var(--accent-line)] bg-[var(--accent-soft)] text-os-accent',
-  ok: 'border-[color-mix(in_oklab,var(--ok)_35%,transparent)] bg-[color-mix(in_oklab,var(--ok)_9%,transparent)] text-os-ok',
-  warn: 'border-[color-mix(in_oklab,var(--warn)_35%,transparent)] bg-[color-mix(in_oklab,var(--warn)_9%,transparent)] text-os-warn',
-  err: 'border-[color-mix(in_oklab,var(--err)_35%,transparent)] bg-[color-mix(in_oklab,var(--err)_9%,transparent)] text-os-err',
+  accent: 'border-[var(--accent-line)] bg-[var(--accent-soft)] text-os-text',
+  ok: 'border-[color-mix(in_oklab,var(--ok)_45%,transparent)] bg-[color-mix(in_oklab,var(--ok)_9%,transparent)] text-os-text',
+  warn: 'border-[color-mix(in_oklab,var(--warn)_45%,transparent)] bg-[color-mix(in_oklab,var(--warn)_9%,transparent)] text-os-text',
+  err: 'border-[color-mix(in_oklab,var(--err)_45%,transparent)] bg-[color-mix(in_oklab,var(--err)_9%,transparent)] text-os-text',
 };
 
 export function Badge({
@@ -50,7 +55,7 @@ export function Badge({
 }) {
   return (
     <span
-      className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm-t border px-2 py-[3px] font-mono text-[9.5px] uppercase tracking-[0.14em] ${BADGE_TONE[tone]} ${
+      className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm-t border px-2 py-[3px] font-sans text-[12px] font-medium uppercase tracking-[0.06em] ${BADGE_TONE[tone]} ${
         ghost ? 'border-dashed' : ''
       }`}
     >
@@ -70,9 +75,12 @@ export function Label({
   rule?: boolean;
 }) {
   return (
-    <div className="flex items-center gap-2 font-mono text-[10px] font-bold uppercase tracking-[0.26em] text-os-dim">
+    // --text-3 is 2.8:1 on the Monolith black and 4.3:1 on the light paper, so
+    // section labels ride on --text-2 instead: same greyscale role, but legible
+    // at 10px in both themes.
+    <div className="flex items-center gap-2 font-sans text-[12px] font-semibold uppercase tracking-[0.09em] text-os-muted">
       <span className="whitespace-nowrap">{children}</span>
-      {count != null && <span className="text-os-muted">{count}</span>}
+      {count != null && <span className="font-mono text-os-text">{count}</span>}
       {rule && <span className="h-px flex-1 bg-os-border" />}
     </div>
   );
@@ -97,7 +105,10 @@ export function SectionHead({
         </Label>
       </div>
       {link && href && (
-        <a href={href} className="shrink-0 font-mono text-[11px] text-os-dim transition-colors hover:text-os-accent">
+        <a
+          href={href}
+          className="-my-3 inline-flex shrink-0 items-center py-3 font-sans text-[12px] font-medium text-os-muted transition-colors hover:text-os-accent focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-os-accent"
+        >
           {link} →
         </a>
       )}
@@ -105,9 +116,47 @@ export function SectionHead({
   );
 }
 
+/**
+ * A real heading over a block of content, for the two owner-facing screens.
+ * `SectionHead` above is the machine-room label used everywhere else; this one
+ * is what a person reads on a phone at 6am.
+ */
+export function SectionTitle({
+  children,
+  count,
+  link,
+  href,
+}: {
+  children: React.ReactNode;
+  count?: string | number;
+  link?: string;
+  href?: string;
+}) {
+  return (
+    <div className="mb-3 flex items-baseline justify-between gap-3">
+      {/* Wraps rather than truncates: a clipped heading on a narrow phone is a
+          worse failure than a second line. */}
+      <h2 className="min-w-0 font-sans text-[16px] font-semibold leading-snug tracking-[-0.01em] text-os-text">
+        {children}
+        {count != null && (
+          <span className="ml-2 font-mono text-[13px] font-normal text-os-muted">{count}</span>
+        )}
+      </h2>
+      {link && href && (
+        <Link
+          href={href}
+          className="-my-3 inline-flex shrink-0 items-center py-3 font-sans text-[13px] font-medium text-os-muted transition-colors hover:text-os-accent focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-os-accent"
+        >
+          {link}
+        </Link>
+      )}
+    </div>
+  );
+}
+
 export function Kbd({ children }: { children: React.ReactNode }) {
   return (
-    <kbd className="rounded-sm-t border border-os-border-strong border-b-2 bg-os-surface px-1.5 py-0.5 font-mono text-[10px] text-os-muted">
+    <kbd className="rounded-sm-t border border-os-border-strong bg-os-surface px-1.5 py-0.5 font-mono text-[12px] text-os-muted">
       {children}
     </kbd>
   );

@@ -55,14 +55,14 @@ export function ThemeToggle() {
         title="Choose a theme"
         aria-label="Choose a theme"
         aria-expanded={open}
-        className="grid h-[30px] w-[30px] place-items-center rounded-sm-t border border-os-border bg-os-surface text-os-muted transition-colors hover:border-os-border-strong hover:text-os-text"
+        className="grid h-11 w-11 place-items-center rounded-sm-t border border-os-border bg-os-surface text-os-muted transition-colors hover:border-os-border-strong hover:text-os-text"
       >
         <Palette className="h-3.5 w-3.5" />
       </button>
 
       {open && (
         <div className="absolute right-0 top-9 z-50 w-56 rounded-sm-t border border-os-border-strong bg-os-surface p-1 shadow-lg">
-          <div className="px-2 pb-1 pt-1.5 font-mono text-[9px] uppercase tracking-[0.16em] text-os-dim">Theme</div>
+          <div className="px-2 pb-1 pt-1.5 font-sans text-[12px] font-semibold uppercase tracking-[0.09em] text-os-muted">Theme</div>
           {THEMES.map((t) => {
             const meta = THEME_META[t];
             const active = t === theme;
@@ -84,8 +84,8 @@ export function ThemeToggle() {
                   ))}
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block text-[11px] font-semibold leading-tight">{meta.name}</span>
-                  <span className="block truncate font-mono text-[9px] text-os-dim">{meta.blurb}</span>
+                  <span className="block text-[12px] font-semibold leading-tight">{meta.name}</span>
+                  <span className="block truncate font-sans text-[12px] text-os-muted">{meta.blurb}</span>
                 </span>
                 {active && <Check className="h-3.5 w-3.5 shrink-0 text-os-accent" />}
               </button>

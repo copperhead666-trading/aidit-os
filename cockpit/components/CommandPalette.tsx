@@ -93,11 +93,11 @@ export function CommandPalette({ commands }: { commands: Command[] }) {
             }
           }}
           placeholder="Jump anywhere — views, agents, tools…"
-          className="w-full border-b border-os-border bg-transparent px-[18px] py-4 font-mono text-sm text-os-text outline-none placeholder:text-os-dim"
+          className="w-full border-b border-os-border bg-transparent px-[18px] py-4 font-sans text-[14px] text-os-text outline-none placeholder:text-os-muted"
         />
         <ul className="max-h-80 overflow-y-auto p-1.5">
           {hits.length === 0 && (
-            <li className="px-4 py-6 text-center font-mono text-xs text-os-dim">No matches</li>
+            <li className="px-4 py-6 text-center font-sans text-[13px] text-os-muted">No matches</li>
           )}
           {hits.map((command, i) => (
             <li key={command.id}>
@@ -111,7 +111,7 @@ export function CommandPalette({ commands }: { commands: Command[] }) {
                 <span className="w-3 shrink-0 opacity-60">{i === index ? '›' : ''}</span>
                 <span className="min-w-0 flex-1 truncate">{command.label}</span>
                 {command.hint && (
-                  <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.1em] text-os-dim">
+                  <span className="shrink-0 font-sans text-[12px] font-medium uppercase tracking-[0.06em] text-os-muted">
                     {command.hint}
                   </span>
                 )}
