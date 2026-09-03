@@ -75,6 +75,10 @@ graphify-out/
 # ops-watcher RUNTIME state: rewritten every heartbeat cycle by the daemons.
 # Machine state, not source. Tracking it would make every commit noise.
 ops-watcher/*.lock
+# The ledger's single-writer lock (ops-watcher/ledger.mjs) is written to
+# state/ledger.lock, not next to the module. Without this rule it shows up
+# as untracked noise on every append.
+state/*.lock
 ops-watcher/*.jsonl
 ops-watcher/*-state.json
 ops-watcher/*.state.json
