@@ -99,7 +99,7 @@ export const LANE_PROBES = {
   codex: { kind: "spawn", cmd: ["codex", "--version"], label: "Codex CLI (L6, CORLEONE)" },
 };
 
-// Map a canonical role-map lane STRING (e.g. "L2 glm-5.2:cloud", "L4 Nous free",
+// Map a canonical role-map lane STRING (e.g. "L2 glm-5.3:cloud", "L4 Nous free",
 // "L3 Kimi K3 (256k ctx)") to a probe key. Returns null when no cheap probe
 // exists for that lane (Claude CLI lanes, human-gated, "none", etc.) — the
 // caller then treats the lane as unprobeable rather than guessing available.
@@ -107,7 +107,7 @@ export function laneStringToProbeKey(laneStr) {
   const s = String(laneStr || "").toLowerCase();
   if (!s) return null;
   // L2 = Ollama Cloud (all :cloud models live on the Ollama daemon).
-  if (s.startsWith("l2") || /glm-5\.[12]:cloud|kimi-k2\.7-code:cloud|kimi-k3:cloud|gpt-oss/.test(s)) return "ollama";
+  if (s.startsWith("l2") || /glm-5\.[123]:cloud|kimi-k2\.7-code:cloud|kimi-k3:cloud|gpt-oss/.test(s)) return "ollama";
   // L4 = Nous free / hermes.
   if (s.startsWith("l4") || /nous|hermes/.test(s)) return "nous";
   // L3 = Kimi K3 (heavy context).

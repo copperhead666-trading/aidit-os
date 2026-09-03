@@ -170,7 +170,7 @@ async function t16_allowsHattaFlashDispatchWrapper() {
 
 async function t17_allowsHattaDispatchWrapper() {
   // The node-wrapper-around-HATTA-harness relay for the DEFAULT HATTA lane
-  // (glm-5.2:cloud) — the one headless AHMAD's cold-start prompt now points at
+  // (glm-5.3:cloud) — the one headless AHMAD's cold-start prompt now points at
   // instead of calling hatta/harness.mjs directly, so the default lane is also
   // usage-tracked by logLaneUsage (previously only Flash/SJAHRIR/CORLEONE were
   // tracked). NO env override here (unlike the Flash wrapper) — the child is

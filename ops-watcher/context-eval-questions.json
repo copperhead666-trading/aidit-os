@@ -84,7 +84,7 @@
       "issue": {
         "identifier": "KOL-CTX-06",
         "title": "Summarize the canonical role map from handoffs/sjahrir/CANONICAL-ROLE-MAP.json",
-        "description": "CANONICAL-ROLE-MAP.json defines the agent roster with role_id, department, boundary, default_lane, fallback_lane, disposition. HATTA=L2 glm-5.2:cloud, CORLEONE=L6 Codex, SJAHRIR=L2 kimi-k2.7-code:cloud, GIBRAN=L4 Nous free. Need this for a dispatch that routes work to the correct lane."
+        "description": "CANONICAL-ROLE-MAP.json defines the agent roster with role_id, department, boundary, default_lane, fallback_lane, disposition. HATTA=L2 glm-5.3:cloud, CORLEONE=L6 Codex, SJAHRIR=L2 kimi-k2.7-code:cloud, GIBRAN=L4 Nous free. Need this for a dispatch that routes work to the correct lane."
       },
       "targetRole": "AHMAD",
       "taskKind": "status",

@@ -18,7 +18,7 @@ Every Ahmad dispatch prompt should fit this shape:
 ## Worker Rules
 
 - AHMAD: Claude Code CLI, orchestrator, does not self-modify.
-- HATTA: Ollama Cloud glm-5.2:cloud; bounded maker; has a path jail; times out hard at 8 minutes. Measured over 25 real dispatches on 2026-09-01: 68% success, 335s average — three of the failures were timeouts on packets of roughly 3 KB. Keep its packets under 2 KB and to a single file; anything larger goes to CORLEONE.
+- HATTA: Ollama Cloud glm-5.3:cloud; bounded maker; has a path jail; times out hard at 8 minutes. Measured over 25 real dispatches on 2026-09-01: 68% success, 335s average — three of the failures were timeouts on packets of roughly 3 KB. Keep its packets under 2 KB and to a single file; anything larger goes to CORLEONE.
 - CORLEONE: codex CLI (gpt-5.5); maker and reviewer.
 - SJAHRIR: Kimi Code CLI; implementation; weak on open-ended many-file tasks, give it exact targets.
 - GIBRAN: Hermes Nous free lane; review and analysis only; truncates long list-shaped output.

@@ -1,7 +1,7 @@
 // ops-watcher/hatta-dispatch.mjs
 // Thin node-wrapper relay around HATTA's harness for the DEFAULT HATTA lane
 // (the model hatta/harness.mjs already uses when OLLAMA_MODEL_HATTA is unset —
-// glm-5.2:cloud). This exists so the DEFAULT HATTA lane — the most heavily used
+// glm-5.3:cloud). This exists so the DEFAULT HATTA lane — the most heavily used
 // one, the one headless AHMAD's cold-start prompt previously told it to run via
 // `node hatta/harness.mjs "<prompt>"` directly — is ALSO usage-tracked by the
 // logLaneUsage system (ops-watcher/lane-usage.mjs / lane-usage-report.mjs).
@@ -12,7 +12,7 @@
 // that gap: same structural shape as hatta-flash-dispatch.mjs, sjahrir-dispatch.mjs,
 // and corleone-dispatch.mjs, but WITHOUT any environment override — the child is
 // spawned with a plain `...process.env` passthrough (nothing added or removed), so
-// hatta/harness.mjs falls back to its built-in default model (glm-5.2:cloud) the
+// hatta/harness.mjs falls back to its built-in default model (glm-5.3:cloud) the
 // same way a direct `node hatta/harness.mjs` call always did. Point headless
 // AHMAD at this wrapper instead of calling hatta/harness.mjs directly.
 //
@@ -53,7 +53,7 @@ async function main() {
 
   // Spawn `node hatta/harness.mjs "<prompt>"` with a plain process.env passthrough
   // — NO OLLAMA_MODEL_HATTA override (unlike hatta-flash-dispatch.mjs). This means
-  // hatta/harness.mjs uses its built-in default model (glm-5.2:cloud), exactly as a
+  // hatta/harness.mjs uses its built-in default model (glm-5.3:cloud), exactly as a
   // direct `node hatta/harness.mjs` call always did. process.execPath is the real
   // node binary, so this stays exe=node (consistent with the harness being a node
   // script, not a native binary).

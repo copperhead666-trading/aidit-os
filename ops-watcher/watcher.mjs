@@ -20,7 +20,7 @@ const ROOT = path.resolve(__dirname, "..");
 
 const ENDPOINT_CONFIG_FILE = path.join(ROOT, "config", "paperclip-endpoint.json");
 const OLLAMA_TAGS_URL = "http://localhost:11434/api/tags";
-const HATTA_MODEL = "glm-5.2:cloud";
+const HATTA_MODEL = "glm-5.3:cloud";
 const STUCK_RUNNING_MIN = 45;
 const SEEN_CAP = 5000;
 const POLL_DEFAULT_SEC = 60;

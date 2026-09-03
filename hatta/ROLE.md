@@ -16,7 +16,7 @@ either.
 - Runtime: **Ollama Cloud**, reached via the local Ollama daemon already
   running on this machine (`ollama.exe`, listening on `localhost:11434`),
   which proxies to `https://ollama.com` for an already-authenticated account.
-- Primary model: `glm-5.2:cloud`. Also available on the same account:
+- Primary model: `glm-5.3:cloud`. Also available on the same account:
   `kimi-k2.7-code:cloud`, `glm-5.1:cloud`, `gpt-oss:20b-cloud`.
 - Machine: asus-control
 - No new credential was created. Verified by reusing the existing session:

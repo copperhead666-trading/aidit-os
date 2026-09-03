@@ -19,7 +19,7 @@
       "note": "Confirmed live via GET /api/companies 2026-08-28. This is the single operational-truth company; agent-registry.json stays declarative-only per canonical_boundary_note above."
     },
     "owner_runtime_policy_overrides_this_mission": {
-      "HATTA": "glm-5.2:cloud default; glm-5.3-flash:cloud alternate only (A/B benchmark already closed KEEP CURRENT — do not reopen without contrary real-workload evidence)",
+      "HATTA": "glm-5.3:cloud default; glm-5.3-flash:cloud alternate only (A/B benchmark already closed KEEP CURRENT — do not reopen without contrary real-workload evidence)",
       "GIBRAN": "Nous Free reviewer (unchanged, reconfirms prior fix)",
       "HERMES": "demoted to a lane name (\"L4 Nous free worker\"), not a standing named agent — per OWNER-ROSTER-DECISIONS D-3.2",
       "SJAHRIR": "must probe availability before dispatch; K3-256K default for research/synthesis, K2.7 Code for bounded coding, full K3 reserved for escalation only. Registry admission (D-1.1) now APPROVED by this mission's explicit inclusion of SJAHRIR in the delegation rule.",
@@ -279,7 +279,7 @@
       "machine": "asus-control",
       "runtime": "Ollama Cloud, via the local Ollama daemon already running on this machine (`ollama.exe`, port 11434) proxying to https://ollama.com",
       "provider": "ollama-cloud",
-      "model_if_known": "glm-5.2:cloud (primary); kimi-k2.7-code:cloud, glm-5.1:cloud, gpt-oss:20b-cloud also pulled and available as alternates on the same account",
+      "model_if_known": "glm-5.3:cloud (primary); kimi-k2.7-code:cloud, glm-5.1:cloud, gpt-oss:20b-cloud also pulled and available as alternates on the same account",
       "auth": "Already-authenticated Ollama Cloud session reused as-is — no new credential created. Evidence: `curl localhost:11434/api/tags` lists four `:cloud`-tagged models with `remote_host: https://ollama.com`, which only resolves for a signed-in Ollama Cloud account; a live `/api/chat` completion against glm-5.2:cloud succeeded 2026-08-28.",
       "capacity_isolation": "Ollama Cloud Pro subscription — a separate account/quota pool from AHMAD's Anthropic Claude Code CLI quota and from CORLEONE's/HATTA-candidate-Codex's OpenAI/ChatGPT quota. No shared credential pool with Ahmad.",
       "workspace": "D:\\AI\\Active FounderOS-Aidit\\hatta\\workspace",

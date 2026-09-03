@@ -34,7 +34,7 @@ Requires Node 18+ (uses global `fetch`). No npm install needed.
 | Paperclip | `GET http://127.0.0.1:3101/api/health` | Liveness |
 | Paperclip | `GET http://127.0.0.1:3101/issues` | Issue list (status, `executionLockedAt`, `blockedOwnerNotifiedAt`) |
 | Paperclip | `GET /issues/:id/comments`, `GET /issues/:id/labels` | Per-issue, only when a `REVIEW_REQUIRED` candidate is found |
-| HATTA (Ollama) | `GET http://localhost:11434/api/tags` | Confirms `glm-5.2:cloud` is served |
+| HATTA (Ollama) | `GET http://localhost:11434/api/tags` | Confirms `glm-5.3:cloud` is served |
 | GBrain | `knowledge/store/.gbrain/brain.pglite` | File existence + mtime |
 | Graphify | `graphify-out/active/graph.json`, `graphify-out/legacy/graph.json` | File existence |
 
@@ -64,7 +64,7 @@ heartbeat event and continues.
 
 4. **worker-lane-unavailable** → `AHMAD**
    HATTA technical lane is degraded: either Ollama at `localhost:11434` is
-   unreachable, or `glm-5.2:cloud` is absent from `/api/tags`.
+   unreachable, or `glm-5.3:cloud` is absent from `/api/tags`.
 
 5. **paperclip-unreachable** → `AHMAD`
    `/api/health` did not return a body.

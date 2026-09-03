@@ -24,7 +24,7 @@ Runtime defaults:
 
 - Endpoint: `http://localhost:11434/api/chat`
 - Endpoint override: `OLLAMA_HOST`
-- Model: `glm-5.2:cloud`
+- Model: `glm-5.3:cloud`
 - Model override: `OLLAMA_MODEL_HATTA`
 - Iteration cap: `40`
 - Iteration cap override: `HATTA_MAX_ITER`
@@ -67,7 +67,7 @@ Every run prints exactly one JSON object as its final stdout line:
 {
   "ok": true,
   "iterations": 1,
-  "model": "glm-5.2:cloud",
+  "model": "glm-5.3:cloud",
   "endpoint": "http://localhost:11434/api/chat",
   "toolCalls": [
     {

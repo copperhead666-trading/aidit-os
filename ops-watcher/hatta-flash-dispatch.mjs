@@ -1,13 +1,13 @@
 // ops-watcher/hatta-flash-dispatch.mjs
 // Thin node-wrapper relay around HATTA's harness that FORCES the cheap/fast
 // Flash-tier model (glm-5.3-flash:cloud) instead of HATTA's default heavier
-// model (glm-5.2:cloud). Exists for the same reason sjahrir-dispatch.mjs and
+// model (glm-5.3:cloud). Exists for the same reason sjahrir-dispatch.mjs and
 // corleone-dispatch.mjs exist: headless AHMAD's only execution tool (run_command
 // in ahmad-mcp-server.mjs) requires exe === "node" + a fixed allowlisted .mjs
 // script, AND it cannot set environment variables when calling
 // `node hatta/harness.mjs` directly. HATTA's harness already reads its model
 // from process.env.OLLAMA_MODEL_HATTA (hatta/harness.mjs line 16:
-// `const MODEL = process.env.OLLAMA_MODEL_HATTA || "glm-5.2:cloud";`), so this
+// `const MODEL = process.env.OLLAMA_MODEL_HATTA || "glm-5.3:cloud";`), so this
 // wrapper simply spawns the harness with the child environment overriding that
 // one key to "glm-5.3-flash:cloud" while spreading the rest of process.env
 // (so other inherited vars the harness needs, e.g. OLLAMA_HOST, are preserved).

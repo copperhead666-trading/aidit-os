@@ -20,7 +20,7 @@
       "department": "D1 Executive / Governance",
       "boundary": "maintain WAITING_FOR_OWNER queue only",
       "default_lane": "L4 Nous free",
-      "fallback_lane": "L2 glm-5.2:cloud",
+      "fallback_lane": "L2 glm-5.3:cloud",
       "trigger": "owner-blocker state write",
       "review_requirement": "none (clerical)",
       "disposition": "KEEP (running) - heartbeat step 11, every 5 minutes"
@@ -39,7 +39,7 @@
       "role_id": "HATTA",
       "department": "D2 Engineering",
       "boundary": "all implementation in Active FounderOS-Aidit; workspace-scoped harness",
-      "default_lane": "L2 glm-5.2:cloud",
+      "default_lane": "L2 glm-5.3:cloud",
       "fallback_lane": "L2 kimi-k2.7-code:cloud",
       "trigger": "AHMAD dispatch packet",
       "review_requirement": "TEST-RUNNER then GIBRAN for material changes",
@@ -50,7 +50,7 @@
       "department": "D2 Engineering",
       "boundary": "strong implementation lane via the Codex CLI for bounded FounderOS work; material changes require tests and GIBRAN verdict",
       "default_lane": "L6 Codex",
-      "fallback_lane": "L2 glm-5.2:cloud",
+      "fallback_lane": "L2 glm-5.3:cloud",
       "trigger": "AHMAD dispatch packet",
       "review_requirement": "TEST-RUNNER then GIBRAN for material changes",
       "disposition": "KEEP - new active lane (2026-08-31)"
@@ -70,7 +70,7 @@
       "department": "D2 Engineering",
       "boundary": "read-only extraction from legacy trees into structured notes",
       "default_lane": "L3 Kimi K3 (256k ctx)",
-      "fallback_lane": "L2 glm-5.2:cloud",
+      "fallback_lane": "L2 glm-5.3:cloud",
       "trigger": "migration task packet",
       "review_requirement": "AHMAD spot-check",
       "disposition": "KEEP (paused)"
@@ -170,7 +170,7 @@
       "department": "D7 Project Stewards",
       "boundary": "future remediation implementation; explicit packet only",
       "default_lane": "L5 SOEKARNO (67 trading skills) until lapse",
-      "fallback_lane": "L2 glm-5.2:cloud",
+      "fallback_lane": "L2 glm-5.3:cloud",
       "trigger": "explicit task packet",
       "review_requirement": "GIBRAN + risk-path second review",
       "disposition": "KEEP DORMANT"
