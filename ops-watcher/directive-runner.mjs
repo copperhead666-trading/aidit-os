@@ -42,6 +42,7 @@ import { retrieveDispatchContext } from "./ahmad-context-retrieval.mjs";
 import { deliverAlert } from "./alert-delivery.mjs";
 import { judgeWrite } from "./write-delivery.mjs";
 import { escapeMarkdown, sendMessage as telegramSendMessage } from "./telegram-client.mjs";
+import { resolveSpecialistsForPacket } from "./specialists.mjs";
 // Stage 3 reuse — import, do not rewrite. The snapshot/rollback helpers and the
 // lane registry already implement the same shape for the self-repair path; a
 // directive execution is the same shape with a different trigger. The lane
@@ -420,7 +421,39 @@ function compactJson(v, n = 5000) {
   return s.length > n ? s.slice(0, n) + `\n...[truncated ${s.length - n} chars]` : s;
 }
 
-export function buildPlanPrompt(issue, contextBundle, lastFailure = null) {
+function taskTextForIssue(issue) {
+  return [issue?.title, issue?.description].map((v) => String(v || "").trim()).filter(Boolean).join("\n\n");
+}
+
+async function resolveSpecialistsForIssue(issue, resolver, deps = {}) {
+  const log = deps.log || (() => {});
+  try {
+    return await resolver(taskTextForIssue(issue), deps.specialistDeps || {});
+  } catch (err) {
+    const ident = issue?.identifier || issue?.id || "unknown";
+    log(`directive-runner: specialist resolver failed for ${ident}: ${err && err.message ? err.message : err}`);
+    return null;
+  }
+}
+
+function specialistPromptLines(specialists) {
+  const section = String(specialists?.section || "").trim();
+  if (!section) return [];
+  const hardStops = Array.isArray(specialists?.hardStops) ? specialists.hardStops : [];
+  const requiredStandards = Array.isArray(specialists?.requiredStandards) ? specialists.requiredStandards : [];
+  return [
+    "",
+    `Task class: ${specialists?.taskClass || "unclassified"}`,
+    "HARD STOPS — do not do these:",
+    ...(hardStops.length ? hardStops.map((s) => `- ${s}`) : ["- (none declared)"]),
+    "REQUIRED STANDARDS — file paths the plan must obey:",
+    ...(requiredStandards.length ? requiredStandards.map((s) => `- ${s}`) : ["- (none declared)"]),
+    "",
+    section,
+  ];
+}
+
+export function buildPlanPrompt(issue, contextBundle, lastFailure = null, specialists = null) {
   const ident = issue?.identifier || issue?.id || "unknown";
   const hasLastFailure = lastFailure && typeof lastFailure === "object" && Object.keys(lastFailure).length > 0;
   const previousFailureLines = hasLastFailure
@@ -458,6 +491,7 @@ export function buildPlanPrompt(issue, contextBundle, lastFailure = null) {
     "Scope is only this repository: D:\\AI\\Active FounderOS-Aidit.",
     "Write OBJECTIVE, STEPS, VERIFY, and OUT OF SCOPE in professional Bahasa Indonesia. Keep file paths and commands verbatim.",
     ...previousFailureLines,
+    ...specialistPromptLines(specialists),
     "",
     `Issue: ${ident}`,
     `Title: ${issue?.title || ""}`,
@@ -948,6 +982,8 @@ export async function runDirectiveSweepOnce(deps = {}) {
     log = () => {},
     appendEvidence: appendEvidenceFn = defaultAppendEvidence,
     evidenceLogFile,
+    resolveSpecialistsForPacket: resolveSpecialists = resolveSpecialistsForPacket,
+    specialistDeps,
   } = deps;
 
   // Evidence seam for the sweep itself. executeApprovedDirective already writes
@@ -1216,7 +1252,8 @@ export async function runDirectiveSweepOnce(deps = {}) {
       }
 
       const ctx = await bounded("context retrieval", () => retrieveContext({ issue, targetRole: "CORLEONE", taskKind: "directive-plan", now }), CONTEXT_TIMEOUT_MS);
-      const prompt = buildPlanPrompt(issue, ctx.ok ? ctx.value : { status: "degraded", error: ctx.error }, state.lastPlanFailures?.[key] || inferLastPlanFailure(comments) || null);
+      const specialists = await resolveSpecialistsForIssue(issue, resolveSpecialists, { log, specialistDeps });
+      const prompt = buildPlanPrompt(issue, ctx.ok ? ctx.value : { status: "degraded", error: ctx.error }, state.lastPlanFailures?.[key] || inferLastPlanFailure(comments) || null, specialists);
       const out = await dispatchPlan(prompt, { issue, timeoutMs: PLAN_TIMEOUT_MS });
       const text = cap(out && out.stdout ? out.stdout : out && out.text ? out.text : "");
       const parsed = parsePlan(text);
@@ -1366,7 +1403,7 @@ export async function runDirectiveSweepOnce(deps = {}) {
         const { issue: exIssue, plan: exPlan, identifier: exIdent, issueKey, planKey } = item;
         let result;
         try {
-          result = await execFn(exIssue, exPlan, executeDirectiveDeps || { now });
+          result = await execFn(exIssue, exPlan, executeDirectiveDeps || { now, resolveSpecialistsForPacket: resolveSpecialists, specialistDeps, log });
         } catch (err) {
           result = { outcome: "aborted", reason: `executor-threw: ${String((err && err.message) || err)}` };
         }
@@ -1483,7 +1520,7 @@ export async function runDirectiveSweepOnce(deps = {}) {
 // issue identifier and title; the plan's OBJECTIVE; the EXACT file list (the
 // only files that may change, one per line); the STEPS; the VERIFY command that
 // must pass; and a hard-stop block. Deterministic: same inputs -> same string.
-export function buildExecutionPrompt(issue, plan) {
+export function buildExecutionPrompt(issue, plan, specialists = null) {
   const ident = issue?.identifier || issue?.id || "unknown";
   const title = String(issue?.title || "");
   const objective = String(plan?.objective || "");
@@ -1517,6 +1554,7 @@ export function buildExecutionPrompt(issue, plan) {
     "  - No pm2, no git, no shell, no child processes.",
     "  - No package installs; only Node built-ins and existing local modules.",
     "  - Do NOT weaken, skip, comment out, or delete assertions to make the verification pass.",
+    ...specialistPromptLines(specialists),
   ].join("\n");
 }
 
@@ -1629,6 +1667,8 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
   const guardLaneFn = deps.guardLane || defaultGuardLaneStart;
   const recordOutcomeFn = deps.recordOutcome || defaultRecordLaneOutcome;
   const statFileFn = deps.statFile || defaultStatFile;
+  const resolveSpecialists = deps.resolveSpecialistsForPacket || resolveSpecialistsForPacket;
+  const log = deps.log || (() => {});
 
   let chosenLane = null;
 
@@ -1695,7 +1735,8 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
     for (const f of files) before.push(await statEntry(f));
 
     // 6. Dispatch the execution prompt, then record the lane outcome.
-    const prompt = buildExecutionPrompt(issue, plan);
+    const specialists = await resolveSpecialistsForIssue(issue, resolveSpecialists, { log, specialistDeps: deps.specialistDeps });
+    const prompt = buildExecutionPrompt(issue, plan, specialists);
     const dispatchFn = deps.dispatchExecution || makeDefaultDispatchExecution(lane && lane.wrapper);
     const dispatch = await dispatchFn(prompt);
     await recordOutcomeFn(lane && lane.guardName, {

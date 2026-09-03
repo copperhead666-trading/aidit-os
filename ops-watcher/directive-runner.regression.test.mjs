@@ -66,6 +66,75 @@ const goodPlan = [
   "OUT OF SCOPE: Tidak menjalankan network, Telegram, pm2, git, atau package install.",
   "RISK: low",
 ].join("\n");
+const EXPECTED_PLAN_PROMPT_NO_SPECIALIST = String.raw`You are the planning lane for FounderOS-Aidit directive-runner stage 1.
+Produce a short approval plan only. Do not execute anything.
+Your response MUST be exactly this shape and nothing else:
+OBJECTIVE: <one sentence>
+FILES: <comma-separated repo-relative paths this plan will touch, or NONE>
+STEPS:
+- <step>
+- <step>
+VERIFY: <the single command that proves it worked>
+OUT OF SCOPE: <what this deliberately will not do>
+RISK: low | medium | high
+
+Hard boundary: repo-relative paths only; nothing under ventures/, .git/, .paperclip/; no .env* files; no network; no message to anyone but the owner; no package installs.
+VERIFY contract: the VERIFY line MUST be a single command starting with node ops-watcher/.
+The VERIFY line must not contain ; & or | - not even inside a quoted argument. Two commands joined by && will be rejected before the owner ever sees the plan.
+This applies to the --matches regex too: write a regex without | alternation, or pick a different single command.
+Allowed VERIFY for code changes: node ops-watcher/run-all-tests.mjs --only <suite-file>
+Allowed VERIFY for file-content directives: node ops-watcher/verify-file.mjs --path <file> --matches <regex>
+PowerShell, cmd, bash, git, or any other command will be rejected before the owner sees the plan.
+Line contract: VERIFY occupies exactly ONE line, OUT OF SCOPE is the very next line, and RISK the one after that. A VERIFY spread over several lines - a here-string, a backslash continuation, a wrapped command - makes the parser read the continuation where OUT OF SCOPE should be, and the plan is rejected as missing OUT OF SCOPE.
+Nothing may follow the RISK line.
+Scope is only this repository: D:\AI\Active FounderOS-Aidit.
+Write OBJECTIVE, STEPS, VERIFY, and OUT OF SCOPE in professional Bahasa Indonesia. Keep file paths and commands verbatim.
+
+Issue: KOL-1
+Title: Directive
+Description:
+Do work
+
+Context bundle:
+{
+  "status": "ok"
+}`;
+
+const EXPECTED_EXECUTION_PROMPT_NO_SPECIALIST = String.raw`ISSUE: KOL-1
+TITLE: Directive
+
+OBJECTIVE: Menyiapkan perubahan kecil yang diminta owner.
+
+THE EXACT FILES YOU MAY CHANGE (nothing else, listed one per line):
+- ops-watcher/foo.mjs
+- docs/bar.md
+
+STEPS:
+- Baca konteks dan batasi perubahan ke file yang disebut.
+- Terapkan perubahan lalu verifikasi secara lokal.
+
+VERIFY (must pass): node ops-watcher/foo.mjs --check
+
+HARD STOPS — violating any aborts the directive and reverts all changes:
+  - No other file may be created, edited, renamed, or deleted besides those listed above.
+  - Nothing under ventures/ may be touched.
+  - No network, no HTTP, no Telegram, no Paperclip.
+  - No pm2, no git, no shell, no child processes.
+  - No package installs; only Node built-ins and existing local modules.
+  - Do NOT weaken, skip, comment out, or delete assertions to make the verification pass.`;
+
+const specialistPacket = Object.freeze({
+  taskClass: "frontend-design",
+  specialists: ["design-ui-designer"],
+  hardStops: ["Do not touch cockpit/", "Do not invent a new design system"],
+  requiredStandards: ["docs/standards/prompting-standards.md", "docs/standards/frontend-standards.md"],
+  section: [
+    "SPECIALIST VOICE (taskClass: frontend-design) — judge this work the way these roles would:",
+    "",
+    "## UI Designer",
+    "Keep interaction details crisp.",
+  ].join("\n"),
+});
 
 // The EXACT decision-comment prefixes telegram-listener.mjs writes when the
 // owner taps APPROVE / REJECT on a decision card (DECISION_COMMENT_PREFIX in
@@ -363,6 +432,79 @@ await t("buildPlanPrompt VERIFY template says single command, not command(s)", (
   const p = buildPlanPrompt(issue(), { status: "ok" });
   assert.match(p, /VERIFY: <the single command that proves it worked>/);
   assert.doesNotMatch(p, /command\(s\)/);
+});
+await t("buildPlanPrompt without specialists is byte-for-byte unchanged", () => {
+  assert.equal(buildPlanPrompt(issue(), { status: "ok" }), EXPECTED_PLAN_PROMPT_NO_SPECIALIST);
+  assert.equal(buildPlanPrompt(issue(), { status: "ok" }, null, { section: "" }), EXPECTED_PLAN_PROMPT_NO_SPECIALIST);
+});
+
+await t("buildPlanPrompt renders specialist task class, hard stops, standards, and voice in order", () => {
+  const p = buildPlanPrompt(issue(), { status: "ok" }, null, specialistPacket);
+  assert.match(p, /Task class: frontend-design/);
+  assert.match(p, /HARD STOPS — do not do these:/);
+  assert.match(p, /- Do not touch cockpit\//);
+  assert.match(p, /REQUIRED STANDARDS — file paths the plan must obey:/);
+  assert.match(p, /- docs\/standards\/prompting-standards\.md/);
+  assert.match(p, /SPECIALIST VOICE \(taskClass: frontend-design\)/);
+  assert.ok(p.indexOf("HARD STOPS — do not do these:") < p.indexOf("SPECIALIST VOICE (taskClass: frontend-design)"));
+});
+
+await t("sweep specialist resolver failure leaves no-specialist prompt and does not abort", async () => {
+  await resetTmp();
+  const target = issue({ id: "iss-specialist-throw", identifier: "KOL-THROW", title: "Dashboard polish", description: "Design the dashboard" });
+  const comments = { [target.id]: [] };
+  let capturedPrompt = null;
+  const logs = [];
+  const { deps, cards } = makeSweepDeps({ issues: [target], comments, extra: {
+    dispatchPlan: async (prompt) => { capturedPrompt = prompt; return { ok: true, stdout: goodPlan, stderr: "", timedOut: false }; },
+    resolveSpecialistsForPacket: async () => { throw new Error("resolver boom"); },
+    log: (msg) => { logs.push(msg); },
+  } });
+  const summary = await runDirectiveSweepOnce(deps);
+  assert.equal(summary.planned, 1);
+  assert.equal(cards.length, 1);
+  assert.equal(logs.some((msg) => /specialist resolver failed.*resolver boom/.test(msg)), true);
+
+  // The baseline is taken from the sweep itself, with a resolver that simply
+  // returns nothing, rather than from a prompt rebuilt by hand. A hand-built
+  // expectation couples this test to every unrelated part of the prompt (it was
+  // first written that way and broke on the PREVIOUS-ATTEMPT block, which has
+  // nothing to do with specialists). What must hold is narrower and stronger:
+  // a resolver that throws produces the SAME prompt as a resolver that declines.
+  await resetTmp();
+  let baselinePrompt = null;
+  const { deps: baseDeps } = makeSweepDeps({ issues: [target], comments: { [target.id]: [] }, extra: {
+    dispatchPlan: async (prompt) => { baselinePrompt = prompt; return { ok: true, stdout: goodPlan, stderr: "", timedOut: false }; },
+    resolveSpecialistsForPacket: async () => null,
+  } });
+  await runDirectiveSweepOnce(baseDeps);
+  assert.equal(capturedPrompt, baselinePrompt, "a throwing resolver changes nothing about the prompt");
+  assert.equal(/SPECIALIST VOICE|HARD STOPS|Task class:/.test(capturedPrompt), false, "no specialist content leaked in");
+});
+
+await t("unclassified directive keeps the plan prompt unchanged", async () => {
+  await resetTmp();
+  const target = issue({ id: "iss-unclassified", identifier: "KOL-PLAIN", title: "QZXW minor tune", description: "Plain request with no matching packet keywords" });
+  const comments = { [target.id]: [] };
+  let capturedPrompt = null;
+  const { deps } = makeSweepDeps({ issues: [target], comments, extra: {
+    dispatchPlan: async (prompt) => { capturedPrompt = prompt; return { ok: true, stdout: goodPlan, stderr: "", timedOut: false }; },
+  } });
+  const summary = await runDirectiveSweepOnce(deps);
+  assert.equal(summary.planned, 1);
+
+  // Same discipline as the throwing-resolver case: compare against a baseline
+  // the sweep itself produced with a declining resolver, so this asserts the
+  // one thing it means to assert.
+  await resetTmp();
+  let baselinePrompt = null;
+  const { deps: baseDeps } = makeSweepDeps({ issues: [target], comments: { [target.id]: [] }, extra: {
+    dispatchPlan: async (prompt) => { baselinePrompt = prompt; return { ok: true, stdout: goodPlan, stderr: "", timedOut: false }; },
+    resolveSpecialistsForPacket: async () => null,
+  } });
+  await runDirectiveSweepOnce(baseDeps);
+  assert.equal(capturedPrompt, baselinePrompt, "an unclassifiable directive gets the plain prompt");
+  assert.equal(/SPECIALIST VOICE|HARD STOPS|Task class:/.test(capturedPrompt), false, "no specialist content for an unclassified task");
 });
 
 await t("parsePlan parses well-formed plan and rejects missing VERIFY", () => {
@@ -1527,6 +1669,42 @@ await t("buildExecutionPrompt contains identifier, every file, VERIFY, and the n
   assert.match(p, /Do NOT weaken.*assertions/i);
   // Deterministic: same inputs -> same string.
   assert.equal(p, buildExecutionPrompt(issue({ identifier: "KOL-1", title: "Directive" }), plan));
+});
+await t("buildExecutionPrompt without specialists is byte-for-byte unchanged", () => {
+  const plan = parsePlan(goodPlan);
+  assert.equal(buildExecutionPrompt(issue(), plan), EXPECTED_EXECUTION_PROMPT_NO_SPECIALIST);
+  assert.equal(buildExecutionPrompt(issue(), plan, { section: "" }), EXPECTED_EXECUTION_PROMPT_NO_SPECIALIST);
+});
+
+await t("buildExecutionPrompt renders specialist task class, hard stops, standards, and voice in order", () => {
+  const plan = parsePlan(goodPlan);
+  const p = buildExecutionPrompt(issue(), plan, specialistPacket);
+  assert.match(p, /Task class: frontend-design/);
+  assert.match(p, /HARD STOPS — do not do these:/);
+  assert.match(p, /- Do not invent a new design system/);
+  assert.match(p, /REQUIRED STANDARDS — file paths the plan must obey:/);
+  assert.match(p, /- docs\/standards\/frontend-standards\.md/);
+  assert.match(p, /SPECIALIST VOICE \(taskClass: frontend-design\)/);
+  assert.ok(p.indexOf("HARD STOPS — do not do these:") < p.indexOf("SPECIALIST VOICE (taskClass: frontend-design)"));
+});
+
+await t("executeApprovedDirective specialist resolver failure leaves no-specialist execution prompt", async () => {
+  const plan = parsePlan(goodPlan);
+  const made = makeExecDeps({ mutateOnDispatch: false });
+  let capturedPrompt = null;
+  const logs = [];
+  made.deps.resolveSpecialistsForPacket = async () => { throw new Error("resolver boom"); };
+  made.deps.log = (msg) => { logs.push(msg); };
+  made.deps.dispatchExecution = async (prompt) => {
+    capturedPrompt = prompt;
+    made.calls.dispatch++;
+    made.setMutated(true);
+    return { ok: true, stdout: "implementation done", stderr: "" };
+  };
+  const res = await executeApprovedDirective(issue(), plan, made.deps);
+  assert.equal(res.outcome, "done");
+  assert.equal(capturedPrompt, buildExecutionPrompt(issue(), plan));
+  assert.equal(logs.some((msg) => /specialist resolver failed.*resolver boom/.test(msg)), true);
 });
 
 await t("executeApprovedDirective: scope violation -> refused, no snapshot spy call, no dispatch spy call", async () => {
