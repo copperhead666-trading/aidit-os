@@ -2,10 +2,18 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { PanelLeft } from 'lucide-react';
+import { ChevronRight, PanelLeft } from 'lucide-react';
 import { OsMark } from '@/components/OsMark';
 import { usePathname } from 'next/navigation';
-import { NAV_OPERATE, NAV_AGENTS, NAV_INTELLIGENCE, NAV_SYSTEM, type NavItem } from '@/lib/nav';
+import { NAV_PRIMARY, NAV_MORE, type NavItem } from '@/lib/nav';
+import { laneRole } from '@/lib/kata';
+
+/** One lane's week, as the rail shows it. Read on the server, passed down. */
+export interface LaneLine {
+  lane: string;
+  runs: number;
+  quotaExhausted: boolean;
+}
 
 function NavGroup({
   title,
@@ -14,7 +22,7 @@ function NavGroup({
   collapsed,
   onTip,
 }: {
-  title: string;
+  title: string | null;
   items: NavItem[];
   pathname: string;
   collapsed: boolean;
@@ -24,7 +32,7 @@ function NavGroup({
     <>
       {/* Collapsed keeps a divider where the group heading was, so the icon
           run still read as groups rather than one undifferentiated column. */}
-      {collapsed ? (
+      {title === null ? null : collapsed ? (
         <div className="mx-2 my-1.5 border-t border-os-border" aria-label={title} />
       ) : (
         <div className="px-2.5 pb-1.5 pt-3.5 font-sans text-[12px] font-semibold uppercase tracking-[0.09em] text-os-muted">
@@ -69,10 +77,13 @@ const DEFAULT_W = 232;
     dispatches this to slide it in, same pattern as ConductorPanel's open event. */
 export const SIDEBAR_TOGGLE_EVENT = 'sidebar:toggle';
 
-export function Sidebar() {
+export function Sidebar({ lanes = [] }: { lanes?: LaneLine[] }) {
   const pathname = usePathname();
   const [host, setHost] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(false);
+  // The other seven views live behind this. Opened automatically when the
+  // current page is one of them, so the rail never hides where you are.
+  const [moreOpen, setMoreOpen] = useState(false);
   // The nav scrolls, and any scrolling ancestor clips an absolutely positioned
   // child — so the collapsed label is rendered fixed, outside that box.
   const [tip, setTip] = useState<{ label: string; y: number } | null>(null);
@@ -90,6 +101,12 @@ export function Sidebar() {
 
   useEffect(() => {
     setMobileOpen(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    if (NAV_MORE.some((n) => pathname === n.href || pathname.startsWith(`${n.href}/`))) {
+      setMoreOpen(true);
+    }
   }, [pathname]);
 
   useEffect(() => {
@@ -190,13 +207,13 @@ export function Sidebar() {
         {collapsed ? (
           <OsMark size={30} className="shrink-0" />
         ) : (
+          // No second line under the wordmark. It used to read "Read-Only
+          // Cockpit", which stopped being true the day owner actions began
+          // writing to real issues.
           <div className="flex items-center gap-[11px]">
             <OsMark size={34} className="shrink-0" />
-            <div>
-              <div className="text-[14px] font-extrabold tracking-[-0.01em]">FOUNDER OS</div>
-              <div className="mt-[3px] whitespace-nowrap font-sans text-[12px] font-medium text-os-muted">
-                Read-Only Cockpit
-              </div>
+            <div className="font-mono text-[13px] font-semibold tracking-[0.18em] text-os-text">
+              AIDIT OS
             </div>
           </div>
         )}
@@ -212,23 +229,73 @@ export function Sidebar() {
         </button>
       </div>
       <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2.5 pb-2">
-        <NavGroup title="Operate" items={NAV_OPERATE} pathname={pathname} collapsed={collapsed} onTip={setTip} />
-        <NavGroup title="Agents" items={NAV_AGENTS} pathname={pathname} collapsed={collapsed} onTip={setTip} />
-        <NavGroup title="Intelligence" items={NAV_INTELLIGENCE} pathname={pathname} collapsed={collapsed} onTip={setTip} />
-        <NavGroup title="System" items={NAV_SYSTEM} pathname={pathname} collapsed={collapsed} onTip={setTip} />
+        <NavGroup title={null} items={NAV_PRIMARY} pathname={pathname} collapsed={collapsed} onTip={setTip} />
+        {collapsed ? (
+          <NavGroup title="More" items={NAV_MORE} pathname={pathname} collapsed onTip={setTip} />
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => setMoreOpen((v) => !v)}
+              aria-expanded={moreOpen}
+              className="mt-1 flex min-h-[44px] items-center gap-2.5 rounded-sm-t px-2.5 text-left font-sans text-[14px] font-medium text-os-muted transition-colors hover:bg-os-surface2 hover:text-os-text"
+            >
+              <ChevronRight
+                className={`h-[15px] w-[15px] shrink-0 transition-transform duration-150 ${
+                  moreOpen ? 'rotate-90' : ''
+                }`}
+                strokeWidth={1.7}
+              />
+              More
+            </button>
+            {moreOpen && (
+              <NavGroup title={null} items={NAV_MORE} pathname={pathname} collapsed={false} onTip={setTip} />
+            )}
+          </>
+        )}
       </nav>
       <div
         className={`flex flex-col gap-2 border-t border-os-border py-3.5 ${
           collapsed ? 'items-center px-0' : 'px-[18px]'
         }`}
       >
+        {!collapsed && lanes.length > 0 && (
+          // What the workforce actually consumed. This is the only surface that
+          // carries it, and it is the number the owner needs in front of him
+          // when he settles the paid-account question.
+          <div className="mb-1">
+            <div className="pb-2 font-sans text-[12px] font-semibold uppercase tracking-[0.09em] text-os-dim">
+              Lanes this week
+            </div>
+            <ul className="space-y-1.5">
+              {lanes.map((l) => {
+                const role = laneRole(l.lane);
+                return (
+                  <li key={l.lane} className="flex items-baseline justify-between gap-2 text-[12px]">
+                    <span className="min-w-0 truncate text-os-muted">
+                      {l.lane}
+                      {role && <span className="text-os-dim"> · {role}</span>}
+                    </span>
+                    <span
+                      className={`shrink-0 font-mono tabular-nums ${
+                        l.quotaExhausted ? 'text-os-err' : 'text-os-dim'
+                      }`}
+                    >
+                      {l.quotaExhausted ? 'quota out' : `${l.runs} run${l.runs === 1 ? '' : 's'}`}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
         {!collapsed && (
           // The host is read at runtime, so a deployed instance never claims to
           // be localhost. Wraps rather than nowrap, which used to clip the line
           // off the edge of the rail. Nothing else belongs here: the previous
           // "systems live" dot was fed by a value nothing ever supplied, so it
           // pulsed green forever regardless of the real state.
-          <div className="break-words font-mono text-[12px] leading-relaxed text-os-muted">
+          <div className="break-words font-mono text-[12px] leading-relaxed text-os-dim">
             {host ?? '…'}
           </div>
         )}

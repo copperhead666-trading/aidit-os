@@ -1,0 +1,14 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "design-system-color",
+        "value": "#000",
+        "createdAt": "2026-09-03T12:07:30.881Z",
+        "reason": "AHMAD 2026-09-03: the two #000 uses in globals.css are inside -webkit-mask/mask linear-gradient() stencils, where the colour is an alpha matte and any opaque value renders identically. Not a palette choice."
+      }
+    ]
+  }
+}

@@ -52,7 +52,7 @@ export default async function DoctorPage() {
 
   return (
     <div className="flex flex-col gap-8 min-w-0 overflow-x-hidden">
-      <PageHeader eyebrow="cockpit" title="Doctor" />
+      <PageHeader eyebrow="cockpit" title="System" />
 
       <section className="flex flex-col gap-3 min-w-0">
         <SectionHead label="Heartbeat" count={heartbeat ? heartbeat.total : undefined} />

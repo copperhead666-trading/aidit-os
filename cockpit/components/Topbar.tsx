@@ -6,27 +6,36 @@ import { ThemeToggle } from '@/components/ThemeToggle';
 import { OsMark } from '@/components/OsMark';
 import { SIDEBAR_TOGGLE_EVENT } from '@/components/Sidebar';
 
-// Page names the owner would use, not the route slugs. He is not an engineer
-// and 'founder-os / home' told him nothing he did not already know.
+// Page names, not route slugs. English: a page name is frame, not substance.
 const SEGMENT_LABELS: Record<string, string> = {
-  '': 'Beranda',
-  decisions: 'Keputusan',
-  inbox: 'Perlu perhatian',
-  tasks: 'Kerjaan',
-  agents: 'Tenaga kerja',
-  doctor: 'Kesehatan sistem',
-  brain: 'Ingatan',
-  roadmap: 'Rencana',
-  skills: 'Kemampuan',
-  reference: 'Acuan',
-  how: 'Cara pakai',
+  '': 'Brief',
+  case: 'Case',
+  decisions: 'Decisions',
+  inbox: 'Attention',
+  tasks: 'Work',
+  agents: 'Agents',
+  doctor: 'System',
+  brain: 'Memory',
+  roadmap: 'Roadmap',
+  skills: 'Skills',
+  reference: 'Layers',
+  how: 'How to use',
 };
 
 export function openPalette() {
   window.dispatchEvent(new CustomEvent('alex:palette'));
 }
 
-export function Topbar() {
+/**
+ * `check` is the standing answer to "is this thing alive?". Silence and death
+ * look identical without it, and this stack has died with a terminal session
+ * before. Formatted on the server so a client clock cannot disagree with it.
+ */
+export function Topbar({
+  check = null,
+}: {
+  check?: { short: string; full: string; ok: boolean } | null;
+}) {
   const pathname = usePathname();
   const segment = pathname.split('/')[1] ?? '';
   const here = SEGMENT_LABELS[segment] ?? segment;
@@ -45,6 +54,21 @@ export function Topbar() {
       <div className="flex min-w-0 items-center gap-[7px] overflow-hidden font-sans text-[13px] text-os-muted">
         <span className="truncate text-os-text">{here}</span>
       </div>
+      {check && (
+        // Never hidden on a phone: the phone is the surface he actually opens,
+        // and a proof of life that only appears on a laptop proves nothing at
+        // six in the morning. Only the words are dropped, never the reading.
+        <span
+          className={`ml-2 inline-flex shrink-0 items-center gap-1.5 font-mono text-[12px] tabular-nums sm:ml-3 sm:gap-2 ${
+            check.ok ? 'text-os-dim' : 'text-os-err'
+          }`}
+          title={check.full}
+        >
+          <span className={`dot ${check.ok ? 'ok' : 'err'}`} />
+          <span className="sm:hidden">{check.short}</span>
+          <span className="hidden sm:inline">{check.full}</span>
+        </span>
+      )}
       <div className="ml-auto flex shrink-0 items-center gap-2 sm:gap-2.5">
         <ThemeToggle />
         <button

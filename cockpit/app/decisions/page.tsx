@@ -1,13 +1,12 @@
 export const dynamic = 'force-dynamic';
 
-import { Activity, Inbox, ListChecks, TriangleAlert } from 'lucide-react';
 import { readDecisions, type DecisionRecord } from '@/lib/founderos';
 import { readOpenDecisions } from '@/lib/sources';
 import { readInbox } from '@/lib/inbox';
 import { PageHeader } from '@/components/PageHeader';
 import { Badge, Dot, SectionHead, SectionTitle } from '@/components/terminal';
-import { Tile, TileGrid } from '@/components/Tile';
-import { DecisionCard, statusIndonesia } from '@/components/DecisionCard';
+import { Strip, type Angka } from '@/components/Strip';
+import { DecisionCard } from '@/components/DecisionCard';
 import {
   butuhJawaban,
   gabung,
@@ -17,34 +16,36 @@ import {
   urutkan,
 } from '@/components/keputusan';
 import { judulSingkat, umurSingkat } from '@/components/waktu';
+import { FRAME, statusLabel } from '@/lib/kata';
 
 /** The line between "waiting" and "waiting too long", in the tiles. */
 const EMPAT_HARI = 4 * 24 * 60 * 60 * 1000;
 
 const DAFTAR = 'overflow-hidden rounded-md-t border border-os-border bg-os-surface';
 
-// The ledger speaks in schema words. These are the same things said out loud.
+// The ledger speaks in schema words. These are the same things named for a
+// reader. Names are frame text, so English.
 const JENIS_ID: Record<string, string> = {
-  DECISION: 'Yang udah diputusin',
-  PRINCIPLE: 'Prinsip yang lo pegang',
-  HISTORICAL_STATE: 'Keadaan lama',
-  IMPLEMENTATION_REALITY: 'Kenyataan di lapangan',
-  AGENT_GENERATED: 'Dibikin agen',
-  DESIGN_REQUIRED: 'Masih perlu dirancang',
-  EXTERNAL_VERIFICATION: 'Perlu dicek pihak luar',
+  DECISION: 'Decided',
+  PRINCIPLE: 'Standing principle',
+  HISTORICAL_STATE: 'Historical state',
+  IMPLEMENTATION_REALITY: 'Implementation reality',
+  AGENT_GENERATED: 'Agent-generated',
+  DESIGN_REQUIRED: 'Needs design',
+  EXTERNAL_VERIFICATION: 'Needs external check',
 };
 
 const ASAL_ID: Record<string, string> = {
-  OWNER_DECISION: 'keputusan lo',
-  DIRECT_OWNER_STATEMENT: 'ucapan langsung lo',
-  OWNER_APPROVED: 'lo setujui',
-  OWNER_REQUIRED: 'nunggu lo',
-  UNKNOWN: 'asalnya nggak jelas',
-  SUPERSEDED: 'udah diganti',
-  IMPLEMENTATION_REALITY: 'kenyataan di lapangan',
-  AGENT_GENERATED: 'dibikin agen',
-  DESIGN_REQUIRED: 'belum dirancang',
-  LEGAL_REVIEW_REQUIRED: 'nunggu cek hukum',
+  OWNER_DECISION: 'owner decision',
+  DIRECT_OWNER_STATEMENT: 'owner said it directly',
+  OWNER_APPROVED: 'owner approved',
+  OWNER_REQUIRED: 'awaiting owner',
+  UNKNOWN: 'origin unknown',
+  SUPERSEDED: 'superseded',
+  IMPLEMENTATION_REALITY: 'implementation reality',
+  AGENT_GENERATED: 'agent-generated',
+  DESIGN_REQUIRED: 'not designed yet',
+  LEGAL_REVIEW_REQUIRED: 'awaiting legal check',
 };
 
 function terjemah(kamus: Record<string, string>, kunci: string): string {
@@ -56,8 +57,8 @@ function SumberMati({ apa }: { apa: string }) {
     <p className="flex min-h-[44px] items-center gap-2.5 rounded-md-t border border-os-border bg-os-surface px-4 py-3 text-[13px] text-os-muted">
       <Dot state="off" />
       <span className="min-w-0">
-        <span className="font-semibold text-os-text">{apa} nggak kebaca.</span> Isinya sengaja
-        dikosongin.
+        <span className="font-semibold text-os-text">{apa} tidak terbaca.</span> Isinya sengaja
+        dikosongkan.
       </span>
     </p>
   );
@@ -90,10 +91,10 @@ function BarisCatatan({ r }: { r: DecisionRecord }) {
           ·
         </span>
         <span>{terjemah(ASAL_ID, r.status)}</span>
-        {r.canonical === true && <Badge tone="accent">resmi</Badge>}
+        {r.canonical === true && <Badge tone="accent">canonical</Badge>}
         {typeof r.migrated_from === 'string' && (
           <Badge tone="default" ghost>
-            pindahan
+            migrated
           </Badge>
         )}
       </div>
@@ -115,17 +116,10 @@ export default async function DecisionsPage() {
   const jalan = semua === null ? null : lagiJalan(semua);
   const records = ledger?.records ?? null;
 
-  const resmi = records?.filter((r) => r.canonical === true).length ?? 0;
-
   const lamaNunggu = (antre ?? []).filter((m) => {
     const ms = umurMs(m);
     return ms !== null && ms > EMPAT_HARI;
   }).length;
-
-  const capMacet = (macet ?? [])
-    .map((m) => (m.inbox?.sinceIso ? Date.parse(m.inbox.sinceIso) : NaN))
-    .filter((t) => Number.isFinite(t));
-  const tertua = capMacet.length > 0 ? umurSingkat(Math.min(...capMacet)) : null;
 
   // Groups ordered largest first, ties alphabetically — the same ordering the
   // ledger page has always used, kept so the page does not reshuffle on reload.
@@ -139,61 +133,41 @@ export default async function DecisionsPage() {
     b[1].length !== a[1].length ? b[1].length - a[1].length : a[0].localeCompare(b[0]),
   );
 
+  const angka: Angka[] = [
+    {
+      value: antre === null ? '—' : String(antre.length),
+      label: 'Awaiting',
+      tone: antre !== null && antre.length > 0 ? 'accent' : 'plain',
+    },
+    {
+      value: antre === null ? '—' : String(lamaNunggu),
+      label: '4+ days',
+      tone: lamaNunggu > 0 ? 'err' : 'plain',
+    },
+    {
+      value: macet === null ? '—' : String(macet.length),
+      label: 'Blocked',
+      tone: macet !== null && macet.length > 0 ? 'err' : 'plain',
+    },
+    {
+      value: records === null ? '—' : String(records.length),
+      label: 'Ledger',
+      tone: 'plain',
+    },
+  ];
+
   return (
     <div className="view max-w-[900px] pb-4">
-      <PageHeader title="Keputusan" />
+      <PageHeader title="Decisions" />
 
-      <TileGrid>
-        <Tile
-          icon={Inbox}
-          label="Nunggu lo"
-          tone={antre !== null && antre.length > 0 ? 'butuh' : 'netral'}
-          value={antre === null ? '—' : String(antre.length)}
-          sub={
-            antre === null
-              ? 'papan kerja nggak kebaca'
-              : antre.length === 0
-                ? 'kosong'
-                : lamaNunggu > 0
-                  ? `${lamaNunggu} lewat 4 hari`
-                  : 'semua masih baru'
-          }
-        />
-        <Tile
-          icon={TriangleAlert}
-          label="Nyangkut"
-          tone={macet !== null && macet.length > 0 ? 'buruk' : 'netral'}
-          value={macet === null ? '—' : String(macet.length)}
-          sub={
-            macet === null
-              ? 'papan kerja nggak kebaca'
-              : macet.length === 0
-                ? 'nggak ada'
-                : tertua
-                  ? `paling lama ${tertua}`
-                  : 'umurnya nggak kecatat'
-          }
-        />
-        <Tile
-          icon={Activity}
-          label="Dikerjain"
-          value={jalan === null ? '—' : String(jalan.length)}
-          sub={jalan === null ? 'papan kerja nggak kebaca' : 'nggak butuh lo'}
-        />
-        <Tile
-          icon={ListChecks}
-          label="Tercatat"
-          value={records === null ? '—' : String(records.length)}
-          sub={records === null ? 'buku keputusan nggak kebaca' : `${resmi} pegangan resmi`}
-        />
-      </TileGrid>
+      <Strip figures={angka} />
 
-      <section className="mb-9">
-        <SectionTitle count={antre?.length}>Nunggu jawaban lo</SectionTitle>
+      <section className="mb-9 mt-6">
+        <SectionTitle count={antre?.length}>{FRAME.awaitingYou}</SectionTitle>
         {antre === null ? (
           <SumberMati apa="Papan kerja" />
         ) : antre.length === 0 ? (
-          <Kosong>Nggak ada yang nunggu lo.</Kosong>
+          <Kosong>Tidak ada yang menunggu Anda.</Kosong>
         ) : (
           <div className="space-y-4">
             {antre.map((m) => (
@@ -205,7 +179,7 @@ export default async function DecisionsPage() {
 
       {macet !== null && macet.length > 0 && (
         <section className="mb-9">
-          <SectionTitle count={macet.length}>Nyangkut — butuh arahan baru</SectionTitle>
+          <SectionTitle count={macet.length}>Blocked — needs new direction</SectionTitle>
           <div className="space-y-4">
             {macet.map((m) => (
               <DecisionCard key={m.d.identifier} m={m} />
@@ -216,7 +190,7 @@ export default async function DecisionsPage() {
 
       {jalan !== null && jalan.length > 0 && (
         <section className="mb-9">
-          <SectionTitle count={jalan.length}>Lagi dikerjain</SectionTitle>
+          <SectionTitle count={jalan.length}>In progress</SectionTitle>
           <ul className={DAFTAR}>
             {jalan.map((m) => (
               <li
@@ -230,7 +204,7 @@ export default async function DecisionsPage() {
                   {judulSingkat(m.d.title)}
                 </span>
                 <span className="shrink-0 text-[12px] text-os-muted">
-                  {umurSingkat(m.inbox?.sinceIso ?? null) ?? statusIndonesia(m.d.status)}
+                  {umurSingkat(m.inbox?.sinceIso ?? null) ?? statusLabel(m.d.status)}
                 </span>
               </li>
             ))}
@@ -239,7 +213,7 @@ export default async function DecisionsPage() {
       )}
 
       <section>
-        <SectionTitle count={records?.length}>Yang udah pernah diputusin</SectionTitle>
+        <SectionTitle count={records?.length}>The ledger</SectionTitle>
         {records === null ? (
           <SumberMati apa="Buku keputusan" />
         ) : records.length === 0 ? (

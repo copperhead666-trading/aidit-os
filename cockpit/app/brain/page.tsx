@@ -23,7 +23,7 @@ export default async function BrainPage() {
   if (sources === null) {
     return (
       <div>
-        <PageHeader title="G-Brain" />
+        <PageHeader title="Memory" />
         <div className="mt-6 border border-os-border bg-os-surface p-4">
           <div className="flex items-center gap-2">
             <Dot state="err" />
@@ -40,7 +40,7 @@ export default async function BrainPage() {
   if (sources.length === 0) {
     return (
       <div>
-        <PageHeader title="G-Brain" />
+        <PageHeader title="Memory" />
         <div className="mt-6 border border-os-border bg-os-surface p-4">
           <div className="flex items-center gap-2">
             <Dot state="off" />
@@ -53,7 +53,7 @@ export default async function BrainPage() {
 
   return (
     <div>
-      <PageHeader title="G-Brain" />
+      <PageHeader title="Memory" />
 
       <section className="mt-6">
         <SectionHead label="Sources" count={sources.length} />

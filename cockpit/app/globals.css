@@ -12,32 +12,38 @@
   --ease: cubic-bezier(0.32, 0.72, 0, 1);
 }
 
-/* Dark (phosphor terminal). */
-/* The default identity; bare :root rides along so a pre-script or no-JS load
-   already renders it instead of flashing another skin. */
+/* Dark — the night instrument panel (interface standard, 2026-09-03).
+   A cool blue-black ground with a sodium-brass accent: this is opened at six in
+   the morning in an unlit room, and that is the reason for the hue, not taste.
+   The default identity; bare :root rides along so a pre-script or no-JS load
+   already renders it instead of flashing another skin. It must stay on the same
+   block as DEFAULT_THEME in lib/theme.ts. */
 :root,
 :root[data-theme='dark'] {
   color-scheme: dark;
-  --bg: #100c0a;
-  --bg-2: #151110;
-  --surface: #211a16;
-  --surface-2: #2b231e;
-  --surface-3: #362c25;
-  --border: #332a24;
-  --border-strong: #4a3e34;
-  --text: #f6f1ea;
-  --text-2: #c0b5a8;
-  --text-3: #9d9284;
-  --accent: #ff6a26;
-  --accent-2: #ff8043;
-  --accent-ink: #1a0e07;
-  --accent-soft: rgba(255, 106, 38, 0.11);
-  --accent-line: rgba(255, 106, 38, 0.28);
-  --ok: #63b183;
-  --warn: #d9a24a;
-  --err: #e8705a;
-  --glow: 0 0 20px rgba(255, 106, 38, 0.13);
-  --grid: rgba(246, 241, 234, 0.02);
+  --bg: #0c0f14;
+  --bg-2: #10141a;
+  --surface: #151a21;
+  --surface-2: #1e252e;
+  --surface-3: #262e38;
+  --border: #242c36;
+  --border-strong: #38424e;
+  --text: #e9ebee;
+  --text-2: #a3adb8;
+  /* Lifted off the artwork value (#68717c) to clear 4.5:1 on --surface; a
+     dim token still has to be readable, or it is decoration pretending to be
+     information. */
+  --text-3: #8a95a0;
+  --accent: #e2a04b;
+  --accent-2: #efb164;
+  --accent-ink: #17130c;
+  --accent-soft: rgba(226, 160, 75, 0.1);
+  --accent-line: rgba(226, 160, 75, 0.26);
+  --ok: #5ab98a;
+  --warn: #d6a447;
+  --err: #d9584a;
+  --glow: 0 0 20px rgba(226, 160, 75, 0.12);
+  --grid: rgba(233, 235, 238, 0.02);
   --brain-1: #8b7cff;
   --brain-2: #5ec9f8;
   --brain-3: #4ade96;
@@ -283,7 +289,7 @@
 /* Row-divider hairlines for every theme (mono sets its own above, and the
    bare :root default already carries it). */
 :root[data-theme='dark'] {
-  --hairline: #3a3029;
+  --hairline: #1f262f;
 }
 :root[data-theme='light'] {
   --hairline: #ece5db;

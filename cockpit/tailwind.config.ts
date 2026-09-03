@@ -40,11 +40,13 @@ const config: Config = {
         },
       },
       fontFamily: {
-        // DESIGN.md: Degular Display is proprietary; its own substitute note
-        // names Inter — which is also the brand's real second face — for both
-        // display and body. Mono stays for data only.
-        sans: ['var(--font-sans)', 'Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
-        mono: ['var(--font-mono)', '"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+        // DESIGN.md (2026-09-03): Public Sans is the working face — the
+        // vernacular of official briefs; Azeret Mono carries figures and
+        // identifiers; the serif is rationed to the dateline and case
+        // subjects, which is what makes a case read as a document.
+        sans: ['var(--font-sans)', '"Public Sans"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        mono: ['var(--font-mono)', '"Azeret Mono"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+        serif: ['var(--font-serif)', '"Source Serif 4"', 'Georgia', 'ui-serif', 'serif'],
       },
       borderRadius: {
         // DESIGN.md radius scale: 6px inline pills and inputs, 12px the

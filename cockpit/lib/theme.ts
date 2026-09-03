@@ -1,8 +1,8 @@
 /**
- * UI themes. The default identity follows DESIGN.md at the repo root (Zapier),
- * carried into a dark room: the owner opens this at six in the morning on a
- * phone, where a cream page is a flashlight. Same hue family, same single
- * orange accent, dark ground. The others are full re-skins
+ * UI themes. The default identity follows DESIGN.md at the repo root: a night
+ * instrument panel — cool blue-black ground, single sodium-brass accent. The
+ * owner opens this at six in the morning on a phone in an unlit room, and that
+ * is the reason for the hue. The others are full re-skins
  * the user can pick, Monolith among them. The
  * active theme lives as `data-theme` on <html>, persisted to localStorage.
  * Tailwind os.* tokens read CSS vars, so flipping the attribute re-themes the
@@ -17,8 +17,8 @@ export const DEFAULT_THEME: Theme = 'dark';
 
 /** Picker metadata: display name, one-line feel, [bg, accent, text] swatch. */
 export const THEME_META: Record<Theme, { name: string; blurb: string; swatch: [string, string, string] }> = {
-  dark: { name: 'Malam', blurb: 'krem gelap, aksen oranye', swatch: ['#17120f', '#ff6a26', '#f6f1ea'] },
-  light: { name: 'Siang', blurb: 'krem hangat, aksen oranye', swatch: ['#fffefb', '#ff4f00', '#201515'] },
+  dark: { name: 'Night', blurb: 'instrument panel, brass accent', swatch: ['#0c0f14', '#e2a04b', '#e9ebee'] },
+  light: { name: 'Day', blurb: 'warm paper, orange accent', swatch: ['#fffefb', '#ff4f00', '#201515'] },
   midnight: { name: 'Midnight', blurb: 'deep navy, signal blue', swatch: ['#070d1f', '#5ec9f8', '#e8ecf9'] },
   ember: { name: 'Ember', blurb: 'coal dark, vault orange', swatch: ['#0c0806', '#e35c35', '#f2e9e2'] },
   mono: { name: 'Monolith', blurb: 'white on black, color = status only', swatch: ['#0a0a0a', '#f2f2f2', '#2fd36f'] },

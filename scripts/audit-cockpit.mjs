@@ -28,7 +28,7 @@ const cookieValue = `${signed}.${createHmac('sha256', botToken()).update(signed)
 
 const url = new URL(BASE);
 const browser = await chromium.launch();
-const context = await browser.newContext({ ...devices['iPhone 14 Pro'], ignoreHTTPSErrors: true });
+const context = await browser.newContext({ ...devices['iPhone 12 Pro'], ignoreHTTPSErrors: true });
 await context.addCookies([{
   name: '__founderos_cockpit_session',
   value: cookieValue,
@@ -42,9 +42,9 @@ await context.addCookies([{
 const page = await context.newPage();
 let failures = 0;
 
-for (const route of ['/', '/decisions']) {
+for (const route of ['/', '/decisions', '/case/KOL-67']) {
   await page.goto(BASE + route, { waitUntil: 'networkidle', timeout: 45000 });
-  console.log(`\n── ${route} @ ${devices['iPhone 14 Pro'].viewport.width}px ──`);
+  console.log(`\n── ${route} @ ${devices['iPhone 12 Pro'].viewport.width}px ──`);
 
   const report = await page.evaluate(() => {
     const out = { overflow: null, wide: [], smallTargets: [], namelessControls: [], lowContrast: [] };

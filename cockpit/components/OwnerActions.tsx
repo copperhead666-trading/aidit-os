@@ -7,23 +7,25 @@ export type OwnerAction = 'SETUJU' | 'REVISI' | 'TOLAK' | 'NANTI';
 
 const ALL_ACTIONS: OwnerAction[] = ['SETUJU', 'REVISI', 'TOLAK', 'NANTI'];
 
-// DESIGN.md: "The brand never uppercases display sizes." Shouted labels were
-// half of why this row read as four dead boxes.
+// The wire values above are the API contract (app/api/decision/route.ts) and
+// must not be renamed. These are only what is printed on them. A control is
+// frame text, so it is English.
 const LABEL: Record<OwnerAction, string> = {
-  SETUJU: 'Setuju',
-  REVISI: 'Revisi',
-  TOLAK: 'Tolak',
-  NANTI: 'Nanti',
+  SETUJU: 'Approve',
+  REVISI: 'Revise',
+  TOLAK: 'Decline',
+  NANTI: 'Defer',
 };
 
-// What actually happened, said in the owner's own voice. Each line matches a
-// real state change in app/api/decision/route.ts — nothing here claims more
-// than the server did.
+// What actually happened. Substance, so Indonesian, and formal. Each line
+// matches a real state change in app/api/decision/route.ts — nothing here
+// claims more than the server did.
 const HASIL: Record<OwnerAction, string> = {
-  SETUJU: 'Disetujui. Ahmad boleh jalan; eksekusinya mulai di sapuan berikutnya.',
-  REVISI: 'Permintaan revisi tercatat. Nggak ada yang dikerjakan sampai rencana barunya lo setujui.',
-  TOLAK: 'Ditolak. Perkaranya ditutup dan nggak akan dikerjakan.',
-  NANTI: 'Ditunda. Tetap nunggu lo, nggak ada yang berubah.',
+  SETUJU: 'Disetujui. AHMAD boleh menjalankannya, mulai sapuan berikutnya.',
+  REVISI:
+    'Permintaan revisi tercatat. Tidak ada yang dikerjakan sampai rencana barunya Anda setujui.',
+  TOLAK: 'Ditolak. Perkaranya ditutup dan tidak akan dikerjakan.',
+  NANTI: 'Ditunda. Tetap menunggu Anda, tidak ada yang berubah.',
 };
 
 const FOKUS =
@@ -88,7 +90,11 @@ export function OwnerActions({
           : `gagal tersimpan (HTTP ${res.status})`;
       setKeadaan({ fase: 'gagal', aksi, alasan: reason });
     } catch {
-      setKeadaan({ fase: 'gagal', aksi, alasan: 'nggak bisa menghubungi server — keputusan lo belum tercatat' });
+      setKeadaan({
+        fase: 'gagal',
+        aksi,
+        alasan: 'server tidak bisa dihubungi — keputusan Anda belum tercatat',
+      });
     }
   }
 
@@ -105,14 +111,15 @@ export function OwnerActions({
     <div className="space-y-2.5">
       {terkunci && (
         <p className="border-l border-os-warn pl-3 text-[13px] leading-relaxed text-os-muted">
-          <span className="font-semibold text-os-text">Setuju nggak ditawarin di sini.</span> {terkunci}
+          <span className="font-semibold text-os-text">Approve tidak ditawarkan di sini.</span>{' '}
+          {terkunci}
         </p>
       )}
 
       {keadaan.fase === 'menulis' ? (
         <div className="space-y-2">
           <label htmlFor={`alasan-${identifier}`} className="block text-[13px] text-os-muted">
-            Apa yang mau diubah?
+            Apa yang harus diubah?
           </label>
           <textarea
             id={`alasan-${identifier}`}
@@ -130,19 +137,19 @@ export function OwnerActions({
               onClick={() => void kirim('REVISI', alasan.trim())}
               className={`${TOMBOL} border-os-accent bg-os-accent text-os-ink hover:bg-os-accent2 ${FOKUS}`}
             >
-              Kirim revisi
+              Send revision
             </button>
             <button
               type="button"
               onClick={() => setKeadaan({ fase: 'diam' })}
               className={`${TOMBOL} border-transparent text-os-muted hover:bg-os-surface2 hover:text-os-text ${FOKUS}`}
             >
-              Batal
+              Cancel
             </button>
           </div>
         </div>
       ) : (
-        <div role="group" aria-label={`Jawaban lo untuk ${identifier}`} className="flex flex-wrap gap-2">
+        <div role="group" aria-label={`Your answer for ${identifier}`} className="flex flex-wrap gap-2">
           {pilihan.map((aksi, index) => {
             const mengirim = keadaan.fase === 'kirim';
             const utama = index === 0;
@@ -175,14 +182,14 @@ export function OwnerActions({
           <span className="flex items-start gap-2 text-os-err">
             <TriangleAlert className="mt-[3px] h-4 w-4 shrink-0" strokeWidth={2} aria-hidden="true" />
             <span>
-              <span className="font-semibold">Gagal.</span> {keadaan.alasan} Coba lagi, atau jawab lewat kartu
-              Telegram.
+              <span className="font-semibold">Gagal.</span> {keadaan.alasan}. Silakan coba lagi,
+              atau jawab lewat kartu Telegram.
             </span>
           </span>
         ) : keadaan.fase === 'kirim' ? (
           'Menyimpan…'
         ) : (
-          'Jawaban lo langsung tercatat di perkaranya.'
+          'Jawaban Anda langsung tercatat di perkaranya.'
         )}
       </p>
     </div>

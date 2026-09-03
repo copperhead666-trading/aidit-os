@@ -41,13 +41,19 @@ function sessionCookieValue() {
 }
 
 const SURFACES = [
-  { name: 'phone', ...devices['iPhone 14 Pro'] },
+  // The owner's actual handset. 390x844, and 664 of it live in Safari --
+  // DESIGN.md's first-fold budget is measured against exactly this.
+  { name: 'phone', ...devices['iPhone 12 Pro'] },
   { name: 'desktop', viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1 },
 ];
 
 const PAGES = [
   { slug: 'home', path: '/' },
   { slug: 'decisions', path: '/decisions' },
+  // A real waiting case, so the eight-slot record is verified too. If it is
+  // ever answered this renders the honest 'no longer waiting' state, which
+  // is still a page worth shooting.
+  { slug: 'case', path: '/case/KOL-67' },
 ];
 
 fs.mkdirSync(OUT, { recursive: true });

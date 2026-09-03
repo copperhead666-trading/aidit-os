@@ -31,7 +31,7 @@ export default async function TasksPage() {
   if (issues === null) {
     return (
       <div>
-        <PageHeader title="Tasks" />
+        <PageHeader title="Work" />
         <div className="mt-6 border border-os-border bg-os-surface p-4">
           <div className="flex items-center gap-2">
             <Dot state="err" />
@@ -48,7 +48,7 @@ export default async function TasksPage() {
   if (issues.length === 0) {
     return (
       <div>
-        <PageHeader title="Tasks" />
+        <PageHeader title="Work" />
         <div className="mt-6 border border-os-border bg-os-surface p-4">
           <div className="flex items-center gap-2">
             <Dot state="ok" />
@@ -75,14 +75,14 @@ export default async function TasksPage() {
         title="Tasks"
         right={
           <Badge tone={ownerRequired.length > 0 ? 'warn' : 'default'}>
-            {ownerRequired.length} butuh lo
+            {ownerRequired.length} awaiting you
           </Badge>
         }
       />
 
       {ownerRequired.length > 0 && (
         <section className="mt-6">
-          <SectionHead label="Butuh lo" count={ownerRequired.length} />
+          <SectionHead label="Awaiting you" count={ownerRequired.length} />
           <div className="mt-2 divide-y divide-os-border border border-os-border-strong bg-os-surface2">
             {ownerRequired.map((issue) => (
               <div

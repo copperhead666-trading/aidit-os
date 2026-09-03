@@ -145,7 +145,9 @@ export function SectionTitle({
       {link && href && (
         <Link
           href={href}
-          className="-my-3 inline-flex shrink-0 items-center py-3 font-sans text-[13px] font-medium text-os-muted transition-colors hover:text-os-accent focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-os-accent"
+          // -mx-2/px-2 and the min width keep a two-word link ("All") a real
+          // 44×44 target without moving it off the heading's right edge.
+          className="-mx-2 -my-3 inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center px-2 py-3 font-sans text-[13px] font-medium text-os-muted transition-colors hover:text-os-accent focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-os-accent"
         >
           {link}
         </Link>

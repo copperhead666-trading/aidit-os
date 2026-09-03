@@ -33,11 +33,11 @@ function summarize(items: InboxItem[]): string {
   const working = counts.working;
 
   if (decisions === 0 && stuck === 0 && working === 0) {
-    return 'Bersih. Tidak ada yang butuh lo sekarang.';
+    return 'Bersih. Tidak ada yang membutuhkan Anda sekarang.';
   }
 
   const parts: string[] = [];
-  if (decisions > 0) parts.push(`${decisions} butuh keputusan lo`);
+  if (decisions > 0) parts.push(`${decisions} menunggu keputusan Anda`);
   if (stuck > 0) parts.push(`${stuck} macet`);
   if (working > 0) parts.push(`${working} sedang dikerjakan`);
 
@@ -109,7 +109,7 @@ export default async function InboxPage() {
   if (items === null) {
     return (
       <div className="mx-auto w-full max-w-2xl px-3 py-4 sm:px-4">
-        <PageHeader title="Inbox" />
+        <PageHeader title="Attention" />
         <div className="mt-4 border border-os-border-strong bg-os-surface2 px-3 py-4">
           <div className="text-sm text-os-err">Sumber tidak bisa dibaca.</div>
           <div className="mt-1 text-xs text-os-muted">
@@ -128,13 +128,13 @@ export default async function InboxPage() {
 
   return (
     <div className="mx-auto w-full max-w-2xl px-3 py-4 sm:px-4">
-      <PageHeader title="Inbox" />
+      <PageHeader title="Attention" />
       <div className="mt-2 text-sm text-os-text">{summarize(items)}</div>
 
       <div className="mt-4 flex flex-col gap-4">
-        <Group label="Butuh keputusan lo" items={decisions} dotState="warn" pulse />
-        <Group label="Macet" items={stuck} dotState="err" showAttempts />
-        <Group label="Sedang dikerjakan" items={working} dotState="off" quiet />
+        <Group label="Awaiting you" items={decisions} dotState="warn" pulse />
+        <Group label="Blocked" items={stuck} dotState="err" showAttempts />
+        <Group label="In progress" items={working} dotState="off" quiet />
       </div>
     </div>
   );

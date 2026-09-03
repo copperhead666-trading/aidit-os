@@ -179,7 +179,7 @@ function translateFailureReason(raw: string): string {
   if (trimmed === 'unknown') {
     return 'sistem sendiri tidak bisa memastikan sebabnya';
   }
-  return `Ini alasan internal yang halaman ini belum bisa terjemahkan (bukan tindakan yang perlu lo lakukan): ${raw.trim()}`;
+  return `Ini alasan internal yang halaman ini belum bisa terjemahkan (bukan tindakan yang perlu Anda lakukan): ${raw.trim()}`;
 }
 
 function normalizeReason(raw: string): string {
@@ -230,7 +230,7 @@ function classifyIssue(issue: IssueSummary, comments: IssueComment[]): InboxItem
       identifier: issue.identifier,
       title: issue.title,
       state: 'needs-you',
-      reason: 'Ada keputusan yang nunggu persetujuan lo.',
+      reason: 'Ada keputusan yang menunggu persetujuan Anda.',
       action: 'Ketuk SETUJUI atau TOLAK pada kartu di Telegram.',
       sinceIso: issue.updatedAt,
       attempts: 0,
@@ -283,7 +283,7 @@ function classifyIssue(issue: IssueSummary, comments: IssueComment[]): InboxItem
         identifier: issue.identifier,
         title: issue.title,
         state: 'awaiting-your-approval',
-        reason: 'Ada rencana (DIRECTIVE PLAN) yang nunggu keputusan lo.',
+        reason: 'Ada rencana (DIRECTIVE PLAN) yang menunggu keputusan Anda.',
         action: 'Ketuk SETUJUI atau TOLAK.',
         sinceIso: latestPlan.createdAt,
         attempts: 0,

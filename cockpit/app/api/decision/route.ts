@@ -89,13 +89,13 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   const resolved = await resolveVerifiedPaperclip();
   if (resolved === null) {
-    return gagal('papan kerja tidak terjangkau — keputusan lo belum tercatat', 503);
+    return gagal('papan kerja tidak terjangkau — keputusan Anda belum tercatat', 503);
   }
   const base = `http://127.0.0.1:${resolved.port}`;
 
   const issues = await json(`${base}/api/companies/${resolved.companyId}/issues`);
   if (!issues.ok || !Array.isArray(issues.body)) {
-    return gagal('daftar perkara tidak terbaca — keputusan lo belum tercatat', 503);
+    return gagal('daftar perkara tidak terbaca — keputusan Anda belum tercatat', 503);
   }
   const issue = issues.body
     .filter(isRecord)
@@ -139,7 +139,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     });
     if (!res.ok) {
       return gagal(
-        `papan kerja menolak perubahan (HTTP ${res.status}) — keputusan lo belum tercatat`,
+        `papan kerja menolak perubahan (HTTP ${res.status}) — keputusan Anda belum tercatat`,
         502,
       );
     }
@@ -159,7 +159,7 @@ export async function POST(request: Request): Promise<NextResponse> {
         ok: false,
         reason: stateChanged
           ? 'status perkara sudah diubah, tapi catatan keputusannya gagal tersimpan'
-          : 'keputusan lo gagal tersimpan',
+          : 'keputusan Anda gagal tersimpan',
         stateChanged,
       },
       { status: 502 },

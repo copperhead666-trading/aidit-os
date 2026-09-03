@@ -2,6 +2,13 @@
  * Single source of truth for the app's primary navigation. The Sidebar renders
  * these groups in order; the CommandPalette derives its digit (1–9) shortcuts
  * from the same visible order, so the two can never drift apart again.
+ *
+ * Eleven destinations became four (interface standard, 2026-09-03). The other
+ * seven are not deleted — they are demoted behind "More", still routable and
+ * still reachable from the command palette. A rail is a place to go, not an
+ * index of everything that exists.
+ *
+ * Labels are English: navigation is frame, not substance.
  */
 import {
   Stethoscope,
@@ -19,40 +26,27 @@ import {
 
 export type NavItem = { href: string; label: string; icon: typeof Home };
 
-export const NAV_OPERATE: NavItem[] = [
-  { href: '/', label: 'Home', icon: Home },
-  { href: '/inbox', label: 'Inbox', icon: Inbox },
-  { href: '/tasks', label: 'Tasks', icon: ListChecks },
+/** The four the owner actually opens. */
+export const NAV_PRIMARY: NavItem[] = [
+  { href: '/', label: 'Brief', icon: Home },
   { href: '/decisions', label: 'Decisions', icon: Scale },
+  { href: '/tasks', label: 'Work', icon: ListChecks },
+  { href: '/doctor', label: 'System', icon: Stethoscope },
 ];
 
-// The agent workforce: the roster and the skills they bring to bear.
-export const NAV_AGENTS: NavItem[] = [
+/** Everything else, behind one disclosure. */
+export const NAV_MORE: NavItem[] = [
+  { href: '/inbox', label: 'Attention', icon: Inbox },
   { href: '/agents', label: 'Agents', icon: Users },
   { href: '/skills', label: 'Skills', icon: Sparkles },
-];
-
-// The knowledge layer the agents draw on. G-Brain is the pure knowledge graph;
-// Doctor holds the engine's health readouts (pillar health, doctor, storage
-// layers, pipeline, query path) so the graph tab stays a single view.
-export const NAV_INTELLIGENCE: NavItem[] = [
-  { href: '/brain', label: 'G-Brain', icon: Brain },
-  { href: '/doctor', label: 'Doctor', icon: Stethoscope },
-];
-
-export const NAV_SYSTEM: NavItem[] = [
+  { href: '/brain', label: 'Memory', icon: Brain },
   { href: '/roadmap', label: 'Roadmap', icon: Map },
   { href: '/reference', label: 'Layers', icon: Layers },
-  { href: '/how', label: 'Cara Pakai', icon: BookOpen },
+  { href: '/how', label: 'How to use', icon: BookOpen },
 ];
 
-/** Visible top-to-bottom order across all groups. */
-export const NAV_ORDER: string[] = [
-  ...NAV_OPERATE,
-  ...NAV_AGENTS,
-  ...NAV_INTELLIGENCE,
-  ...NAV_SYSTEM,
-].map((n) => n.href);
+/** Visible top-to-bottom order across both groups. */
+export const NAV_ORDER: string[] = [...NAV_PRIMARY, ...NAV_MORE].map((n) => n.href);
 
 /** Digit keys 1–9 jump to the first nine views in visible order. */
 export const DIGIT_VIEWS: string[] = NAV_ORDER.slice(0, 9);

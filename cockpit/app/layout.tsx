@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from 'next';
-import { Inter, JetBrains_Mono } from 'next/font/google';
+import { Public_Sans, Azeret_Mono, Source_Serif_4 } from 'next/font/google';
 import { cookies } from 'next/headers';
 import './globals.css';
 import { PauseBanner } from '@/components/PauseBanner';
@@ -7,6 +7,8 @@ import { Sidebar } from '@/components/Sidebar';
 import { Topbar } from '@/components/Topbar';
 import { CommandPalette } from '@/components/CommandPalette';
 import { readPauseState } from '@/lib/sources';
+import { readHeartbeat, readLanes } from '@/lib/founderos';
+import { sejakInggris } from '@/lib/kata';
 import {
   ALLOWED_TELEGRAM_USER_IDS_ENV,
   SESSION_COOKIE_NAME,
@@ -17,16 +19,23 @@ import { THEME_INIT_SCRIPT } from '@/lib/theme';
 
 const TELEGRAM_BOT_TOKEN_ENV = 'TELEGRAM_BOT_TOKEN_AHMAD';
 
-const fontMono = JetBrains_Mono({
+// The house faces (interface standard, 2026-09-03). Public Sans is the working
+// face of official briefs; Azeret Mono carries figures and identifiers; Source
+// Serif 4 appears in exactly two places — the dateline and a case subject —
+// which is what makes a case read as a document rather than a row.
+const fontMono = Azeret_Mono({
   subsets: ['latin'],
-  weight: ['400', '500', '600', '700'],
   variable: '--font-mono',
 });
 
-const fontSans = Inter({
+const fontSans = Public_Sans({
   subsets: ['latin'],
-  weight: ['400', '500', '600', '700'],
   variable: '--font-sans',
+});
+
+const fontSerif = Source_Serif_4({
+  subsets: ['latin'],
+  variable: '--font-serif',
 });
 
 export const viewport: Viewport = {
@@ -36,8 +45,8 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: 'FounderOS Cockpit',
-  description: 'Personal operating system and AI agent command center for a single person company',
+  title: 'Aidit OS',
+  description: 'The standing brief: what is waiting on the owner, and the evidence behind it',
 };
 
 function hasValidSession(): boolean {
@@ -55,7 +64,7 @@ function hasValidSession(): boolean {
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   if (!hasValidSession()) {
     return (
-      <html lang="en" className={`${fontSans.variable} ${fontMono.variable}`} suppressHydrationWarning>
+      <html lang="en" className={`${fontSans.variable} ${fontMono.variable} ${fontSerif.variable}`} suppressHydrationWarning>
         <head>
           {/* Apply the persisted theme before first paint — no dark↔light flash. */}
           <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
@@ -65,16 +74,40 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     );
   }
 
-  const pauseState = await readPauseState();
+  const [pauseState, lanes, heartbeat] = await Promise.all([
+    readPauseState(),
+    readLanes(),
+    readHeartbeat(),
+  ]);
+
+  // The standing proof of life. Unreadable is reported as unreadable, never as
+  // a healthy silence.
+  const since = heartbeat === null ? null : sejakInggris(Date.now() - heartbeat.ts);
+  const check =
+    heartbeat === null || since === null
+      ? { short: 'no check', full: 'Last check unknown', ok: false }
+      : {
+          short: `${since.replace(' ago', '')} · ${heartbeat.succeeded}/${heartbeat.total}`,
+          full: `Last check ${since} · ${heartbeat.succeeded}/${heartbeat.total}`,
+          ok: heartbeat.failed === 0,
+        };
+
+  // Only the three fields the rail draws. A lane that never ran this week is
+  // still listed — a silent lane is information, not an absence.
+  const laneLines = (lanes ?? []).map((l) => ({
+    lane: l.lane,
+    runs: l.runs,
+    quotaExhausted: l.quotaExhausted,
+  }));
 
   return (
-    <html lang="en" className={`${fontSans.variable} ${fontMono.variable}`} suppressHydrationWarning>
+    <html lang="en" className={`${fontSans.variable} ${fontMono.variable} ${fontSerif.variable}`} suppressHydrationWarning>
       <head>
         {/* Apply the persisted theme before first paint — no dark↔light flash. */}
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>
       <body className="overflow-x-hidden">
-        <Sidebar />
+        <Sidebar lanes={laneLines} />
         {/* os-shell reserves the sidebar rail. Below `md` the rail is an
             off-canvas drawer (see Sidebar), so the column owns the full width
             there; at `md`+ it reserves --sidebar-w (kept in sync with the
@@ -84,7 +117,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           style={{ marginRight: 'var(--conductor-w, 0px)' }}
         >
           <PauseBanner state={pauseState} />
-          <Topbar />
+          <Topbar check={check} />
           <main className="min-w-0 flex-1 px-4 pb-16 pt-7 sm:px-6 md:px-8 wide:px-10 ultra:px-12">
             {/* Width tiers: 1280 on laptops · 1760 on large monitors ·
                 full-bleed on 32"/ultrawide. See tailwind screens wide/ultra. */}

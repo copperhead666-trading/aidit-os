@@ -1,73 +1,86 @@
 import { PageHeader } from '@/components/PageHeader';
 
+/**
+ * Rewritten 2026-09-03. The previous version told the owner "Cockpit nggak bisa
+ * mengubah apa pun" — which stopped being true the day owner actions began
+ * writing to real issues. A page that lies about what the buttons do is worse
+ * than no page.
+ */
 export default function HowPage() {
   return (
-    <div className="max-w-2xl">
-      <PageHeader title="Cara Pakai" />
+    <div className="max-w-2xl pb-10">
+      <PageHeader title="How to use" />
 
-      <p className="mt-6 text-os-text">
-        Cockpit ini buat <span className="text-os-accent">melihat</span>, Telegram buat{' '}
-        <span className="text-os-accent">bertindak</span>. Cockpit nggak bisa mengubah apa pun.
+      <p className="mt-6 text-[14px] leading-relaxed text-os-text">
+        Cockpit adalah pintunya: di sinilah Anda membaca perkara dan memberi jawaban, dan jawaban
+        itu langsung tercatat di papan kerja. Telegram adalah loncengnya: ia memberi tahu Anda
+        bahwa ada yang menunggu, dan tetap bisa dipakai menjawab kalau Anda sedang jauh dari
+        cockpit.
       </p>
 
-      <div className="mt-8 space-y-8">
-        <section className="border border-os-border p-4">
-          <h2 className="text-os-text font-bold">
-            <span className="text-os-accent">1.</span> Menyetujui
+      <div className="mt-8 space-y-4">
+        <section className="rounded-md-t border border-os-border bg-os-surface p-5">
+          <h2 className="font-mono text-[10px] uppercase tracking-[0.15em] text-os-accent">
+            1 · Answering a case
           </h2>
-          <p className="mt-2 text-os-text">
-            Ketuk tombol <span className="text-os-warn">SETUJUI</span> atau{' '}
-            <span className="text-os-err">TOLAK</span> di kartu keputusan yang masuk ke Telegram.
-            Tombol <span className="text-os-text">DETAIL</span> menampilkan info lebih lanjut
-            tentang item itu, dan <span className="text-os-text">TUNDA</span> menunda keputusannya.
+          <p className="mt-2 text-[14px] leading-relaxed text-os-text">
+            Buka perkaranya dari brief, baca seluruh catatannya, lalu tekan{' '}
+            <span className="font-semibold">Approve</span>,{' '}
+            <span className="font-semibold">Revise</span>,{' '}
+            <span className="font-semibold">Decline</span>, atau{' '}
+            <span className="font-semibold">Defer</span>. Kartu tertutup di brief sengaja tidak
+            membawa tombol: keputusan diberikan setelah catatannya di depan Anda, bukan sebelum.
           </p>
-          <p className="mt-2 text-os-muted">
-            Yang terjadi: label <code>OWNER_REQUIRED</code> dilepas, keputusan tercatat sebagai
-            komentar di isu itu, dan satu sapuan heartbeat langsung dijalankan.
+          <p className="mt-2 text-[13px] leading-relaxed text-os-muted">
+            Yang terjadi: label <code>OWNER_REQUIRED</code> dilepas, keputusan Anda tercatat
+            sebagai komentar di perkara itu, dan satu sapuan heartbeat langsung dijalankan.
           </p>
         </section>
 
-        <section className="border border-os-border p-4">
-          <h2 className="text-os-text font-bold">
-            <span className="text-os-accent">2.</span> Berkomentar
+        <section className="rounded-md-t border border-os-border bg-os-surface p-5">
+          <h2 className="font-mono text-[10px] uppercase tracking-[0.15em] text-os-accent">
+            2 · Adding a note
           </h2>
-          <p className="mt-2 text-os-text">
-            Balas (reply) kartu keputusan itu dengan teks biasa.
+          <p className="mt-2 text-[14px] leading-relaxed text-os-text">
+            Balas kartu keputusan di Telegram dengan teks biasa.
           </p>
-          <p className="mt-2 text-os-muted">
-            Yang terjadi: balasan menempel sebagai komentar OWNER NOTE di isu yang sama, dan bot
-            mengirim konfirmasi berisi potongan teks lo.
+          <p className="mt-2 text-[13px] leading-relaxed text-os-muted">
+            Yang terjadi: balasan menempel sebagai komentar OWNER NOTE di perkara yang sama, dan
+            bot mengirim konfirmasi berisi potongan teks Anda.
           </p>
         </section>
 
-        <section className="border border-os-border p-4">
-          <h2 className="text-os-text font-bold">
-            <span className="text-os-accent">3.</span> Menugaskan
+        <section className="rounded-md-t border border-os-border bg-os-surface p-5">
+          <h2 className="font-mono text-[10px] uppercase tracking-[0.15em] text-os-accent">
+            3 · Giving an instruction
           </h2>
-          <p className="mt-2 text-os-text">
-            Kirim pesan biasa ke bot, bukan reply.
+          <p className="mt-2 text-[14px] leading-relaxed text-os-text">
+            Kirim pesan biasa ke bot — bukan balasan.
           </p>
-          <p className="mt-2 text-os-muted">
-            Yang terjadi: pesan itu jadi isu baru berjudul &ldquo;OWNER DIRECTIVE:&rdquo;, dilabeli{' '}
-            <code>DIRECTIVE</code>, ditugaskan ke AHMAD, dan lo dapat tanda terima dalam hitungan
-            detik. Sesudah itu AHMAD menyusun rencana dan mengirimkannya balik ke lo sebagai
-            kartu — jadi menugaskan selalu berujung ke gerakan nomor satu.
+          <p className="mt-2 text-[13px] leading-relaxed text-os-muted">
+            Yang terjadi: pesan itu menjadi perkara baru berjudul &ldquo;OWNER DIRECTIVE:&rdquo;,
+            dilabeli <code>DIRECTIVE</code>, ditugaskan ke AHMAD, dan Anda menerima tanda terima
+            dalam hitungan detik. Sesudah itu AHMAD menyusun rencana dan mengembalikannya kepada
+            Anda sebagai perkara — jadi memberi instruksi selalu berujung kembali ke langkah satu.
           </p>
         </section>
       </div>
 
-      <div className="mt-8 border border-os-border-strong p-4">
-        <h2 className="text-os-text font-bold">Kalau ada yang macet</h2>
-        <p className="mt-2 text-os-muted">
+      <div className="mt-8 rounded-md-t border border-os-border-strong p-5">
+        <h2 className="font-mono text-[10px] uppercase tracking-[0.15em] text-os-dim">
+          When something is blocked
+        </h2>
+        <p className="mt-2 text-[13px] leading-relaxed text-os-muted">
           Rencana bisa gagal disusun, atau ditolak karena perintah verifikasinya di luar batas
-          aman. Kalau itu terjadi berulang, sistem menyerah dan menaikkannya ke lo sebagai kartu
-          dengan alasannya. Halaman Tasks di cockpit ini menunjukkan apa yang sedang menunggu lo.
+          aman. Kalau itu terjadi berulang, sistem berhenti mencoba dan menaikkannya kepada Anda
+          beserta alasannya. Halaman Attention menunjukkan semua yang sedang tersendat.
         </p>
       </div>
 
-      <p className="mt-8 text-os-dim text-sm">
-        Cockpit ini cuma bisa dilihat dari perangkat yang tersambung ke tailnet, dan laptopnya
-        harus menyala.
+      <p className="mt-8 text-[13px] leading-relaxed text-os-dim">
+        Cockpit hanya bisa dibuka dari perangkat yang tersambung ke tailnet, dan laptopnya harus
+        menyala. Tambahkan ke Home Screen di iPhone: dalam mode itu Safari melepas bilah alamat
+        dan layar yang terbaca bertambah dari 664 menjadi 763 titik.
       </p>
     </div>
   );

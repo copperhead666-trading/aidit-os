@@ -86,9 +86,9 @@ export function urutkan(items: Menunggu[]): Menunggu[] {
  */
 export function kenapaNungguLo(m: Menunggu): string {
   if (!m.d.cardSent) return 'Kartunya belum pernah dikirim ke Telegram.';
-  if (m.d.ownerRequired) return 'Nggak boleh jalan tanpa jawaban lo.';
-  if (m.d.planBody !== null) return 'Rencananya udah siap, tinggal lo jawab.';
-  return 'Judulnya sendiri yang minta jawaban lo.';
+  if (m.d.ownerRequired) return 'Perkara ini tidak boleh berjalan tanpa jawaban Anda.';
+  if (m.d.planBody !== null) return 'Rencananya sudah siap dan tinggal Anda jawab.';
+  return 'Judul perkaranya sendiri yang meminta jawaban Anda.';
 }
 
 /**
@@ -114,7 +114,7 @@ export function kenapaGabisaDisetujui(m: Menunggu): string | null {
   if (m.inbox?.state !== 'stuck') return null;
   const dasar = `Gagal ${m.inbox.attempts} kali dengan sebab yang sama: ${m.inbox.reason}`;
   if (rencanaTanpaBerkas(m.d.planBody)) {
-    return `${dasar}. Rencananya sendiri nggak nyentuh berkas apa pun.`;
+    return `${dasar}. Rencananya sendiri tidak menyentuh berkas apa pun.`;
   }
   return `${dasar}.`;
 }
