@@ -23,7 +23,8 @@
 //   - issue label (3b):       addIssueLabel (defaults to httpPost /api/issues/:id/labels)
 //   - label map (3b):         labelMap (default { doneVerified: "DONE_VERIFIED" })
 
-import { promises as fs } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { promises as fs, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -62,6 +63,13 @@ import { parseArgs as parseVerifyFileArgs, verifyFile as verifyFileReal } from "
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
 const STATE_FILE = path.join(__dirname, "directive-runner-state.json");
+const ACTIVE_GRAPH_FILE = path.join(REPO_ROOT, "graphify-out", "active", "graph.json");
+const GRAPH_ANCHOR_LIMIT_PER_FILE = 6;
+// Overall cap across ALL files. The point of anchors is a SMALLER packet; a
+// version that makes it bigger has failed even with perfect anchors.
+const GRAPH_ANCHOR_LIMIT_TOTAL = 24;
+// graphify-refresh.mjs writes the graph commit here, beside the graph itself.
+const GRAPH_STAMP_SUFFIX = ".commit.stamp";
 
 
 // Adds a label the way ahmad-escalate.mjs does — ensureLabel then PATCH labelIds.
@@ -1519,10 +1527,192 @@ export async function runDirectiveSweepOnce(deps = {}) {
 // mechanics.
 // ===========================================================================
 
-// PURE. Returns the implementation prompt for the lane. Contains, in order: the
-// issue identifier and title; the plan's OBJECTIVE; the EXACT file list (the
-// only files that may change, one per line); the STEPS; the VERIFY command that
-// must pass; and a hard-stop block. Deterministic: same inputs -> same string.
+function normalizeGraphRepoPath(value) {
+  let v = String(value || "").trim().replace(/\\/g, "/");
+  if (!v) return "";
+  const root = REPO_ROOT.replace(/\\/g, "/");
+  if (v.startsWith(`${root}/`)) v = v.slice(root.length + 1);
+  if (v.startsWith("./")) v = v.slice(2);
+  return v.replace(/^\/+/, "");
+}
+
+function graphNodesFromPayload(graph) {
+  if (Array.isArray(graph?.nodes)) return graph.nodes;
+  if (Array.isArray(graph?.elements?.nodes)) return graph.elements.nodes.map((n) => n?.data || n);
+  return [];
+}
+
+function graphEdgesFromPayload(graph) {
+  if (Array.isArray(graph?.edges)) return graph.edges;
+  if (Array.isArray(graph?.links)) return graph.links;
+  if (Array.isArray(graph?.elements?.edges)) return graph.elements.edges.map((e) => e?.data || e);
+  return [];
+}
+
+function compactGraphAnchorText(value, max = 96) {
+  const v = String(value || "").replace(/\s+/g, " ").trim();
+  return v.length > max ? `${v.slice(0, max - 1)}...` : v;
+}
+
+function graphNodeLocation(node) {
+  return compactGraphAnchorText(
+    node?.source_location || node?.location || node?.span || node?.source_file || node?.file || "",
+  );
+}
+
+function graphNodeMatchesFile(node, file) {
+  const candidates = [
+    node?.source_file,
+    node?.file,
+    node?.path,
+    node?.relative_path,
+    node?.source?.file,
+    node?.metadata?.source_file,
+    node?.metadata?.file,
+    node?.source_location,
+    node?.location,
+  ];
+  for (const raw of candidates) {
+    const v = normalizeGraphRepoPath(raw);
+    if (v === file || v.startsWith(`${file}:`) || v.startsWith(`${file}#`)) return true;
+  }
+  const id = normalizeGraphRepoPath(node?.id);
+  const label = normalizeGraphRepoPath(node?.label || node?.name || node?.title);
+  return id === file || label === file;
+}
+
+function formatGraphAnchor(node) {
+  const label = compactGraphAnchorText(node?.label || node?.name || node?.title || node?.id);
+  if (!label) return "";
+  const kind = compactGraphAnchorText(node?.type || node?.kind || node?.category, 32);
+  const loc = graphNodeLocation(node);
+  return [
+    label,
+    kind ? ` [${kind}]` : "",
+    loc ? ` @ ${loc}` : "",
+  ].join("");
+}
+
+// THE GRAPH MUST BE FRESH, OR IT CONTRIBUTES NOTHING.
+//
+// graphify-refresh.mjs writes the commit the graph was built at into a stamp
+// file beside it. If that stamp does not match the current repo commit, the
+// graph describes code that has since moved, and its line numbers point at the
+// wrong places.
+//
+// Anchors that are confidently WRONG are worse than no anchors at all: the lane
+// trusts them, edits the wrong location, and nothing anywhere reports that it
+// did. A missing or unreadable stamp is treated the same way — an unstamped
+// graph is an unknown graph, and treating unknown as fresh is the same bug with
+// better manners.
+//
+// Returns { fresh, graphCommit, repoCommit, reason }. Never throws.
+export function graphFreshnessForAnchors(deps = {}) {
+  const readText = deps.readText || ((p) => readFileSync(p, "utf8"));
+  const graphFile = deps.graphFile || ACTIVE_GRAPH_FILE;
+  const stampFile = deps.stampFile || `${graphFile}${GRAPH_STAMP_SUFFIX}`;
+
+  let repoCommit = null;
+  try {
+    repoCommit = String(deps.repoCommit ?? headCommitForAnchors(deps)).trim() || null;
+  } catch {
+    repoCommit = null;
+  }
+  if (!repoCommit) return { fresh: false, graphCommit: null, repoCommit: null, reason: "repo commit unavailable" };
+
+  let graphCommit = null;
+  try {
+    graphCommit = String(readText(stampFile)).trim() || null;
+  } catch {
+    return { fresh: false, graphCommit: null, repoCommit, reason: "graph commit stamp missing or unreadable" };
+  }
+  if (!graphCommit) return { fresh: false, graphCommit: null, repoCommit, reason: "graph commit stamp is empty" };
+  if (graphCommit !== repoCommit) {
+    return { fresh: false, graphCommit, repoCommit, reason: `graph built at ${graphCommit}, repo is at ${repoCommit}` };
+  }
+  return { fresh: true, graphCommit, repoCommit, reason: "graph commit matches the repo commit" };
+}
+
+function headCommitForAnchors(deps = {}) {
+  const exec = deps._exec || execFileSync;
+  return String(exec("git", ["rev-parse", "HEAD"], { cwd: REPO_ROOT, encoding: "utf8" })).trim();
+}
+
+function activeGraphAnchorsForFiles(files, deps = {}) {
+  if (!files.length) return new Map();
+  // Fail CLOSED. Anything other than a proven-fresh graph produces no anchors
+  // and the caller falls back to the plain file list, which is exactly today's
+  // behaviour and is never wrong, only less helpful.
+  const freshness = deps.freshness || graphFreshnessForAnchors(deps);
+  if (!freshness.fresh) return new Map();
+  const readText = deps.readText || ((p) => readFileSync(p, "utf8"));
+  let graph;
+  try {
+    graph = JSON.parse(readText(deps.graphFile || ACTIVE_GRAPH_FILE));
+  } catch {
+    return new Map();
+  }
+
+  const targets = files.map((f) => normalizeGraphRepoPath(f)).filter(Boolean);
+  const anchors = new Map(targets.map((f) => [f, []]));
+  const nodes = graphNodesFromPayload(graph);
+  const edges = graphEdgesFromPayload(graph);
+  const nodeById = new Map(nodes.map((n) => [String(n?.id || ""), n]).filter(([id]) => id));
+  const matchingNodeIdsByFile = new Map(targets.map((f) => [f, new Set()]));
+
+  for (const node of nodes) {
+    for (const file of targets) {
+      if (!graphNodeMatchesFile(node, file)) continue;
+      const labelAsPath = normalizeGraphRepoPath(node?.label || node?.name || node?.title);
+      const idAsPath = normalizeGraphRepoPath(node?.id);
+      const isFileNode = labelAsPath === file || idAsPath === file;
+      anchors.get(file).push({ node, priority: isFileNode ? 3 : 0 });
+      if (node?.id) matchingNodeIdsByFile.get(file).add(String(node.id));
+    }
+  }
+
+  for (const edge of edges) {
+    const source = String(edge?.source ?? edge?.from ?? "");
+    const target = String(edge?.target ?? edge?.to ?? "");
+    if (!source || !target) continue;
+    for (const file of targets) {
+      const matchingIds = matchingNodeIdsByFile.get(file);
+      const neighborId = matchingIds.has(source) ? target : matchingIds.has(target) ? source : "";
+      const neighbor = neighborId ? nodeById.get(neighborId) : null;
+      if (neighbor) anchors.get(file).push({ node: neighbor, priority: 1 });
+    }
+  }
+
+  const result = new Map();
+  for (const file of targets) {
+    const seen = new Set();
+    const formatted = anchors.get(file)
+      .sort((a, b) => a.priority - b.priority || formatGraphAnchor(a.node).localeCompare(formatGraphAnchor(b.node)))
+      .map(({ node }) => formatGraphAnchor(node))
+      .filter((a) => {
+        if (!a || seen.has(a)) return false;
+        seen.add(a);
+        return true;
+      });
+    const nonBare = formatted.filter((a) => normalizeGraphRepoPath(a.split(" @ ")[0].replace(/\s+\[[^\]]+\]$/, "")) !== file);
+    result.set(file, (nonBare.length ? nonBare : formatted).slice(0, GRAPH_ANCHOR_LIMIT_PER_FILE));
+  }
+  return result;
+}
+
+function formatExecutionFileLine(file, graphAnchors) {
+  const normalized = normalizeGraphRepoPath(file);
+  const anchors = graphAnchors.get(normalized) || [];
+  return anchors.length
+    ? `- ${file} (KG anchors from graphify-out/active/graph.json: ${anchors.join("; ")})`
+    : `- ${file}`;
+}
+
+// Side-effect-free. Returns the implementation prompt for the lane. Contains, in
+// order: the issue identifier and title; the plan's OBJECTIVE; the EXACT file
+// list (the only files that may change, one per line, with optional anchors from
+// graphify-out/active/graph.json); the STEPS; the VERIFY command that must pass;
+// and a hard-stop block. Deterministic for the same inputs and graph snapshot.
 export function buildExecutionPrompt(issue, plan, specialists = null) {
   const ident = issue?.identifier || issue?.id || "unknown";
   const title = String(issue?.title || "");
@@ -1530,8 +1720,9 @@ export function buildExecutionPrompt(issue, plan, specialists = null) {
   const files = Array.isArray(plan?.files) ? plan.files : [];
   const steps = Array.isArray(plan?.steps) ? plan.steps : [];
   const verify = String(plan?.verify || "");
+  const graphAnchors = activeGraphAnchorsForFiles(files);
   const fileLines = files.length
-    ? files.map((f) => `- ${f}`).join("\n")
+    ? files.map((f) => formatExecutionFileLine(f, graphAnchors)).join("\n")
     : "- (no files declared)";
   const stepLines = steps.length
     ? steps.map((s) => `- ${s}`).join("\n")

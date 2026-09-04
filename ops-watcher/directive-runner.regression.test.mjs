@@ -3,6 +3,7 @@
 // no real Telegram send. Every outbound call is injected and stubbed.
 
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,6 +23,7 @@ import {
   readStateOutcome,
   UNEXECUTABLE_MARKER,
   buildExecutionPrompt,
+  graphFreshnessForAnchors,
   executeApprovedDirective,
   PLAN_MARKER,
   APPROVED_MARKER,
@@ -73,6 +75,61 @@ const goodPlan = [
 // under test, so an identical derivation is a real check that the module resolved
 // the root correctly, not a tautology that copies the module's own answer.
 const TEST_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const TEST_ACTIVE_GRAPH_FILE = path.join(TEST_REPO_ROOT, "graphify-out", "active", "graph.json");
+const REPO_ROOT_FOR_TEST = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+const TEST_HEAD_COMMIT = (() => {
+  try {
+    return String(execFileSync("git", ["rev-parse", "HEAD"], { cwd: REPO_ROOT_FOR_TEST, encoding: "utf8" })).trim();
+  } catch {
+    return "";
+  }
+})();
+
+// Writes a real graph beside a stamp naming a DIFFERENT commit — the stale case.
+async function withStaleActiveGraph(graph, fn) {
+  await fs.mkdir(path.dirname(TEST_ACTIVE_GRAPH_FILE), { recursive: true });
+  await fs.writeFile(TEST_ACTIVE_GRAPH_FILE, JSON.stringify(graph), "utf8");
+  await fs.writeFile(`${TEST_ACTIVE_GRAPH_FILE}.commit.stamp`, "0000000000000000000000000000000000000000", "utf8");
+  try {
+    return await fn();
+  } finally {
+    await fs.unlink(TEST_ACTIVE_GRAPH_FILE).catch(() => {});
+    await fs.unlink(`${TEST_ACTIVE_GRAPH_FILE}.commit.stamp`).catch(() => {});
+    await fs.rmdir(path.dirname(TEST_ACTIVE_GRAPH_FILE)).catch(() => {});
+    await fs.rmdir(path.dirname(path.dirname(TEST_ACTIVE_GRAPH_FILE))).catch(() => {});
+  }
+}
+
+async function withActiveGraph(graph, fn) {
+  let previous = null;
+  let hadPrevious = true;
+  try {
+    previous = await fs.readFile(TEST_ACTIVE_GRAPH_FILE, "utf8");
+  } catch {
+    hadPrevious = false;
+  }
+
+  await fs.mkdir(path.dirname(TEST_ACTIVE_GRAPH_FILE), { recursive: true });
+  await fs.writeFile(TEST_ACTIVE_GRAPH_FILE, JSON.stringify(graph), "utf8");
+  // The graph is only trusted when a stamp beside it names the commit it was
+  // built at. Writing the graph without one is exactly the "unstamped graph"
+  // case, which is refused on purpose — so a fixture that wants anchors must
+  // supply the stamp too.
+  await fs.writeFile(`${TEST_ACTIVE_GRAPH_FILE}.commit.stamp`, TEST_HEAD_COMMIT, "utf8");
+  try {
+    return await fn();
+  } finally {
+    if (hadPrevious) {
+      await fs.writeFile(TEST_ACTIVE_GRAPH_FILE, previous, "utf8");
+    } else {
+      await fs.unlink(TEST_ACTIVE_GRAPH_FILE).catch(() => {});
+      await fs.unlink(`${TEST_ACTIVE_GRAPH_FILE}.commit.stamp`).catch(() => {});
+      await fs.rmdir(path.dirname(TEST_ACTIVE_GRAPH_FILE)).catch(() => {});
+      await fs.rmdir(path.dirname(path.dirname(TEST_ACTIVE_GRAPH_FILE))).catch(() => {});
+    }
+  }
+}
 
 const EXPECTED_PLAN_PROMPT_NO_SPECIALIST = String.raw`You are the planning lane for FounderOS-Aidit directive-runner stage 1.
 Produce a short approval plan only. Do not execute anything.
@@ -1678,6 +1735,101 @@ await t("buildExecutionPrompt contains identifier, every file, VERIFY, and the n
   // Deterministic: same inputs -> same string.
   assert.equal(p, buildExecutionPrompt(issue({ identifier: "KOL-1", title: "Directive" }), plan));
 });
+
+await t("buildExecutionPrompt annotates files with anchors read from graphify-out/active/graph.json, not issue text", async () => {
+  const graph = {
+    nodes: [
+      { id: "ops-watcher/foo.mjs", label: "ops-watcher/foo.mjs", type: "file" },
+      { id: "fn:runFooCheck", label: "runFooCheck", type: "function", source_file: "ops-watcher/foo.mjs", source_location: "ops-watcher/foo.mjs:17" },
+      { id: "doc:bar-scope", label: "Bar Scope", type: "section", source_file: "docs/bar.md", source_location: "docs/bar.md:4" },
+      { id: "bait", label: "Issue Text Bait Anchor", type: "concept", source_file: "ops-watcher/other.mjs" },
+    ],
+    edges: [
+      { source: "ops-watcher/foo.mjs", target: "fn:runFooCheck", type: "CONTAINS" },
+    ],
+  };
+  await withActiveGraph(graph, async () => {
+    const plan = parsePlan(goodPlan);
+    const p = buildExecutionPrompt(issue({ description: "Issue Text Bait Anchor" }), plan);
+    assert.match(
+      p,
+      /- ops-watcher\/foo\.mjs \(KG anchors from graphify-out\/active\/graph\.json: runFooCheck \[function\] @ ops-watcher\/foo\.mjs:17\)/,
+    );
+    assert.match(
+      p,
+      /- docs\/bar\.md \(KG anchors from graphify-out\/active\/graph\.json: Bar Scope \[section\] @ docs\/bar\.md:4\)/,
+    );
+    assert.equal(p.includes("Issue Text Bait Anchor"), false);
+  });
+});
+
+// =====================================================================
+// THE STALE-GRAPH REFUSAL.
+//
+// A stale graph points a lane at line numbers that have MOVED. Anchors that are
+// confidently wrong are worse than no anchors at all: the lane trusts them,
+// edits the wrong location, and nothing anywhere reports that it did. So
+// anything other than a proven-fresh graph produces NO anchors and falls back
+// to the plain file list — which is exactly today's behaviour and is never
+// wrong, only less helpful.
+//
+// This is the mandated mutation target: point buildExecutionPrompt at a stale
+// graph and these must go red.
+// =====================================================================
+
+await t("graph anchors are REFUSED when the stamp does not match the repo commit", () => {
+  const r = graphFreshnessForAnchors({
+    repoCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    readText: () => "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  });
+  assert.equal(r.fresh, false, "a mismatched stamp is not fresh");
+  // Both commits must be named, or nobody can tell which side is behind.
+  assert.match(r.reason, /aaaaaaaa/);
+  assert.match(r.reason, /bbbbbbbb/);
+});
+
+await t("graph anchors are REFUSED when the stamp is missing or unreadable", () => {
+  const missing = graphFreshnessForAnchors({
+    repoCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    readText: () => { const e = new Error("ENOENT"); throw e; },
+  });
+  assert.equal(missing.fresh, false, "an unstamped graph is an UNKNOWN graph");
+  assert.match(missing.reason, /stamp missing or unreadable/);
+
+  const empty = graphFreshnessForAnchors({
+    repoCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    readText: () => "   ",
+  });
+  assert.equal(empty.fresh, false, "an empty stamp is not a commit");
+});
+
+await t("graph anchors are ACCEPTED only when the stamp matches exactly", () => {
+  const same = "cccccccccccccccccccccccccccccccccccccccc";
+  const r = graphFreshnessForAnchors({ repoCommit: same, readText: () => `${same}\n` });
+  assert.equal(r.fresh, true, "trailing whitespace in the stamp is tolerated");
+  assert.equal(r.graphCommit, same);
+  assert.equal(r.repoCommit, same);
+});
+
+await t("a stale graph leaves the prompt on the plain file list, byte-identical to no graph at all", async () => {
+  const graph = {
+    nodes: [
+      { id: "fn:runFooCheck", label: "runFooCheck", type: "function", source_file: "ops-watcher/foo.mjs", source_location: "ops-watcher/foo.mjs:17" },
+    ],
+    edges: [],
+  };
+  // A graph IS present and full of usable anchors — the only thing wrong is the
+  // stamp. The output must be identical to the case where no graph exists,
+  // because a wrong anchor is worse than a missing one.
+  const plan = parsePlan(goodPlan);
+  const withoutGraph = buildExecutionPrompt(issue(), plan);
+  await withStaleActiveGraph(graph, () => {
+    const withStale = buildExecutionPrompt(issue(), plan);
+    assert.equal(withStale, withoutGraph, "a stale graph contributes nothing at all");
+    assert.equal(withStale.includes("KG anchors"), false, "and no anchor block is emitted");
+  });
+});
+
 await t("buildExecutionPrompt without specialists is byte-for-byte unchanged", () => {
   const plan = parsePlan(goodPlan);
   assert.equal(buildExecutionPrompt(issue(), plan), EXPECTED_EXECUTION_PROMPT_NO_SPECIALIST);
