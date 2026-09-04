@@ -1,1 +1,0 @@
-{"ok":true,"iterations":1,"model":"glm-5.3:cloud","endpoint":"http://localhost:11434/api/chat","toolCalls":[],"filesWritten":[],"finalMessage":"evidence complete","error":null,"startedAt":"2026-01-01T00:00:00.000Z","finishedAt":"2026-01-01T00:00:01.000Z"}
