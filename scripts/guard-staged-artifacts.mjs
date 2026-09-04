@@ -40,7 +40,16 @@ const ALLOWED_EMPTY = new Set(["hatta/.harness-empty-gitconfig"]);
 
 function stagedFiles() {
   try {
-    return execFileSync("git", ["diff", "--cached", "--name-only", "-z", "--diff-filter=ACM"], {
+    // --diff-filter=ACMR, NOT ACM. This guard's first real commit leaked an
+    // artifact precisely because R was missing: git noticed that the deleted
+    // "0" and the newly added "x.source_file" had identical (empty) content and
+    // recorded the pair as a RENAME, which "ACM" filters out. Two zero-byte
+    // artifacts in the same commit therefore hide each other. Any status that
+    // can put a file into the tree has to be inspected.
+    //
+    // --no-renames would also fix it, but keeping R and listing the destination
+    // is the safer shape: it still reports the file by the name it will have.
+    return execFileSync("git", ["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR"], {
       cwd: REPO_ROOT,
       encoding: "utf8",
       maxBuffer: 32 * 1024 * 1024,
