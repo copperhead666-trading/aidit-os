@@ -10,6 +10,7 @@ import {
   DIRECTIVE_LABEL_COLOR,
   PAPERCLIP_DISCOVERY_OPTS,
   PLANNER_EVENT_KIND,
+  STALE_GRAPH_REASON,
   buildDirectiveIssue,
   fingerprintIndicatesDirtyRepo,
   lockPathForVenture,
@@ -78,6 +79,8 @@ function deps(over = {}) {
     ensureLabel: [],
     httpPost: [],
     append: [],
+    readGraphCommit: [],
+    repoCommit: [],
     execute: 0,
   };
   const d = {
@@ -101,6 +104,8 @@ function deps(over = {}) {
       return { status: 201, networkError: false, body: { id: "iss-1", identifier: "KOL-101" } };
     },
     append: async (...args) => { calls.append.push(args); return { seq: 1 }; },
+    readGraphCommit: async () => { calls.readGraphCommit.push(1); return "graphcommit-fresh"; },
+    repoCommit: async () => { calls.repoCommit.push(1); return "graphcommit-fresh"; },
     execute: async () => { calls.execute++; throw new Error("planner must not execute"); },
     log: () => {},
     ...over,
@@ -430,6 +435,41 @@ await t("T16: lock cleanup - returned failures and internal throws do not leak v
   });
   await assert.rejects(() => runVenturePlannerOnce(throwDeps), /ledger unavailable/);
   assert.equal(await lockExists(appendThrows), false, "lock is released after thrown error");
+});
+
+console.log("");
+
+await t("T17: stale knowledge graph - a mismatched graph stamp hard-refuses the proposal and names both commits", async () => {
+  const d = deps({
+    readGraphCommit: async () => { d.calls.readGraphCommit.push(1); return "graphsha111"; },
+    repoCommit: async () => { d.calls.repoCommit.push(1); return "reposha222"; },
+  });
+
+  const result = await runVenturePlannerOnce(d);
+
+  assert.equal(result.created, false, "a stale graph must never produce a proposal");
+  assert.equal(result.ok, false, "the refusal is a hard stop, not a soft skip");
+  assert.equal(result.reason, `${STALE_GRAPH_REASON}: graph built at graphsha111, repo at reposha222`);
+  assert.equal(result.graphCommit, "graphsha111");
+  assert.equal(result.repoCommit, "reposha222");
+  assert.equal(result.skipped[0].reason, STALE_GRAPH_REASON);
+  assert.equal(d.calls.httpPost.length, 0, "no Paperclip write on a stale graph");
+  assert.equal(d.calls.append.length, 0, "no ledger event for a refused proposal");
+  assert.equal(d.calls.resolveSpecialistsForPacket.length, 0, "no specialist routing on a stale graph");
+});
+
+await t("T18: unstamped graph - no stamp at all is stale by definition and refuses naming both sides", async () => {
+  const d = deps({
+    readGraphCommit: async () => { d.calls.readGraphCommit.push(1); return "   "; },
+    repoCommit: async () => { d.calls.repoCommit.push(1); return "reposha222"; },
+  });
+
+  const result = await runVenturePlannerOnce(d);
+
+  assert.equal(result.created, false);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, `${STALE_GRAPH_REASON}: graph built at unstamped, repo at reposha222`);
+  assert.equal(d.calls.httpPost.length, 0);
 });
 
 console.log("");

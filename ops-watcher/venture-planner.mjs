@@ -3,7 +3,9 @@
 // venture work. Execution remains exclusively owned by directive-runner.mjs.
 
 import { createHash } from "node:crypto";
-import { writeFile, unlink } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { readFile, writeFile, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -28,7 +30,10 @@ export const PLANNER_EVENT_KIND = "venture.planner.directive_proposed";
 export const PLANNER_MARKER = "VENTURE_PLANNER_KEY";
 export const DIRECTIVE_LABEL_COLOR = "#7c3aed";
 export const PAPERCLIP_DISCOVERY_OPTS = Object.freeze({ attempts: 3, retryDelayMs: 1500 });
+export const STALE_GRAPH_REASON = "stale-knowledge-graph";
+export const GRAPH_STAMP_SUFFIX = ".commit.stamp";
 
+const execFileAsync = promisify(execFile);
 const TERMINAL_STATUSES = new Set(["done", "closed", "cancelled", "canceled", "archived", "completed"]);
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -98,6 +103,68 @@ export function fingerprintIndicatesDirtyRepo(value) {
   if (/\bdirty\b/i.test(text)) return true;
   if (/\bclean\b/i.test(text)) return false;
   return /^[ MADRCU?!]{1,2}\s+\S/m.test(text);
+}
+
+// GUARD: refuse to propose on a stale knowledge graph. The graph is stamped
+// with the repo commit it was built at; the sweep re-reads that stamp and
+// compares it against the current HEAD. Any mismatch (or a missing/unknown
+// commit on either side) is a hard refusal, never a warning: a stale graph
+// understates blast radius, which weakens the hard stops this proposal
+// carries into directive-runner.
+export function graphStampPath() {
+  return `${ACTIVE_GRAPH}${GRAPH_STAMP_SUFFIX}`;
+}
+
+export async function readGraphCommit(deps = {}) {
+  if (typeof deps.readGraphCommit === "function") return deps.readGraphCommit(deps);
+  try {
+    return nonBlank(await readFile(graphStampPath(), "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return "";
+    throw error;
+  }
+}
+
+// Called by the graph build step (graphify-refresh) when the graph is built,
+// recording the commit it was built at. The planner never stamps on its own:
+// a stamp written at proposal time would falsely claim the graph is fresh.
+export async function stampGraphCommit(commit, deps = {}) {
+  if (typeof deps.stampGraphCommit === "function") return deps.stampGraphCommit(commit, deps);
+  const value = nonBlank(commit);
+  if (!value) throw new Error("cannot stamp graph without a commit");
+  await writeFile(graphStampPath(), `${value}\n`, "utf8");
+  return value;
+}
+
+export async function currentRepoCommit(deps = {}) {
+  if (typeof deps.repoCommit === "function") return deps.repoCommit(deps);
+  const cwd = nonBlank(deps.cwd) || nonBlank(deps.repoPath) || MODULE_DIR;
+  const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd });
+  return nonBlank(stdout);
+}
+
+export async function verifyGraphFreshness(venture, deps = {}) {
+  let graphCommit = "";
+  try {
+    graphCommit = nonBlank(await readGraphCommit(deps));
+  } catch {
+    graphCommit = "";
+  }
+  let repoCommit = "";
+  try {
+    repoCommit = nonBlank(await currentRepoCommit({ ...deps, venture, cwd: venture?.repoPath, repoPath: venture?.repoPath }));
+  } catch {
+    repoCommit = "";
+  }
+  return {
+    fresh: Boolean(graphCommit) && Boolean(repoCommit) && graphCommit === repoCommit,
+    graphCommit: graphCommit || "unstamped",
+    repoCommit: repoCommit || "unknown",
+  };
+}
+
+export function staleGraphReason(graphCommit, repoCommit) {
+  return `${STALE_GRAPH_REASON}: graph built at ${graphCommit}, repo at ${repoCommit}`;
 }
 
 async function acquireVentureLock(venture) {
@@ -271,6 +338,17 @@ async function prepareCandidate(venture, deps) {
   if (fingerprintIndicatesDirtyRepo(fingerprint)) {
     return { venture, skip: true, reason: "dirty-repo", fingerprint };
   }
+  const graph = await verifyGraphFreshness(venture, deps);
+  if (!graph.fresh) {
+    return {
+      venture,
+      skip: true,
+      reason: STALE_GRAPH_REASON,
+      detail: staleGraphReason(graph.graphCommit, graph.repoCommit),
+      graphCommit: graph.graphCommit,
+      repoCommit: graph.repoCommit,
+    };
+  }
   const proposalKey = proposalKeyFor(venture, fingerprint);
 
   const taskText = buildTaskText(venture);
@@ -321,7 +399,20 @@ export async function runVenturePlannerOnce(deps = {}) {
         candidates.push({ ...candidate, lock });
       }
     }
-    if (!candidates.length) return { ok: true, created: false, reason: "no-new-venture-directive", skipped };
+    if (!candidates.length) {
+      const stale = skipped.find((s) => s?.reason === STALE_GRAPH_REASON);
+      if (stale) {
+        return {
+          ok: false,
+          created: false,
+          reason: stale.detail || staleGraphReason(stale.graphCommit, stale.repoCommit),
+          graphCommit: stale.graphCommit,
+          repoCommit: stale.repoCommit,
+          skipped,
+        };
+      }
+      return { ok: true, created: false, reason: "no-new-venture-directive", skipped };
+    }
 
     const base = await resolveBase(deps);
     const companyId = deps.companyId || CANONICAL_COMPANY_ID;
