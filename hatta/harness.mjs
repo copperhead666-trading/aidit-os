@@ -7,9 +7,18 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-// Fixed absolute root is more robust than process.cwd(): this script stays scoped
-// even when invoked from a different directory.
-const WORKSPACE_ROOT = path.resolve("D:\\AI\\Active FounderOS-Aidit");
+// SECURITY SANDBOX BOUNDARY. Every file operation this harness performs is
+// checked against WORKSPACE_ROOT, so a wrong value does not merely mislocate
+// files — it makes the harness refuse every operation, which is exactly what
+// happened when the checkout moved to a machine where the old hardcoded
+// "D:\AI\Active FounderOS-Aidit" did not exist.
+//
+// Derived from this module's own location rather than process.cwd(): the
+// harness stays scoped when invoked from a different directory (the property
+// the old absolute path was bought for) WITHOUT being tied to one machine.
+// harness.mjs lives in <repo>/hatta/, so the repository root is one level up.
+const __harnessDir = path.dirname(fileURLToPath(import.meta.url));
+const WORKSPACE_ROOT = path.resolve(__harnessDir, "..");
 const DEFAULT_ENDPOINT = "http://localhost:11434/api/chat";
 const ENDPOINT_CONFIG = resolveEndpoint(process.env.OLLAMA_HOST);
 const ENDPOINT = ENDPOINT_CONFIG.endpoint;

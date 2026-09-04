@@ -124,7 +124,27 @@
 // outside the allowlist), but the path was confirmed live via the running
 // process's command line in the task context.
 
-const ROOT = "D:\\AI\\Active FounderOS-Aidit";
+// Repository root, DERIVED. This file lives in <repo>/ops-watcher/, and being a
+// .cjs file it gets a real __dirname for free. The previous hardcoded
+// "D:\AI\Active FounderOS-Aidit" made every `cwd` below point at a directory
+// that does not exist once the checkout moves or the folder is renamed, and PM2
+// reports that as a generic spawn failure rather than a bad path.
+const path = require("node:path");
+const ROOT = path.resolve(__dirname, "..");
+
+// The ONE thing here that genuinely cannot be derived: paperclipai is installed
+// globally, outside the checkout, at a location that differs per machine and per
+// npm prefix. config/machine.json is the only file allowed to know it.
+const MACHINE = require(path.join(ROOT, "config", "machine.json"));
+const PAPERCLIP_CLI_ENTRY = MACHINE?.paperclip?.cli_entry;
+if (!PAPERCLIP_CLI_ENTRY) {
+  // Fail loudly and by key name. A silent fallback here would start PM2 with a
+  // broken paperclip app and leave every board read failing for an unrelated
+  // reason.
+  throw new Error(
+    "config/machine.json is missing paperclip.cli_entry — PM2 cannot resolve the paperclipai dist entry to spawn. Set it to this machine's <npm global root>/paperclipai/dist/index.js.",
+  );
+}
 
 // --- restart policy justification ---
 // max_restarts: 10 — NOT Infinity. A daemon that crash-loops forever burning
@@ -151,9 +171,12 @@ module.exports = {
     //    ESM-ecosystem-loader-compat" section at the top of this file).
     {
       name: "paperclip",
-      script: "C:\\Users\\ASUS\\AppData\\Roaming\\npm\\node_modules\\paperclipai\\dist\\index.js",
+      script: PAPERCLIP_CLI_ENTRY,
       interpreter: "node",
-      args: 'run --data-dir "D:\\AI\\Active FounderOS-Aidit\\.paperclip" --instance default',
+      // --data-dir DERIVED from ROOT. A stale literal here is worse than a crash:
+      // paperclipai would happily create a brand-new empty instance at the old
+      // path (or fail) instead of opening the board with 78 issues.
+      args: `run --data-dir "${path.join(ROOT, ".paperclip")}" --instance default`,
       cwd: ROOT,
       autorestart: true,
       max_restarts: 10,

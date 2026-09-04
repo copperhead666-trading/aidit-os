@@ -1,0 +1,28 @@
+{
+  "$schema_note": "The ONLY file in this repository allowed to know facts about the physical machine it is checked out on. Everything else derives its paths from path.resolve(__dirname, '..') and must never hardcode an absolute repository path.",
+  "purpose": "Before 2026-09-04 five live code paths hardcoded 'D:\\\\AI\\\\Active FounderOS-Aidit' as the repository root. Moving the checkout (ASUS -> Lenovo, and the folder rename to 'Aidit OS') made every one of them wrong, and hatta/harness.mjs in particular refused every file operation because its security sandbox boundary pointed at a directory that no longer existed. The repository root is now always derived from the module's own location. The values below are the residue: things that genuinely live OUTSIDE the checkout and therefore cannot be derived.",
+  "rules": [
+    "NEVER put a path that is inside the repository in this file. Derive it.",
+    "A consumer MUST fail loudly with the key name when a value it needs is missing, never silently fall back to a guess.",
+    "This file is machine-specific. It is committed so the shape is reviewable and the next machine move is a single-file edit, not a hunt."
+  ],
+  "machine_id": "LENOVO-BLACK",
+  "recorded_at": "2026-09-04",
+  "recorded_by": "SOEKARNO",
+  "node": {
+    "bin": "D:\\aidit-node\\node-v22.14.0-win-x64\\node.exe",
+    "version": "22.14.0",
+    "why_pinned": "Node v26 on Windows crashes at process teardown (libuv UV_HANDLE_CLOSING) AFTER tests pass, so ops-watcher/run-all-tests.mjs scores a passing suite as a failure. Measured on this machine: v26 -> 59/62, v22.14.0 -> 62/62. The system default node on PATH here is v26.5.0, so the absolute path matters."
+  },
+  "paperclip": {
+    "cli_entry": "D:\\Development\\npm-global\\node_modules\\paperclipai\\dist\\index.js",
+    "why_dist_entry": "PM2 spawns `node <script>`. `paperclipai` on Windows is a .cmd shim, not a file node can resolve, and interpreter:'none' fails EINVAL. Pointing at the package's real dist entry is the empirically-working path. This is an internal package detail: re-confirm it after any `npm i -g paperclipai` upgrade.",
+    "npm_global_root": "D:\\Development\\npm-global\\node_modules",
+    "instance_home_parent": "D:\\AI\\Aidit OS"
+  },
+  "cockpit": {
+    "public_base": "https://lenovo-black.tailc7b60e.ts.net",
+    "local_base": "http://127.0.0.1:4200",
+    "why": "Tailscale Funnel hostname of THIS machine. Was 'asus-gray.tailc7b60e.ts.net' while the ASUS was the host; a stale value here makes --public screenshots and audits silently probe a machine this one cannot reach."
+  }
+}

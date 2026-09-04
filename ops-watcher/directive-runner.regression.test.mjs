@@ -66,6 +66,14 @@ const goodPlan = [
   "OUT OF SCOPE: Tidak menjalankan network, Telegram, pm2, git, atau package install.",
   "RISK: low",
 ].join("\n");
+// The prompt tells the lane where the repository physically is. That value is
+// DERIVED in directive-runner.mjs (path.resolve(__dirname, "..")), so the golden
+// derives it the same way instead of hardcoding one machine's path. Computed
+// independently here — this test file sits in the same directory as the module
+// under test, so an identical derivation is a real check that the module resolved
+// the root correctly, not a tautology that copies the module's own answer.
+const TEST_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
 const EXPECTED_PLAN_PROMPT_NO_SPECIALIST = String.raw`You are the planning lane for FounderOS-Aidit directive-runner stage 1.
 Produce a short approval plan only. Do not execute anything.
 Your response MUST be exactly this shape and nothing else:
@@ -87,7 +95,7 @@ Allowed VERIFY for file-content directives: node ops-watcher/verify-file.mjs --p
 PowerShell, cmd, bash, git, or any other command will be rejected before the owner sees the plan.
 Line contract: VERIFY occupies exactly ONE line, OUT OF SCOPE is the very next line, and RISK the one after that. A VERIFY spread over several lines - a here-string, a backslash continuation, a wrapped command - makes the parser read the continuation where OUT OF SCOPE should be, and the plan is rejected as missing OUT OF SCOPE.
 Nothing may follow the RISK line.
-Scope is only this repository: D:\AI\Active FounderOS-Aidit.
+Scope is only this repository: ${TEST_REPO_ROOT}.
 Write OBJECTIVE, STEPS, VERIFY, and OUT OF SCOPE in professional Bahasa Indonesia. Keep file paths and commands verbatim.
 
 Issue: KOL-1

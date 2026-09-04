@@ -5,11 +5,25 @@ import { createHmac } from 'node:crypto';
 import { chromium, devices } from 'playwright';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = 'D:/AI/Active FounderOS-Aidit';
-const BASE = process.argv.includes('--public')
-  ? 'https://asus-gray.tailc7b60e.ts.net'
-  : 'http://127.0.0.1:4200';
+// Repository root, DERIVED. This script lives in <repo>/scripts/, so the root is
+// one level up. It was hardcoded to 'D:/AI/Active FounderOS-Aidit', which broke
+// the .env.local read below the moment the checkout moved or was renamed.
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+// The public host is a real per-machine fact (this machine's Tailscale Funnel
+// name), so it comes from config/machine.json rather than being derived or
+// guessed. A stale value silently audits a DIFFERENT machine and reports its
+// results as if they were this one's.
+const MACHINE = JSON.parse(fs.readFileSync(path.join(ROOT, 'config', 'machine.json'), 'utf8'));
+const usePublicBase = process.argv.includes('--public');
+if (usePublicBase && !MACHINE?.cockpit?.public_base) {
+  throw new Error('config/machine.json is missing cockpit.public_base — cannot audit --public.');
+}
+const BASE = usePublicBase
+  ? MACHINE.cockpit.public_base
+  : (MACHINE?.cockpit?.local_base || 'http://127.0.0.1:4200');
 
 function botToken() {
   const raw = fs.readFileSync(path.join(ROOT, '.env.local'), 'utf8');

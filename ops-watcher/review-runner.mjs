@@ -134,7 +134,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const COMPANY_ID = "a7011f31-8891-4581-b8fb-bbda8ac6a890";
 const GIBRAN_AGENT_ID = "ce433688-4e0d-4902-addd-b7d27eb081b7";
-const HERMES_WORKSPACE = "D:\\AI\\Active FounderOS-Aidit";
+// Derived, not hardcoded: this is the --in workspace handed to the hermes CLI.
+// review-runner.mjs lives in <repo>/ops-watcher/, so the repository root is one
+// level up. A hardcoded absolute path here pointed GIBRAN at a directory that
+// does not exist on this machine (see also the KOL bug where it pointed at the
+// legacy "D:\FounderOS-Aidit De Maestros\app" workspace).
+const HERMES_WORKSPACE = path.resolve(__dirname, "..");
 const HERMES_PROVIDER = "nous";
 const HERMES_MODEL = "upstage/solar-pro4:free";
 const HERMES_TIMEOUT_MS = 10 * 60 * 1000;

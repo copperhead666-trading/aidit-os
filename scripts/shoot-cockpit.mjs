@@ -10,8 +10,14 @@ import { createHmac } from 'node:crypto';
 import { chromium, devices } from 'playwright';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = 'D:/AI/Active FounderOS-Aidit';
+// Repository root, DERIVED. This script lives in <repo>/scripts/, so the root is
+// one level up. It was hardcoded to 'D:/AI/Active FounderOS-Aidit', which broke
+// both the .env.local read below and the .shots output directory the moment the
+// checkout moved or was renamed.
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const MACHINE = JSON.parse(fs.readFileSync(path.join(ROOT, 'config', 'machine.json'), 'utf8'));
 const OWNER_UID = 8987077084;
 const OUT = process.env.SHOT_DIR || path.join(ROOT, '.shots');
 
@@ -19,7 +25,14 @@ const args = process.argv.slice(2);
 const usePublic = args.includes('--public');
 const themeArg = args[args.indexOf('--theme') + 1];
 const theme = args.includes('--theme') && themeArg ? themeArg : null;
-const BASE = usePublic ? 'https://asus-gray.tailc7b60e.ts.net' : 'http://127.0.0.1:4200';
+// Per-machine Tailscale Funnel host — config/machine.json, never hardcoded: a
+// stale value shoots a DIFFERENT machine's cockpit and files it as this one's.
+if (usePublic && !MACHINE?.cockpit?.public_base) {
+  throw new Error('config/machine.json is missing cockpit.public_base — cannot shoot --public.');
+}
+const BASE = usePublic
+  ? MACHINE.cockpit.public_base
+  : (MACHINE?.cockpit?.local_base || 'http://127.0.0.1:4200');
 
 function botToken() {
   const raw = fs.readFileSync(path.join(ROOT, '.env.local'), 'utf8');

@@ -1,10 +1,10 @@
 {
   "schema_version": "1.0.0",
-  "purpose": "Single canonical reference for locating the Active FounderOS-Aidit Paperclip instance. Consumers (ops-watcher, GBrain, HATTA harness, future integrations) MUST resolve the live endpoint through the discovery strategy below instead of hardcoding a port number. Investigated and written 2026-08-28 after a real, reproduced 3102->3101->3100 port drift.",
+  "purpose": "Single canonical reference for locating the Aidit OS Paperclip instance. Consumers (ops-watcher, GBrain, HATTA harness, future integrations) MUST resolve the live endpoint through the discovery strategy below instead of hardcoding a port number. Investigated and written 2026-08-28 after a real, reproduced 3102->3101->3100 port drift.",
   "canonical_identity": {
-    "instance_home": "D:\\AI\\Active FounderOS-Aidit\\.paperclip",
+    "instance_home": "D:\\AI\\Aidit OS\\.paperclip",
     "instance_id": "default",
-    "config_path": "D:\\AI\\Active FounderOS-Aidit\\.paperclip\\instances\\default\\config.json",
+    "config_path": "D:\\AI\\Aidit OS\\.paperclip\\instances\\default\\config.json",
     "database": {
       "mode": "postgres",
       "host": "127.0.0.1",
@@ -18,7 +18,8 @@
       "name": "kolega corp",
       "issue_prefix": "KOL"
     },
-    "backup_dir_fingerprint": "D:\\AI\\Active FounderOS-Aidit\\.paperclip\\instances\\default\\data\\backups"
+    "backup_dir_fingerprint": "D:\\AI\\Aidit OS\\.paperclip\\instances\\default\\data\\backups",
+    "rename_note_2026-09-04": "Workspace folder renamed 'Active FounderOS-Aidit' -> 'Aidit OS' and moved to the Lenovo. instance_home, config_path and backup_dir_fingerprint follow the folder. The DATABASE NAME was deliberately NOT renamed: paperclip_founderos_aidit stays, because the pg_dump being restored carries that name and renaming it buys nothing while adding a way for the restore to half-succeed."
   },
   "primary_endpoint": {
     "port": 3110,
@@ -26,7 +27,13 @@
   },
   "discovery_strategy": {
     "rule": "Fingerprint-based discovery is the fallback/recovery mechanism, not the primary lookup -- try primary_endpoint.port first, verify its /api/health response's databaseBackup.backupDir matches canonical_identity.backup_dir_fingerprint, and only fall back to scanning candidate_ports if that specific check fails (primary port unreachable, or answered by something else). Never treat a specific port number as identity on its own. If no candidate matches, the canonical instance is not running -- do not fall back to any other health-passing instance on the assumption it's the same one.",
-    "candidate_ports": [3110, 3100, 3101, 3102, 3103],
+    "candidate_ports": [
+      3110,
+      3100,
+      3101,
+      3102,
+      3103
+    ],
     "health_path": "/api/health",
     "identity_field_in_health_response": "databaseBackup.backupDir",
     "timeout_ms_per_probe": 2000
@@ -40,7 +47,12 @@
   },
   "repin_completed_2026-08-28": {
     "action": "server.port in .paperclip/instances/default/config.json changed from 3100 to 3110 by HATTA (single-field edit, read back and confirmed). Ahmad then performed a controlled restart: stopped the running instance (targeted single-PID taskkill, not image-wide), started a fresh one, verified healthy on :3110, company/data intact (kolega corp, issueCounter unchanged at 1), fingerprint-match discovery re-verified live against the new port.",
-    "verified_dead_ports_post_repin": [3100, 3101, 3102, 3103],
+    "verified_dead_ports_post_repin": [
+      3100,
+      3101,
+      3102,
+      3103
+    ],
     "reversible": true
   }
 }

@@ -25,7 +25,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const OWNER_REQUIRED_COLOR = "#b91c1c";
 const NOTIFIED_MARKER = "ESCALATION-SEC NOTIFIED";
-const HERMES_WORKSPACE = "D:\\AI\\Active FounderOS-Aidit";
+// The --in workspace handed to the hermes CLI. DERIVED from this module's own
+// location (escalation-sec.mjs lives in <repo>/ops-watcher/), never hardcoded.
+const HERMES_WORKSPACE = path.resolve(__dirname, "..");
 const HERMES_PROVIDER = "nous";
 const HERMES_MODEL = "upstage/solar-pro4:free";
 const HERMES_TIMEOUT_MS = 10 * 60 * 1000;

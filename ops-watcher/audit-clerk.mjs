@@ -35,7 +35,10 @@ const REPO_ROOT = path.resolve(__dirname, "..");
 const STATE_FILE = path.join(__dirname, "audit-clerk-state.json");
 const NODE = process.execPath || "node";
 
-const HERMES_WORKSPACE = "D:\\AI\\Active FounderOS-Aidit";
+// The --in workspace handed to the hermes CLI. DERIVED from REPO_ROOT (declared
+// above from this module's own location), never hardcoded: an absolute path here
+// pointed the lane at a directory that does not exist once the checkout moves.
+const HERMES_WORKSPACE = REPO_ROOT;
 const HERMES_PROVIDER = "nous";
 const HERMES_MODEL = "upstage/solar-pro4:free";
 const HERMES_TIMEOUT_MS = 10 * 60 * 1000;

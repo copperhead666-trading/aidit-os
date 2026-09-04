@@ -488,7 +488,10 @@ export function buildPlanPrompt(issue, contextBundle, lastFailure = null, specia
     "PowerShell, cmd, bash, git, or any other command will be rejected before the owner sees the plan.",
     "Line contract: VERIFY occupies exactly ONE line, OUT OF SCOPE is the very next line, and RISK the one after that. A VERIFY spread over several lines - a here-string, a backslash continuation, a wrapped command - makes the parser read the continuation where OUT OF SCOPE should be, and the plan is rejected as missing OUT OF SCOPE.",
     "Nothing may follow the RISK line.",
-    "Scope is only this repository: D:\\AI\\Active FounderOS-Aidit.",
+    // REPO_ROOT, not a literal: the prompt tells the lane where the repository
+    // physically is, so a stale literal sends it hunting for a folder that does
+    // not exist on this machine and it improvises a path instead.
+    `Scope is only this repository: ${REPO_ROOT}.`,
     "Write OBJECTIVE, STEPS, VERIFY, and OUT OF SCOPE in professional Bahasa Indonesia. Keep file paths and commands verbatim.",
     ...previousFailureLines,
     ...specialistPromptLines(specialists),

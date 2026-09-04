@@ -39,6 +39,11 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TMP_LOCK = path.join(__dirname, "review-runner.regression.lock.tmp");
+// The workspace review-runner.mjs actually hands to hermes, derived the same way
+// the module derives it (both files live in <repo>/ops-watcher/). Used by case (r)
+// to build a path that is genuinely INSIDE the workspace on whatever machine the
+// suite runs on.
+const TEST_WORKSPACE_ROOT = path.resolve(__dirname, "..");
 const TMP_STATE = path.join(__dirname, "review-runner.regression.state.tmp");
 
 // Shared lock-deps injection: every sweep test uses the per-test TMP_LOCK (NOT
@@ -821,7 +826,12 @@ async function testInWorkspacePathNotFlagged() {
       dispatchCalled++;
       return {
         ok: true,
-        stdout: "Reviewed D:\\AI\\Active FounderOS-Aidit\\ops-watcher\\review-runner.mjs; clean.\nVERDICT: PASS",
+        // The "real workspace" is now DERIVED (review-runner.mjs resolves
+        // HERMES_WORKSPACE from its own location), so the fixture derives the
+        // same way. Hardcoding "D:\AI\Active FounderOS-Aidit" here made this
+        // case assert the opposite of its own name the moment the checkout
+        // moved: that path is genuinely out-of-workspace on this machine.
+        stdout: `Reviewed ${path.join(TEST_WORKSPACE_ROOT, "ops-watcher", "review-runner.mjs")}; clean.\nVERDICT: PASS`,
         stderr: "",
         timedOut: false,
         error: null,

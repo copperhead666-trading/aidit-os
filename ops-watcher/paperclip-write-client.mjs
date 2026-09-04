@@ -40,7 +40,10 @@ import { discoverPaperclipPort, httpGet } from "./watcher.mjs";
 export { discoverPaperclipPort, httpGet };
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SECRETS_DIR = "D:\\AI\\Active FounderOS-Aidit\\.paperclip\\instances\\default\\secrets";
+// The Paperclip instance lives at <repo>/.paperclip (gitignored, but always
+// under the checkout), so this is DERIVED. Hardcoding it meant every board write
+// silently lost its token the moment the checkout moved or was renamed.
+const SECRETS_DIR = path.resolve(__dirname, "..", ".paperclip", "instances", "default", "secrets");
 
 // ---- Board/owner token resolution (reuses watcher.mjs's secrets-dir pattern) ----
 // watcher.mjs keeps resolvePaperclipToken() private; rather than duplicate the
