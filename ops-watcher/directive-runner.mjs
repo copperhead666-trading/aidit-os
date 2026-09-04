@@ -44,6 +44,11 @@ import { deliverAlert } from "./alert-delivery.mjs";
 import { judgeWrite } from "./write-delivery.mjs";
 import { escapeMarkdown, sendMessage as telegramSendMessage } from "./telegram-client.mjs";
 import { resolveSpecialistsForPacket } from "./specialists.mjs";
+// The venture registry answers the ventures fence. This file must not decide
+// what a venture is or which paths belong to one — config/ventures.json and
+// ops-watcher/ventures.mjs already own that, and a second answer here would
+// drift from the first the moment either changed.
+import { activeVentures, ventureForPath } from "./ventures.mjs";
 // Stage 3 reuse — import, do not rewrite. The snapshot/rollback helpers and the
 // lane registry already implement the same shape for the self-repair path; a
 // directive execution is the same shape with a different trigger. The lane
@@ -461,7 +466,7 @@ function specialistPromptLines(specialists) {
   ];
 }
 
-export function buildPlanPrompt(issue, contextBundle, lastFailure = null, specialists = null) {
+export function buildPlanPrompt(issue, contextBundle, lastFailure = null, specialists = null, ventures = []) {
   const ident = issue?.identifier || issue?.id || "unknown";
   const hasLastFailure = lastFailure && typeof lastFailure === "object" && Object.keys(lastFailure).length > 0;
   const previousFailureLines = hasLastFailure
@@ -487,7 +492,13 @@ export function buildPlanPrompt(issue, contextBundle, lastFailure = null, specia
     "OUT OF SCOPE: <what this deliberately will not do>",
     "RISK: low | medium | high",
     "",
-    "Hard boundary: repo-relative paths only; nothing under ventures/, .git/, .paperclip/; no .env* files; no network; no message to anyone but the owner; no package installs.",
+    // The ventures half of this boundary is conditional on the registry. Left
+    // unconditional, the planning lane would never propose a venture path and
+    // the gate below it would be unreachable — a fence enforced twice, with the
+    // outer one making the inner one dead code.
+    activeVenturePathsFor(ventures).length
+      ? `Hard boundary: repo-relative paths only; under ventures/ ONLY these active venture paths may be touched: ${activeVenturePathsFor(ventures).join(", ")} — anything else under ventures/ is refused; nothing under .git/, .paperclip/; no .env* files; no network; no message to anyone but the owner; no package installs.`
+      : "Hard boundary: repo-relative paths only; nothing under ventures/, .git/, .paperclip/; no .env* files; no network; no message to anyone but the owner; no package installs.",
     "VERIFY contract: the VERIFY line MUST be a single command starting with node ops-watcher/.",
     "The VERIFY line must not contain ; & or | - not even inside a quoted argument. Two commands joined by && will be rejected before the owner ever sees the plan.",
     "This applies to the --matches regex too: write a regex without | alternation, or pick a different single command.",
@@ -556,7 +567,37 @@ export function planIdentityKey(plan) {
   return createHash("sha256").update(JSON.stringify(identity)).digest("hex").slice(0, 16);
 }
 
-export function validatePlanScope(plan) {
+// Directories denied ANYWHERE in a path, not only at its head.
+//
+// This used to be a prefix test, so "ventures" being denied outright also hid a
+// hole: ".git" only matched at the start, and a nested "x/.git" or
+// "x/node_modules" passed. That hole did not matter while nothing under
+// ventures/ was reachable at all. It matters now, because a venture is a whole
+// second repository with its own .git and its own node_modules, and the first
+// thing a lane reaching into one could otherwise touch is its git directory.
+const DENIED_PATH_SEGMENTS = new Set([".git", ".paperclip", "node_modules", "graphify-out"]);
+
+/**
+ * The ventures fence, CONDITIONAL on config/ventures.json.
+ *
+ * The owner approved exactly this: a lane may touch paths under a venture whose
+ * status is `active`, and nothing else. It is not a blanket opening of
+ * ventures/. A path under ventures/ that resolves to no venture, or to one that
+ * is not active, stays denied — and the violation says WHICH, because "denied
+ * directory" for both cases is the same answer to two different questions and
+ * sends whoever reads it looking in the wrong place.
+ *
+ * The registry answers this, not a parser here: ops-watcher/ventures.mjs owns
+ * what a venture is and which paths belong to it. A second path matcher in this
+ * file would be a second source of truth about that.
+ *
+ * ASYNC because activeVentures/ventureForPath are. The alternative — reading
+ * config/ventures.json synchronously in a new place here — is the same second
+ * source of truth wearing a different hat. Both callers were already inside
+ * async functions, so awaiting costs nothing.
+ */
+export async function validatePlanScope(plan, deps = {}) {
+  const _ventureForPath = deps.ventureForPath || ventureForPath;
   const violations = [];
   for (const raw of Array.isArray(plan?.files) ? plan.files : []) {
     const p = String(raw || "").trim();
@@ -567,11 +608,32 @@ export function validatePlanScope(plan) {
     if (!p) { add("empty path"); continue; }
     if (/^[A-Za-z]:[\\/]/.test(p) || p.startsWith("/") || p.startsWith("\\")) add("absolute path");
     if (parts.includes("..") || low.startsWith("../")) add("escapes repository");
-    if (["ventures", ".git", ".paperclip", "node_modules", "graphify-out"].some((x) => low === x || low.startsWith(`${x}/`))) add("denied directory");
+    if (parts.some((seg) => DENIED_PATH_SEGMENTS.has(seg.toLowerCase()))) add("denied directory");
+    if (low === "ventures" || low.startsWith("ventures/")) {
+      // Bare "ventures" itself belongs to no venture and resolves to null, so
+      // it is refused as an unknown venture rather than silently allowed.
+      const venture = await _ventureForPath(norm, deps);
+      if (!venture) add("unknown venture — no venture in config/ventures.json owns this path");
+      else if (venture.status !== "active") {
+        add(`venture ${venture.id} is not active (status: ${venture.status || "none"})`);
+      }
+    }
     if (parts.some((seg) => /^\.env/i.test(seg))) add("denied env file");
     if (HARD_DENY.has(low)) add("hard-deny operational file");
   }
   return { ok: violations.length === 0, violations };
+}
+
+// The repo-relative paths a prompt may name, given the resolved active ventures.
+// Empty list means the fence is fully closed, which is exactly the behaviour
+// before the registry existed — so a caller that does not resolve ventures gets
+// the old, closed prompt rather than an accidentally open one.
+export function activeVenturePathsFor(ventures) {
+  return (Array.isArray(ventures) ? ventures : [])
+    .filter((v) => v && v.status === "active")
+    .map((v) => String(v.repoPath || "").replace(/\\/g, "/").replace(/\/+$/, ""))
+    .filter(Boolean)
+    .sort();
 }
 
 export function validateVerifyCommand(verify) {
@@ -962,6 +1024,12 @@ export async function runDirectiveSweepOnce(deps = {}) {
     cardsRetried: 0,
     errors: [],
   };
+  // Resolved ONCE per sweep, before any issue is planned. The planning prompt
+  // and the scope gate must be told the same thing about which ventures are
+  // active; re-reading per issue would let a mid-sweep edit to
+  // config/ventures.json give one directive a boundary another never saw.
+  const sweepVentures = await (deps.activeVentures || activeVentures)(deps);
+
   const {
     base: injectedBase,
     companyId = CANONICAL_COMPANY_ID,
@@ -1264,7 +1332,7 @@ export async function runDirectiveSweepOnce(deps = {}) {
 
       const ctx = await bounded("context retrieval", () => retrieveContext({ issue, targetRole: "CORLEONE", taskKind: "directive-plan", now }), CONTEXT_TIMEOUT_MS);
       const specialists = await resolveSpecialistsForIssue(issue, resolveSpecialists, { log, specialistDeps });
-      const prompt = buildPlanPrompt(issue, ctx.ok ? ctx.value : { status: "degraded", error: ctx.error }, state.lastPlanFailures?.[key] || inferLastPlanFailure(comments) || null, specialists);
+      const prompt = buildPlanPrompt(issue, ctx.ok ? ctx.value : { status: "degraded", error: ctx.error }, state.lastPlanFailures?.[key] || inferLastPlanFailure(comments) || null, specialists, sweepVentures);
       const out = await dispatchPlan(prompt, { issue, timeoutMs: PLAN_TIMEOUT_MS });
       const text = cap(out && out.stdout ? out.stdout : out && out.text ? out.text : "");
       const parsed = parsePlan(text);
@@ -1277,7 +1345,7 @@ export async function runDirectiveSweepOnce(deps = {}) {
         plannedThisSweep += 1;
         continue;
       }
-      const scope = validatePlanScope(parsed);
+      const scope = await validatePlanScope(parsed, deps);
       if (!scope.ok) {
         const reason = "file-scope-out-of-scope";
         const attempt = recordPlanFailureAttempt(state, key, prior, { reason, violations: scope.violations });
@@ -1855,7 +1923,7 @@ function formatExecutionFileLine(file, graphAnchors) {
 // list (the only files that may change, one per line, with optional anchors from
 // graphify-out/active/graph.json); the STEPS; the VERIFY command that must pass;
 // and a hard-stop block. Deterministic for the same inputs and graph snapshot.
-export function buildExecutionPrompt(issue, plan, specialists = null) {
+export function buildExecutionPrompt(issue, plan, specialists = null, ventures = []) {
   const ident = issue?.identifier || issue?.id || "unknown";
   const title = String(issue?.title || "");
   const objective = String(plan?.objective || "");
@@ -1890,7 +1958,9 @@ export function buildExecutionPrompt(issue, plan, specialists = null) {
     "",
     "HARD STOPS — violating any aborts the directive and reverts all changes:",
     "  - No other file may be created, edited, renamed, or deleted besides those listed above.",
-    "  - Nothing under ventures/ may be touched.",
+    ...(activeVenturePathsFor(ventures).length
+      ? [`  - Under ventures/, ONLY these active venture paths may be touched: ${activeVenturePathsFor(ventures).join(", ")}. Anything else under ventures/ aborts the directive.`]
+      : ["  - Nothing under ventures/ may be touched."]),
     "  - No network, no HTTP, no Telegram, no Paperclip.",
     "  - No pm2, no git, no shell, no child processes.",
     "  - No package installs; only Node built-ins and existing local modules.",
@@ -2009,6 +2079,11 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
   const recordOutcomeFn = deps.recordOutcome || defaultRecordLaneOutcome;
   const statFileFn = deps.statFile || defaultStatFile;
   const resolveSpecialists = deps.resolveSpecialistsForPacket || resolveSpecialistsForPacket;
+  // Resolved ONCE per execution. The registry decides which venture paths this
+  // directive may touch, and both the re-validation below and the lane's HARD
+  // STOPS must be told the same answer — two reads could disagree mid-run.
+  const listVentures = deps.activeVentures || activeVentures;
+  const ventures = await listVentures(deps);
   const log = deps.log || (() => {});
 
   let chosenLane = null;
@@ -2037,7 +2112,7 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
   try {
     // 1. Re-validate scope. The plan was written by a model and approved by a
     //    human, and neither is a security boundary.
-    const scope = validatePlanScope(plan);
+    const scope = await validatePlanScope(plan, deps);
     if (!scope.ok) {
       return emit({ outcome: "refused", violations: scope.violations });
     }
@@ -2077,7 +2152,7 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
 
     // 6. Dispatch the execution prompt, then record the lane outcome.
     const specialists = await resolveSpecialistsForIssue(issue, resolveSpecialists, { log, specialistDeps: deps.specialistDeps });
-    const prompt = buildExecutionPrompt(issue, plan, specialists);
+    const prompt = buildExecutionPrompt(issue, plan, specialists, ventures);
     const dispatchFn = deps.dispatchExecution || makeDefaultDispatchExecution(lane && lane.wrapper);
     const dispatch = await dispatchFn(prompt);
     await recordOutcomeFn(lane && lane.guardName, {

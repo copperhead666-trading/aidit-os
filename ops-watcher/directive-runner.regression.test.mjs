@@ -15,6 +15,7 @@ import {
   buildPlanPrompt,
   parsePlan,
   validatePlanScope,
+  activeVenturePathsFor,
   validateVerifyCommand,
   runDirectiveSweepOnce,
   capturePlanForExecution,
@@ -625,12 +626,181 @@ await t("parsePlan parses well-formed plan and rejects missing VERIFY", () => {
   assert.equal(parsePlan(goodPlan.replace(/^VERIFY: .+\n/m, "")).ok, false);
 });
 
-await t("validatePlanScope rejects denied paths and accepts normal repo-relative files", () => {
+// The registry these tests state for themselves. Never the live one: this file
+// must not change meaning when the owner edits config/ventures.json.
+const NO_VENTURES = async () => null;
+const REGISTRY = [
+  { id: "caveman-trading-os", status: "active", repoPath: "ventures/caveman-trading-os" },
+  { id: "parked-venture", status: "parked", repoPath: "ventures/parked-venture" },
+];
+const registryLookup = async (repoRelPath) => {
+  const wanted = String(repoRelPath || "").replace(/\\/g, "/");
+  return REGISTRY.find((v) => wanted === v.repoPath || wanted.startsWith(`${v.repoPath}/`)) || null;
+};
+
+await t("validatePlanScope rejects denied paths and accepts normal repo-relative files", async () => {
   const badPlan = { files: ["ventures/x.mjs", "../outside.txt", "C:\\abs\\path.txt", ".env.local", "ops-watcher/heartbeat.mjs"] };
-  const res = validatePlanScope(badPlan);
+  const res = await validatePlanScope(badPlan, { ventureForPath: NO_VENTURES });
   assert.equal(res.ok, false);
   assert.equal(res.violations.length >= 5, true);
-  assert.equal(validatePlanScope({ files: ["ops-watcher/foo.mjs", "docs/bar.md"] }).ok, true);
+  assert.equal((await validatePlanScope({ files: ["ops-watcher/foo.mjs", "docs/bar.md"] }, { ventureForPath: NO_VENTURES })).ok, true);
+});
+
+// =====================================================================
+// THE VENTURES GATE IS NARROW: ACTIVE VENTURES ONLY, AND IT SAYS WHY.
+//
+// The owner approved paths under a venture whose status is `active`, and
+// nothing else. Not a blanket opening of ventures/. The two refusal cases are
+// different questions — a path nobody registered, versus a venture deliberately
+// not being worked on — and answering both with "denied directory" sends the
+// reader looking in the wrong place.
+// =====================================================================
+
+await t("ventures gate: an ACTIVE venture path is allowed, and only that venture", async () => {
+  const deps = { ventureForPath: registryLookup };
+  const allowed = await validatePlanScope({
+    files: [
+      "ventures/caveman-trading-os/docs/planning/phase-1-workstreams.md",
+      "ventures/caveman-trading-os",
+      "ops-watcher/foo.mjs",
+    ],
+  }, deps);
+  assert.equal(allowed.ok, true, `an active venture and the repo root itself are allowed: ${allowed.violations.join(" | ")}`);
+});
+
+await t("ventures gate: unknown venture and inactive venture are refused, and say WHICH", async () => {
+  const deps = { ventureForPath: registryLookup };
+
+  const unknown = await validatePlanScope({ files: ["ventures/never-registered/src/a.mjs"] }, deps);
+  assert.equal(unknown.ok, false, "a path under ventures/ that no venture owns stays denied");
+  assert.match(unknown.violations[0], /unknown venture/, "the violation names it as unknown, not merely denied");
+  assert.equal(/not active/.test(unknown.violations[0]), false, "and does not confuse it with an inactive venture");
+
+  const parked = await validatePlanScope({ files: ["ventures/parked-venture/src/a.mjs"] }, deps);
+  assert.equal(parked.ok, false, "a registered but non-active venture stays denied");
+  assert.match(parked.violations[0], /parked-venture is not active/, "the violation names the venture and its status");
+  assert.match(parked.violations[0], /status: parked/, "and quotes the status that decided it");
+
+  // The bare directory belongs to no venture.
+  const bare = await validatePlanScope({ files: ["ventures"] }, deps);
+  assert.equal(bare.ok, false, "ventures/ itself is not a venture");
+  assert.match(bare.violations[0], /unknown venture/);
+});
+
+await t("ventures gate: a venture's own .git and node_modules stay denied", async () => {
+  // Opening ventures/ reaches into a second repository that has its own .git.
+  // The old check only matched these at the START of a path, so nesting them
+  // under an allowed venture would have walked straight through.
+  const deps = { ventureForPath: registryLookup };
+  for (const file of [
+    "ventures/caveman-trading-os/.git/config",
+    "ventures/caveman-trading-os/node_modules/x/index.js",
+    "ventures/caveman-trading-os/.env.local",
+  ]) {
+    const res = await validatePlanScope({ files: [file] }, deps);
+    assert.equal(res.ok, false, `${file} must stay denied even inside an active venture`);
+  }
+  const nested = await validatePlanScope({ files: ["docs/node_modules/x.js"] }, { ventureForPath: NO_VENTURES });
+  assert.equal(nested.ok, false, "a denied directory is denied at any depth, not only at the head");
+});
+
+await t("ventures gate: the prompts name the active venture paths, and stay closed without them", async () => {
+  const plan = parsePlan(goodPlan);
+
+  const closedExec = buildExecutionPrompt(issue(), plan);
+  assert.ok(closedExec.includes("  - Nothing under ventures/ may be touched."), "no registry means the old closed HARD STOP, unchanged");
+
+  const openExec = buildExecutionPrompt(issue(), plan, null, REGISTRY);
+  assert.ok(
+    openExec.includes("Under ventures/, ONLY these active venture paths may be touched: ventures/caveman-trading-os."),
+    `the HARD STOP names the active venture only, got: ${openExec.split("\n").find((l) => l.includes("ventures/")) || "<none>"}`,
+  );
+  assert.equal(openExec.includes("parked-venture"), false, "a parked venture is never offered to the lane");
+  assert.equal(openExec.includes("Nothing under ventures/ may be touched"), false, "the closed line is replaced, not duplicated");
+
+  const closedPlan = buildPlanPrompt(issue(), { status: "ok" });
+  assert.ok(closedPlan.includes("nothing under ventures/, .git/, .paperclip/"), "the planning boundary stays closed without a registry");
+
+  const openPlan = buildPlanPrompt(issue(), { status: "ok" }, null, null, REGISTRY);
+  assert.ok(openPlan.includes("ONLY these active venture paths may be touched: ventures/caveman-trading-os"), "the planning boundary names the active venture");
+  assert.equal(openPlan.includes("parked-venture"), false, "and not the parked one");
+  // Left closed here, the planner would never propose a venture path and the
+  // gate below it would be unreachable.
+  assert.equal(openPlan.includes("nothing under ventures/, .git/"), false, "the closed planning line is replaced, not kept alongside");
+});
+
+await t("ventures gate: VERIFY still must start with node ops-watcher/", async () => {
+  // A venture directive verifies through an ops-watcher script, never through
+  // the venture's own test runner. Opening the file fence does not open this one.
+  assert.equal(validateVerifyCommand("node ventures/caveman-trading-os/scripts/test.mjs").ok, false);
+  assert.equal(validateVerifyCommand("npm --prefix ventures/caveman-trading-os test").ok, false);
+  assert.equal(validateVerifyCommand("node ops-watcher/verify-file.mjs --path ventures/caveman-trading-os/README.md --matches ^#").ok, true);
+});
+
+await t("ventures gate: the registry actually REACHES the lane's prompt and the scope gate", async () => {
+  // Testing buildExecutionPrompt directly is not enough: a mutation that drops
+  // `ventures` from the CALL SITE left the whole suite green. The only thing
+  // that proves the wiring is asking executeApprovedDirective for the prompt it
+  // really dispatched.
+  const plan = parsePlan(goodPlan);
+  const made = makeExecDeps({ mutateOnDispatch: false });
+  let dispatched = null;
+  made.deps.activeVentures = async () => REGISTRY;
+  made.deps.dispatchExecution = async (prompt) => {
+    dispatched = prompt;
+    made.calls.dispatch++;
+    made.setMutated(true);
+    return { ok: true, stdout: "done", stderr: "" };
+  };
+
+  const res = await executeApprovedDirective(issue(), plan, made.deps);
+  assert.equal(res.outcome, "done");
+  assert.ok(dispatched, "a prompt was dispatched");
+  assert.ok(
+    dispatched.includes("Under ventures/, ONLY these active venture paths may be touched: ventures/caveman-trading-os."),
+    "the registry resolved inside executeApprovedDirective must reach the prompt the lane receives",
+  );
+  assert.equal(dispatched.includes("Nothing under ventures/ may be touched"), false, "the closed HARD STOP is gone when a venture is active");
+  assert.equal(dispatched.includes("parked-venture"), false, "a parked venture never reaches the lane");
+});
+
+await t("ventures gate: an active venture path survives the execution scope gate end to end", async () => {
+  // The same wiring on the refusal side: with the registry injected, a plan
+  // touching the ACTIVE venture must execute rather than be refused.
+  const venturePlan = parsePlan(goodPlan.replace(
+    "ops-watcher/foo.mjs, docs/bar.md",
+    "ventures/caveman-trading-os/docs/planning/phase-1-workstreams.md",
+  ));
+  const active = makeExecDeps({ mutateOnDispatch: false });
+  active.deps.activeVentures = async () => REGISTRY;
+  active.deps.ventureForPath = registryLookup;
+  active.deps.dispatchExecution = async () => { active.calls.dispatch++; active.setMutated(true); return { ok: true, stdout: "done", stderr: "" }; };
+  const allowed = await executeApprovedDirective(issue(), venturePlan, active.deps);
+  assert.notEqual(allowed.outcome, "refused", `an active venture path must pass the scope gate, got ${allowed.outcome}`);
+
+  // And the parked one must not, through the very same path.
+  const parkedPlan = parsePlan(goodPlan.replace("ops-watcher/foo.mjs, docs/bar.md", "ventures/parked-venture/src/a.mjs"));
+  const parked = makeExecDeps({ mutateOnDispatch: false });
+  parked.deps.activeVentures = async () => REGISTRY;
+  parked.deps.ventureForPath = registryLookup;
+  const refused = await executeApprovedDirective(issue(), parkedPlan, parked.deps);
+  assert.equal(refused.outcome, "refused", "a parked venture is refused at execution time");
+  assert.equal(parked.calls.dispatch, 0, "and no lane is dispatched");
+  assert.match(refused.violations.join(" "), /not active/, "the refusal says the venture is not active");
+});
+
+await t("activeVenturePathsFor filters by status and is deterministic", () => {
+  assert.deepEqual(activeVenturePathsFor(REGISTRY), ["ventures/caveman-trading-os"]);
+  assert.deepEqual(activeVenturePathsFor([]), []);
+  assert.deepEqual(activeVenturePathsFor(null), []);
+  assert.deepEqual(
+    activeVenturePathsFor([
+      { id: "b", status: "active", repoPath: "ventures/b" },
+      { id: "a", status: "active", repoPath: "ventures\\a" },
+    ]),
+    ["ventures/a", "ventures/b"],
+    "sorted, and a Windows separator normalises to the repo-relative form",
+  );
 });
 
 await t("validateVerifyCommand accepts node ops-watcher verifier shapes", () => {
@@ -1725,6 +1895,11 @@ function makeExecDeps(overrides = {}) {
   const deps = {
     lane: "corleone",
     now: NOW,
+    // The ventures fence is CLOSED by default in these fixtures, so every
+    // execution test states its own boundary instead of inheriting whatever
+    // config/ventures.json happens to say today. A test that reads the live
+    // registry changes its own meaning the next time the owner edits it.
+    activeVentures: async () => [],
     statFile,
     snapshotFiles: async (files /*, opts */) => {
       calls.snapshot++;

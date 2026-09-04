@@ -12,7 +12,10 @@
   "node": {
     "bin": "D:\\aidit-node\\node-v22.14.0-win-x64\\node.exe",
     "version": "22.14.0",
-    "why_pinned": "Node v26 on Windows crashes at process teardown (libuv UV_HANDLE_CLOSING) AFTER tests pass, so ops-watcher/run-all-tests.mjs scores a passing suite as a failure. Measured on this machine: v26 -> 59/62, v22.14.0 -> 62/62. The system default node on PATH here is v26.5.0, so the absolute path matters."
+    "why_pinned": "Node v26 on Windows crashes at process teardown (libuv UV_HANDLE_CLOSING) AFTER tests pass, so ops-watcher/run-all-tests.mjs scores a passing suite as a failure. Measured on this machine: v26 -> 59/62, v22.14.0 -> 62/62. The system default node on PATH here is v26.5.0, so the absolute path matters.",
+    "system_bin": "C:\\Program Files\\nodejs\\node.exe",
+    "system_version": "26.5.0",
+    "why_two_runtimes": "This machine needs BOTH, and the split is not a preference. paperclipai declares \"engines\": { \"node\": \">=24.11.0\" }; run under 22.14.0 it prints 'The piped install.sh form cannot upgrade an unsupported Node.js runtime. Restart Paperclip after upgrading.' So the board must run on system_bin. Everything else runs on bin, because 26 breaks the suite at teardown. Neither runtime can serve both roles, so ecosystem.config.cjs names the interpreter per app instead of relying on whatever PATH the PM2 daemon happened to start with."
   },
   "paperclip": {
     "cli_entry": "D:\\Development\\npm-global\\node_modules\\paperclipai\\dist\\index.js",

@@ -136,6 +136,36 @@ const ROOT = path.resolve(__dirname, "..");
 // globally, outside the checkout, at a location that differs per machine and per
 // npm prefix. config/machine.json is the only file allowed to know it.
 const MACHINE = require(path.join(ROOT, "config", "machine.json"));
+
+// --- WHICH NODE EACH APP RUNS UNDER, STATED RATHER THAN IMPLIED ---
+//
+// Every app here used to say `interpreter: "node"`, which resolves against
+// whatever PATH the PM2 daemon started with. On this machine that is
+// C:\Program Files\nodejs\node.exe (v26.5.0), so ALL FOUR apps would have run
+// under Node 26 — including the three that must not.
+//
+// The two runtimes are both required and neither can serve both roles:
+//
+//   paperclip                     -> NODE_SYSTEM (26.5.0)
+//     paperclipai's package.json declares "engines": { "node": ">=24.11.0" }.
+//     Started under 22.14.0 it reports the runtime as unsupported. The board is
+//     what the whole cutover depends on, so it stays on the runtime it supports.
+//
+//   telegram-listener, heartbeat, cockpit  -> NODE_PINNED (22.14.0)
+//     Node 26 on Windows crashes at process teardown (libuv UV_HANDLE_CLOSING),
+//     which is why config/machine.json pins 22.14.0 for this repo's own code.
+//
+// Naming the interpreter per app also removes the dependence on the PM2
+// daemon's environment: `pm2 start` from a shell with a different PATH, or a
+// daemon resurrected at boot by the scheduled task, now resolves identically.
+const NODE_PINNED = MACHINE?.node?.bin;
+const NODE_SYSTEM = MACHINE?.node?.system_bin;
+if (!NODE_PINNED || !NODE_SYSTEM) {
+  throw new Error(
+    "config/machine.json is missing node.bin or node.system_bin — PM2 cannot pin an interpreter per app. node.bin is the pinned 22.x runtime this repo's code needs; node.system_bin is the >=24.11 runtime paperclipai requires.",
+  );
+}
+
 const PAPERCLIP_CLI_ENTRY = MACHINE?.paperclip?.cli_entry;
 if (!PAPERCLIP_CLI_ENTRY) {
   // Fail loudly and by key name. A silent fallback here would start PM2 with a
@@ -172,7 +202,7 @@ module.exports = {
     {
       name: "paperclip",
       script: PAPERCLIP_CLI_ENTRY,
-      interpreter: "node",
+      interpreter: NODE_SYSTEM,
       // --data-dir DERIVED from ROOT. A stale literal here is worse than a crash:
       // paperclipai would happily create a brand-new empty instance at the old
       // path (or fail) instead of opening the board with 78 issues.
@@ -208,7 +238,7 @@ module.exports = {
     {
       name: "telegram-listener",
       script: "ops-watcher/pm2-launch-telegram-listener.cjs",
-      interpreter: "node",
+      interpreter: NODE_PINNED,
       cwd: ROOT,
       autorestart: true,
       max_restarts: 10,
@@ -232,7 +262,7 @@ module.exports = {
     {
       name: "heartbeat",
       script: "ops-watcher/pm2-launch-heartbeat.cjs",
-      interpreter: "node",
+      interpreter: NODE_PINNED,
       cwd: ROOT,
       autorestart: true,
       max_restarts: 10,
@@ -285,7 +315,7 @@ module.exports = {
       // that puts this on the owner's phone proxies 4200. Without the flag the
       // cockpit comes up healthy on a port nothing is pointed at.
       args: "start -p 4200",
-      interpreter: "node",
+      interpreter: NODE_PINNED,
       // cockpit/ is its own project root - repo-root rules do not apply there,
       // and Next resolves its config and .next build output from cwd.
       cwd: path.join(ROOT, "cockpit"),
