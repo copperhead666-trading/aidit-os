@@ -254,11 +254,21 @@ module.exports = {
     //    nobody reads, and it also meant the cockpit did not come back after a
     //    reboot the way the other three did.
     //
-    //    ESM-ecosystem-loader-compat: `script` points at Next's own CLI entry
-    //    inside cockpit/node_modules rather than at `npm start`. PM2 spawns
-    //    `node <script>`, and `npm`/`next` on Windows are .cmd shims that node
-    //    cannot resolve — the same problem paperclip's dist entry solves. cwd is
-    //    the cockpit directory because cockpit/ is its own project root.
+    //    ESM-ecosystem-loader-compat: `script` points at the CommonJS launcher
+    //    shim ops-watcher/pm2-launch-cockpit.cjs (NOT at `npm start` — npm/next
+    //    on Windows are .cmd shims node cannot resolve — and not directly at
+    //    Next's bin either). The shim runs Next's own CLI in-process, unchanged.
+    //
+    //    WHY THE SHIM (bug reproduced 2026-09-04): cockpit/middleware.ts and
+    //    cockpit/app/api/session/route.ts read process.env.TELEGRAM_BOT_TOKEN_AHMAD,
+    //    but the token lives ONLY in <repo>/.env.local and there is no
+    //    cockpit/.env.local. This app runs with cwd = <repo>/cockpit, and Next
+    //    only auto-loads .env files from the project dir — so the token never
+    //    reached the cockpit process and every page rendered the Masuk (login)
+    //    fallback. The shim loads <repo>/.env.local into process.env before
+    //    starting Next, fixing the env without duplicating the secret into a
+    //    second file. cwd stays the cockpit dir (cockpit/ is its own project
+    //    root); the args below are passed through to Next unchanged.
     //
     //    NEVER `npm run build` while this app is live: the CSS hash changes and
     //    the page renders naked with no error. Order is stop, delete .next,
@@ -270,7 +280,7 @@ module.exports = {
       // under a cwd that IS the cockpit directory resolves to
       // <repo>/cockpit/cockpit/node_modules/... and PM2 reports it as a generic
       // spawn failure.
-      script: path.join(ROOT, "cockpit", "node_modules", "next", "dist", "bin", "next"),
+      script: path.join(ROOT, "ops-watcher", "pm2-launch-cockpit.cjs"),
       // -p 4200 is NOT optional. Next defaults to 3000, and the Tailscale Funnel
       // that puts this on the owner's phone proxies 4200. Without the flag the
       // cockpit comes up healthy on a port nothing is pointed at.

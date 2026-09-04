@@ -8,6 +8,7 @@
 import assert from "node:assert/strict";
 import fsSync from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const ecosystem = require("./ecosystem.config.cjs");
@@ -661,6 +662,53 @@ async function testExpectedProcessesMatchEcosystemApps() {
   } catch (err) { bad(name, err); }
 }
 
+// =====================================================================
+// P20: cockpit runs through the token-loading launcher shim — the app
+// entry must be pm2-launch-cockpit.cjs (which loads <repo>/.env.local, the
+// only home of TELEGRAM_BOT_TOKEN_AHMAD, into process.env before Next
+// starts), not Next's bin directly. Regression for the bug observed
+// 2026-09-04 where every cockpit page rendered the Masuk fallback.
+// =====================================================================
+async function testCockpitUsesTokenLoadingShim() {
+  const name = "P20 cockpit app launches via pm2-launch-cockpit.cjs (root .env.local token loader)";
+  try {
+    const cockpit = ecosystem.apps.find((a) => a.name === "cockpit");
+    assert.ok(cockpit, "cockpit app exists in the ecosystem config");
+    const norm = (p) => String(p).replace(/\\/g, "/");
+    assert.ok(norm(cockpit.script).endsWith("ops-watcher/pm2-launch-cockpit.cjs"),
+      `cockpit script is the launcher shim, got: ${cockpit.script}`);
+    // ABSOLUTE path: cwd is the cockpit dir and PM2 resolves a relative
+    // `script` against cwd (see the comment above the cockpit app object).
+    assert.ok(path.isAbsolute(cockpit.script), `cockpit script is absolute, got: ${cockpit.script}`);
+    // The shim file must actually exist on disk.
+    const shimPath = require.resolve("./pm2-launch-cockpit.cjs");
+    assert.ok(fsSync.existsSync(shimPath), `shim exists at ${shimPath}`);
+    // AND IT MUST PARSE. "The file exists" is not the property that matters:
+    // the first version of this shim shipped with a SyntaxError inside a
+    // template literal and this case still passed, because existsSync was the
+    // only thing being asked. PM2 would have reported that as a generic spawn
+    // failure with the cockpit simply never coming up. `node --check` parses
+    // the file without executing it, so this cannot start a second cockpit on
+    // a port that is already in use.
+    const parsed = spawnSync(process.execPath, ["--check", shimPath], { encoding: "utf8" });
+    assert.equal(
+      parsed.status,
+      0,
+      `shim must parse; node --check said: ${String(parsed.stderr || "").trim().split("\n").slice(0, 3).join(" | ")}`,
+    );
+    // The shim is the piece that loads the repo root .env.local before
+    // starting Next — if either reference disappears the token bug is back.
+    const src = fsSync.readFileSync(shimPath, "utf8");
+    assert.ok(src.includes(".env.local"), "shim loads the root .env.local");
+    assert.ok(src.includes("next"), "shim starts the real Next CLI");
+    // cwd stays the cockpit dir: Next resolves its config and .next from cwd.
+    assert.ok(norm(cockpit.cwd).endsWith("/cockpit"), `cockpit cwd is the cockpit dir, got: ${cockpit.cwd}`);
+    // PM2 still passes the port through to Next via args.
+    assert.ok(String(cockpit.args || "").includes("4200"), "args still pin port 4200");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
 // ---- main ----
 async function main() {
   console.log("# ops-watcher pm2-supervisor regression tests");
@@ -689,6 +737,7 @@ async function main() {
     testDiagnoseCockpitStopped,
     testDiagnoseAllFourHealthy,
     testExpectedProcessesMatchEcosystemApps,
+    testCockpitUsesTokenLoadingShim,
   ];
   for (const t of tests) {
     try { await t(); }
