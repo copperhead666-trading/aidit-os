@@ -243,5 +243,50 @@ module.exports = {
       watch: false,
       env: {},
     },
+
+    // 4. cockpit — the Next.js owner cockpit on port 4200, the surface the owner
+    //    opens from his phone through Tailscale Funnel.
+    //
+    //    WHY IT IS HERE AT ALL: ops-watcher/pm2-supervisor.mjs has listed
+    //    cockpit in EXPECTED_PROCESSES since it was written, but this file
+    //    never defined one. The supervisor therefore reported a missing cockpit
+    //    on every single sweep, forever — an alert that is always on is an alert
+    //    nobody reads, and it also meant the cockpit did not come back after a
+    //    reboot the way the other three did.
+    //
+    //    ESM-ecosystem-loader-compat: `script` points at Next's own CLI entry
+    //    inside cockpit/node_modules rather than at `npm start`. PM2 spawns
+    //    `node <script>`, and `npm`/`next` on Windows are .cmd shims that node
+    //    cannot resolve — the same problem paperclip's dist entry solves. cwd is
+    //    the cockpit directory because cockpit/ is its own project root.
+    //
+    //    NEVER `npm run build` while this app is live: the CSS hash changes and
+    //    the page renders naked with no error. Order is stop, delete .next,
+    //    build, start.
+    {
+      name: "cockpit",
+      // ABSOLUTE script path, because cwd is the cockpit directory and PM2
+      // resolves a relative `script` against cwd: "cockpit/node_modules/..."
+      // under a cwd that IS the cockpit directory resolves to
+      // <repo>/cockpit/cockpit/node_modules/... and PM2 reports it as a generic
+      // spawn failure.
+      script: path.join(ROOT, "cockpit", "node_modules", "next", "dist", "bin", "next"),
+      // -p 4200 is NOT optional. Next defaults to 3000, and the Tailscale Funnel
+      // that puts this on the owner's phone proxies 4200. Without the flag the
+      // cockpit comes up healthy on a port nothing is pointed at.
+      args: "start -p 4200",
+      interpreter: "node",
+      // cockpit/ is its own project root - repo-root rules do not apply there,
+      // and Next resolves its config and .next build output from cwd.
+      cwd: path.join(ROOT, "cockpit"),
+      autorestart: true,
+      max_restarts: 10,
+      min_uptime: "10s",
+      restart_delay: 2000,
+      instances: 1,
+      exec_mode: "fork",
+      watch: false,
+      env: {},
+    },
   ],
 };

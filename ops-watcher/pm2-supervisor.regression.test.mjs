@@ -8,6 +8,9 @@
 import assert from "node:assert/strict";
 import fsSync from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const ecosystem = require("./ecosystem.config.cjs");
 import {
   EXPECTED_PROCESSES,
   RESURRECT_COOLDOWN_MS,
@@ -634,6 +637,30 @@ async function testDiagnoseAllFourHealthy() {
   } catch (err) { bad(name, err); }
 }
 
+// =====================================================================
+// P19: the supervisor's expectation and the PM2 config must agree
+// exactly — an app expected but never started (cockpit was missing from
+// ecosystem.config.cjs for a long time) means an always-on alert and a
+// process that does not come back after a reboot. And every app PM2 is
+// told to start must have name/script and autorestart: true, otherwise
+// it cannot satisfy a supervisor whose whole job is these processes.
+// =====================================================================
+async function testExpectedProcessesMatchEcosystemApps() {
+  const name = "P19 EXPECTED_PROCESSES matches ecosystem apps (both directions, autorestart)";
+  try {
+    const ecosystemNames = [...ecosystem.apps.map((a) => a.name)].sort();
+    const expectedNames = [...EXPECTED_PROCESSES].sort();
+    assert.deepEqual(ecosystemNames, expectedNames,
+      "ecosystem.apps names must equal EXPECTED_PROCESSES (sorted)");
+    for (const app of ecosystem.apps) {
+      assert.ok(app.name && typeof app.name === "string", `app ${JSON.stringify(app.name)} has a non-empty name`);
+      assert.ok(app.script && typeof app.script === "string", `app ${app.name} has a non-empty script`);
+      assert.equal(app.autorestart, true, `app ${app.name} has autorestart: true`);
+    }
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
 // ---- main ----
 async function main() {
   console.log("# ops-watcher pm2-supervisor regression tests");
@@ -661,6 +688,7 @@ async function main() {
     testDiagnoseCockpitMissing,
     testDiagnoseCockpitStopped,
     testDiagnoseAllFourHealthy,
+    testExpectedProcessesMatchEcosystemApps,
   ];
   for (const t of tests) {
     try { await t(); }
