@@ -15,6 +15,9 @@ import {
   buildScpArgs,
   buildSshArgs,
   dispatchSoekarno,
+  parseClaudeJson,
+  SOEKARNO_ALLOWED_TOOLS,
+  SOEKARNO_SYSTEM_PROMPT,
 } from "./soekarno-dispatch.mjs";
 
 let passed = 0;
@@ -210,18 +213,32 @@ async function t6_sshStartFailureSurfacesMessage() {
 }
 
 async function t7_successReturnsStdoutVerbatim() {
-  const stdout = "answer line\n\n  ";
+  // claude -p --output-format json returns a result envelope; the lane's
+  // answer is the envelope's `result` field, returned verbatim.
+  const answer = "answer line\n\n  ";
+  const envelope = JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: answer,
+    session_id: "sess-t7",
+    num_turns: 2,
+    duration_ms: 1200,
+    duration_api_ms: 900,
+    usage: { input_tokens: 10, output_tokens: 20 },
+  });
   const { result } = await runDispatch("success", {
     tmpRoot: TMP_ROOT,
     tmpName: "t7",
-    results: { ssh: { status: 0, stdout, stderr: "" } },
+    results: { ssh: { status: 0, stdout: envelope, stderr: "" } },
   });
 
   assert.equal(result.ok, true, "T7: exit zero is green");
-  assert.equal(result.stdout, stdout, "T7: stdout is returned verbatim");
+  assert.equal(result.stdout, answer, "T7: the parsed result text is returned verbatim");
   assert.equal(result.timedOut, false, "T7: success is not timed out");
   assert.equal(result.exitCode, 0, "T7: exit code is preserved");
-  ok("T7: successful ssh returns stdout verbatim including trailing whitespace");
+  assert.equal(result.turns, 2, "T7: num_turns from the envelope reaches the caller");
+  ok("T7: successful ssh returns the parsed JSON result verbatim including trailing whitespace");
 }
 
 async function t8_laneGuardSkipIsHonouredAndNonSkipRuns() {
@@ -239,7 +256,7 @@ async function t8_laneGuardSkipIsHonouredAndNonSkipRuns() {
 
   clearSoekarnoGuard();
   const ran = spawnHarness({
-    ssh: { status: 0, stdout: "ran\n", stderr: "" },
+    ssh: { status: 0, stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ran", session_id: "sess-t8", num_turns: 2, duration_ms: 1200, model: "claude-opus-5", usage: { input_tokens: 10, output_tokens: 20 } }), stderr: "" },
   });
   const runResult = await dispatchSoekarno("guard run", {
     spawnSync: ran.spawnSync,
@@ -257,7 +274,7 @@ async function t9_promptFileIsCleanedAfterSuccessAndFailure() {
   const success = await runDispatch("cleanup success", {
     tmpRoot: TMP_ROOT,
     tmpDir: successDir,
-    results: { ssh: { status: 0, stdout: "ok", stderr: "" } },
+    results: { ssh: { status: 0, stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "ok", session_id: "sess-t9", num_turns: 1, duration_ms: 900, model: "claude-opus-5" }), stderr: "" } },
   });
   assert.equal(success.result.ok, true, "T9: success setup is green");
   assert.equal(existsSync(path.join(successDir, "prompt.txt")), false, "T9: prompt file removed after success");
@@ -271,6 +288,70 @@ async function t9_promptFileIsCleanedAfterSuccessAndFailure() {
   assert.equal(failure.result.ok, false, "T9: failure setup is red");
   assert.equal(existsSync(path.join(failureDir, "prompt.txt")), false, "T9: prompt file removed after failure");
   ok("T9: local prompt file is cleaned up after success and failure");
+}
+
+// =====================================================================
+// T10-T12: the CONTRACT, not just the happy path.
+//
+// The mandated mutations — "drop --output-format json" and "let invalid JSON
+// fall back to raw prose" — both left this suite GREEN. Nothing asserted the
+// flags reach the command, and nothing asserted that unparseable output is a
+// REPORTED FAILURE rather than a silent acceptance of scraped text. Those two
+// gaps are the entire point of replacing prose scraping, so they are asserted
+// here.
+// =====================================================================
+
+async function t10_theClaudeFlagsReachTheRemoteCommand() {
+  const cmd = buildRemoteCommand();
+  // --output-format json is what makes the result parseable at all. Without it
+  // the lane is back to scraping prose and every parse below is theatre.
+  assert.match(cmd, /--output-format json/, "T10: --output-format json is passed");
+  // --allowedTools pins the lane to what its role actually needs. A tool it is
+  // not given cannot be misused.
+  assert.match(cmd, /--allowedTools/, "T10: --allowedTools is passed");
+  for (const tool of SOEKARNO_ALLOWED_TOOLS) {
+    assert.ok(cmd.includes(tool), `T10: allowed tool ${tool} is named in the command`);
+  }
+  assert.match(cmd, /--append-system-prompt/, "T10: --append-system-prompt is passed");
+  assert.ok(cmd.includes(SOEKARNO_SYSTEM_PROMPT.slice(0, 40)), "T10: the role context is the one actually sent");
+  ok("T10: --output-format json, --allowedTools and --append-system-prompt all reach the command");
+}
+
+async function t11_invalidJsonIsAFailureNotASilentFallback() {
+  // THE WHOLE REASON THIS CHANGE EXISTS. Accepting raw text when the envelope
+  // fails to parse is precisely the prose-scraping being replaced, and it fails
+  // silently: the caller gets a plausible-looking answer with no numbers and no
+  // indication anything went wrong.
+  for (const raw of ["ran\n", "ok", "I could not do that", "{broken", "[1,2,3]", '"a string"', ""]) {
+    const parsed = parseClaudeJson(raw);
+    assert.equal(parsed.ok, false, `T11: ${JSON.stringify(raw)} is a reported failure`);
+    assert.ok(parsed.error && parsed.error.length > 0, "T11: and it says why");
+    assert.equal(parsed.result, undefined, "T11: no result is handed back from unparseable output");
+  }
+  ok("T11: unparseable output is a reported failure, never a silent fallback to raw prose");
+}
+
+async function t12_aValidEnvelopeYieldsResultTurnsAndCli() {
+  const parsed = parseClaudeJson(JSON.stringify({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: "the answer",
+    session_id: "sess-1",
+    num_turns: 4,
+    duration_ms: 5000,
+    model: "claude-opus-5",
+    usage: { input_tokens: 100, output_tokens: 200 },
+  }));
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.result, "the answer");
+  assert.equal(parsed.turns, 4, "T12: turns come from the envelope, not from counting lines");
+  assert.equal(parsed.cli.session_id, "sess-1");
+  assert.equal(parsed.cli.model, "claude-opus-5");
+  assert.equal(parsed.cli.usage_input_tokens, 100, "T12: usage numbers are flattened into cli detail");
+  assert.equal(parsed.cli.usage_output_tokens, 200);
+  assert.equal(parsed.isError, false);
+  ok("T12: a valid envelope yields the result plus real per-run numbers");
 }
 
 const TMP_ROOT = path.join(os.tmpdir(), `soekarno-dispatch-regression-${process.pid}`);
@@ -288,6 +369,9 @@ async function main() {
     t7_successReturnsStdoutVerbatim,
     t8_laneGuardSkipIsHonouredAndNonSkipRuns,
     t9_promptFileIsCleanedAfterSuccessAndFailure,
+    t10_theClaudeFlagsReachTheRemoteCommand,
+    t11_invalidJsonIsAFailureNotASilentFallback,
+    t12_aValidEnvelopeYieldsResultTurnsAndCli,
   ];
 
   try {

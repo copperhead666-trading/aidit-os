@@ -19,63 +19,226 @@ const REPO_ROOT = path.resolve(__dirname, "..");
 
 const TIMEOUT_MS = 8 * 60 * 1000; // 480000ms, under ahmad-mcp-server.mjs's 9-min RUN_TIMEOUT_MS cap
 
+/**
+ * argv for the kimi invocation. `--output-format stream-json` makes the
+ * child emit one JSON object per stdout line (parseKimiStream) instead of
+ * prose, so per-run numbers (turns, model, usage) reach the usage log.
+ * `-m/--model` is deliberately NOT set: the lane uses the machine's
+ * configured default model.
+ */
+export function buildKimiArgs(prompt) {
+  return ["-p", prompt, "--output-format", "stream-json"];
+}
+
+/**
+ * Parse `kimi -p --output-format stream-json` stdout into { turns, cli, text }.
+ *
+ * DEFENSIVE by contract: every line is parsed independently — an unparseable
+ * line, a non-object line, or a line with a shape we do not know is SKIPPED,
+ * never fatal. A stream that yields nothing usable returns
+ * { turns: null, cli: null, text: "" } so the caller still logs a COMPLETE
+ * usage record with nulls where nothing was reported (never invented numbers).
+ *
+ * `turns` prefers an explicit numeric turn/iteration counter when the stream
+ * carries one; otherwise it counts Assistant messages (one assistant message
+ * == one model turn in this stream). `text` is the assistant text recovered
+ * from the stream so the wrapper can relay something human-readable instead
+ * of raw JSONL. Never throws.
+ */
+export function parseKimiStream(raw) {
+  const out = { turns: null, cli: null, text: "" };
+  try {
+    if (typeof raw !== "string" || raw.trim() === "") return out;
+    const cli = {};
+    let explicitTurns = null;
+    let assistantTurns = 0;
+    const texts = [];
+    const takeScalar = (key, value) => {
+      if (typeof value === "number" || typeof value === "boolean") cli[key] = value;
+      else if (typeof value === "string" && value.length <= 500) cli[key] = value;
+    };
+    for (const line of raw.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (trimmed === "") continue;
+      let ev;
+      try { ev = JSON.parse(trimmed); } catch { continue; } // malformed line: skip, not fatal
+      if (!ev || typeof ev !== "object" || Array.isArray(ev)) continue;
+      const role = typeof ev.role === "string" ? ev.role : ev.type;
+      if (role === "assistant") {
+        assistantTurns++;
+        if (typeof ev.content === "string") {
+          texts.push(ev.content);
+        } else if (Array.isArray(ev.content)) {
+          for (const block of ev.content) {
+            if (block && typeof block === "object" && block.type === "text" && typeof block.text === "string") {
+              texts.push(block.text);
+            }
+          }
+        }
+      }
+      for (const key of ["turns", "turn", "num_turns", "iteration"]) {
+        const v = ev[key];
+        if (Number.isFinite(v) && v >= 0 && (explicitTurns === null || v > explicitTurns)) {
+          explicitTurns = Math.floor(v);
+        }
+      }
+      takeScalar("model", ev.model);
+      if (typeof ev.session_id === "string") cli.session_id = ev.session_id;
+      else if (typeof ev.sessionId === "string") cli.session_id = ev.sessionId;
+      if (ev.usage && typeof ev.usage === "object") {
+        for (const [k, v] of Object.entries(ev.usage)) {
+          if (typeof v === "number" || typeof v === "boolean") cli[`usage_${k}`] = v;
+        }
+      }
+    }
+    out.turns = explicitTurns !== null ? explicitTurns : assistantTurns > 0 ? assistantTurns : null;
+    if (Object.keys(cli).length > 0) out.cli = cli;
+    out.text = texts.join("\n");
+  } catch {
+    // Never throw: a parse failure must not break the dispatch.
+  }
+  return out;
+}
+
+export async function dispatchSjahrir(prompt, deps = {}) {
+  const _spawn = deps.spawnSync || spawnSync;
+  const _log = deps.log || ((m) => process.stderr.write(m + "\n"));
+  const t0 = Date.now();
+  try {
+    // `kimi` resolves to a native kimi.exe on this machine, so we spawn it
+    // directly with shell:false (the safe default). shell:false passes the args
+    // array VERBATIM via CreateProcess — no cmd.exe parsing — so a free-form
+    // prompt containing spaces / quotes / % / & is preserved exactly. Deliberately
+    // NOT adding shell:true here: on Node v22.14.0 shell:true does NOT quote
+    // args-array elements (verified live) — cmd.exe would word-split "Reply with
+    // exactly the text OK ..." into ~11 separate args and break `kimi -p`. The
+    // current shell:false invocation is already correct and robust for the native
+    // .exe case. If `kimi` ever becomes a .cmd shim in the future, the right fix
+    // is the same bypass-the-shim approach used in corleone-dispatch.mjs (spawn
+    // node on the underlying entry script with shell:false), NOT shell:true.
+    const guard = await guardLaneStart("sjahrir");
+    if (guard.skip) {
+      const reason = guard.reason || "unknown";
+      const retryMinutes = Math.ceil(guard.remainingMs / 60000);
+      const msg = `sjahrir-dispatch: lane skipped (${reason}), retry in ${retryMinutes}m — no spawn attempted`;
+      _log(msg);
+      await logLaneUsage({
+        lane: "sjahrir",
+        promptLength: prompt.length,
+        ok: false,
+        exitCode: 3,
+        durationMs: 0,
+        turns: null,
+        stdout: "",
+        stderr: msg,
+        cli: null,
+        extra: { skipped: true, reason },
+      });
+      return { ok: false, skipped: true, reason, stdout: "", stderr: msg, exitCode: 3 };
+    }
+
+    const r = _spawn("kimi", buildKimiArgs(prompt), {
+      cwd: REPO_ROOT,
+      windowsHide: true,
+      timeout: TIMEOUT_MS,
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    const durationMs = Date.now() - t0;
+    const stdout = typeof r.stdout === "string" ? r.stdout : "";
+    const stderr = typeof r.stderr === "string" ? r.stderr : "";
+    const parsed = parseKimiStream(stdout);
+
+    // Human-readable relay: emit the assistant text recovered from the JSON
+    // stream, NOT raw JSONL — AHMAD and humans read this wrapper's stdout.
+    // If the stream yielded nothing usable, fall back to the raw stdout so a
+    // failed run still shows whatever came back.
+    const readable = parsed.text !== "" ? parsed.text : stdout;
+
+    if (r.signal === "SIGTERM" && r.status === null) {
+      // spawnSync sets status=null + signal="SIGTERM" on timeout kill.
+      const msg = `sjahrir-dispatch: kimi timed out after ${TIMEOUT_MS}ms`;
+      _log(msg);
+      await recordLaneOutcome("sjahrir", { ok: false, stdout, stderr, timedOut: true });
+      await logLaneUsage({
+        lane: "sjahrir",
+        promptLength: prompt.length,
+        ok: false,
+        timedOut: true,
+        exitCode: 1,
+        durationMs,
+        turns: parsed.turns,
+        stdout,
+        stderr,
+        cli: parsed.cli,
+      });
+      return { ok: false, timedOut: true, stdout: readable, stderr: stderr ? `${stderr}\n${msg}` : msg, exitCode: 1 };
+    }
+    if (r.error) {
+      const msg = `sjahrir-dispatch: failed to spawn kimi: ${r.error && r.error.message ? r.error.message : r.error}`;
+      _log(msg);
+      await recordLaneOutcome("sjahrir", { ok: false, stdout, stderr });
+      await logLaneUsage({
+        lane: "sjahrir",
+        promptLength: prompt.length,
+        ok: false,
+        exitCode: 1,
+        durationMs,
+        turns: null,
+        stdout,
+        stderr: stderr ? `${stderr}\n${msg}` : msg,
+        cli: null,
+      });
+      return { ok: false, timedOut: false, stdout: readable, stderr: stderr ? `${stderr}\n${msg}` : msg, exitCode: 1 };
+    }
+    const exitCode = typeof r.status === "number" ? r.status : 1;
+    await recordLaneOutcome("sjahrir", { ok: exitCode === 0, stdout, stderr });
+    await logLaneUsage({
+      lane: "sjahrir",
+      promptLength: prompt.length,
+      ok: exitCode === 0,
+      exitCode,
+      durationMs,
+      turns: parsed.turns,
+      stdout,
+      stderr,
+      cli: parsed.cli,
+    });
+    return { ok: exitCode === 0, timedOut: false, stdout: readable, stderr, exitCode };
+  } catch (err) {
+    // Never throw out of the wrapper: headless AHMAD calls this and a crash
+    // is worse than a reported failure.
+    const msg = `sjahrir-dispatch: unexpected failure: ${err && err.message ? err.message : err}`;
+    _log(msg);
+    try { await recordLaneOutcome("sjahrir", { ok: false, stdout: "", stderr: msg }); } catch { /* guard must not break the lane either */ }
+    try {
+      await logLaneUsage({
+        lane: "sjahrir",
+        promptLength: prompt.length,
+        ok: false,
+        exitCode: 1,
+        durationMs: Date.now() - t0,
+        turns: null,
+        stdout: "",
+        stderr: msg,
+        cli: null,
+      });
+    } catch { /* logging must never break the dispatch */ }
+    return { ok: false, timedOut: false, stdout: "", stderr: msg, exitCode: 1 };
+  }
+}
+
+// ---- CLI ----
 async function main() {
   const prompt = process.argv[2];
   if (typeof prompt !== "string" || prompt.length === 0) {
     process.stderr.write('usage: node ops-watcher/sjahrir-dispatch.mjs "<prompt>"\n');
     process.exit(2);
   }
-
-  // `kimi` resolves to a native kimi.exe on this machine, so we spawn it
-  // directly with shell:false (the safe default). shell:false passes the args
-  // array VERBATIM via CreateProcess — no cmd.exe parsing — so a free-form
-  // prompt containing spaces / quotes / % / & is preserved exactly. Deliberately
-  // NOT adding shell:true here: on Node v22.14.0 shell:true does NOT quote
-  // args-array elements (verified live) — cmd.exe would word-split "Reply with
-  // exactly the text OK ..." into ~11 separate args and break `kimi -p`. The
-  // current shell:false invocation is already correct and robust for the native
-  // .exe case. If `kimi` ever becomes a .cmd shim in the future, the right fix
-  // is the same bypass-the-shim approach used in corleone-dispatch.mjs (spawn
-  // node on the underlying entry script with shell:false), NOT shell:true.
-  const guard = await guardLaneStart("sjahrir");
-  if (guard.skip) {
-    const reason = guard.reason || "unknown";
-    const retryMinutes = Math.ceil(guard.remainingMs / 60000);
-    process.stderr.write(`sjahrir-dispatch: lane skipped (${reason}), retry in ${retryMinutes}m — no spawn attempted\n`);
-    await logLaneUsage({ lane: "sjahrir", promptLength: prompt.length, ok: false, exitCode: 3, durationMs: 0, extra: { skipped: true, reason } });
-    process.exit(3);
-  }
-
-  const t0 = Date.now();
-  const r = spawnSync("kimi", ["-p", prompt], {
-    cwd: REPO_ROOT,
-    windowsHide: true,
-    timeout: TIMEOUT_MS,
-    encoding: "utf8",
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  const durationMs = Date.now() - t0;
-
-  if (r.stdout) process.stdout.write(r.stdout);
-  if (r.stderr) process.stderr.write(r.stderr);
-
-  if (r.signal === "SIGTERM" && r.status === null) {
-    // spawnSync sets status=null + signal="SIGTERM" on timeout kill.
-    process.stderr.write(`sjahrir-dispatch: kimi timed out after ${TIMEOUT_MS}ms\n`);
-    await recordLaneOutcome("sjahrir", { ok: false, stdout: r.stdout, stderr: r.stderr, timedOut: true });
-    await logLaneUsage({ lane: "sjahrir", promptLength: prompt.length, ok: false, timedOut: true, exitCode: 1, durationMs });
-    process.exit(1);
-  }
-  if (r.error) {
-    process.stderr.write(`sjahrir-dispatch: failed to spawn kimi: ${r.error && r.error.message ? r.error.message : r.error}\n`);
-    await recordLaneOutcome("sjahrir", { ok: false, stdout: r.stdout, stderr: r.stderr });
-    await logLaneUsage({ lane: "sjahrir", promptLength: prompt.length, ok: false, exitCode: 1, durationMs });
-    process.exit(1);
-  }
-  const exitCode = typeof r.status === "number" ? r.status : 1;
-  await recordLaneOutcome("sjahrir", { ok: exitCode === 0, stdout: r.stdout, stderr: r.stderr });
-  await logLaneUsage({ lane: "sjahrir", promptLength: prompt.length, ok: exitCode === 0, exitCode, durationMs });
-  process.exit(exitCode);
+  const r = await dispatchSjahrir(prompt);
+  if (r.stdout) process.stdout.write(r.stdout.endsWith("\n") ? r.stdout : r.stdout + "\n");
+  if (r.stderr) process.stderr.write(r.stderr.endsWith("\n") ? r.stderr : r.stderr + "\n");
+  process.exit(r.exitCode);
 }
 
 const isEntry = (() => {
@@ -85,4 +248,9 @@ const isEntry = (() => {
     return false;
   }
 })();
-if (isEntry) main();
+if (isEntry) {
+  main().catch((err) => {
+    console.error("sjahrir-dispatch fatal:", err && err.stack ? err.stack : err);
+    process.exit(1);
+  });
+}
