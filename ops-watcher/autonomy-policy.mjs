@@ -78,7 +78,7 @@ export function verifyIsPreApproved(verify, allowlist = DEFAULT_VERIFY_ALLOWLIST
   const v = String(verify || "").trim();
   if (!v) return { ok: false, reason: "no verify command" };
   if (CHAINING.test(v)) return { ok: false, reason: "verify command chains or redirects" };
-  if (!allowlist.some((allowed) => v.startsWith(allowed))) {
+  if (!allowlist.includes(v)) {
     return { ok: false, reason: `verify command is not on the pre-approved list: ${JSON.stringify(v)}` };
   }
   return { ok: true };

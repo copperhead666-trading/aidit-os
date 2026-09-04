@@ -146,10 +146,6 @@ export async function refreshOnce(deps = {}) {
     return { ok: false, refreshed: false, reason: `build-failed: ${why}` };
   }
 
-  const mutationTmp = activeGraph + ".incoming";
-  await _fs.copyFile(builtGraph, mutationTmp);
-  await _fs.rename(mutationTmp, activeGraph);
-
   // Only promote something that parses and has content. A build can exit 0 and
   // still leave a graph worth less than the one already in place.
   const fresh = await readJson(builtGraph, _fs);
