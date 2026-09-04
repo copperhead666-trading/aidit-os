@@ -1832,12 +1832,12 @@ function activeGraphAnchorsForFiles(files, deps = {}) {
       .slice()
       .sort((a, b) => b.score - a.score || a.priority - b.priority || a.text.localeCompare(b.text))
       .slice(0, GRAPH_ANCHOR_LIMIT_TOTAL)
-      .map((e) => `${e.file} ${e.text}`),
+      .map((e) => `${e.file}\0${e.text}`),
   );
 
   const result = new Map();
   for (const file of targets) {
-    result.set(file, perFile.get(file).filter((e) => keep.has(`${file} ${e.text}`)).map((e) => e.text));
+    result.set(file, perFile.get(file).filter((e) => keep.has(`${file}\0${e.text}`)).map((e) => e.text));
   }
   return result;
 }

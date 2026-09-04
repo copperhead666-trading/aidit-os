@@ -9,12 +9,16 @@ import {
   ACTIVE_GRAPH,
   BUILD_TIMEOUT_MS,
   BUILT_GRAPH,
+  CONTENT_CHECK_SAMPLE,
   MIN_REFRESH_INTERVAL_MS,
   STATE_FILE,
+  contentCheckCandidates,
   refreshOnce,
   repoFingerprint,
   shouldRefresh,
+  verifyGraphContent,
 } from "./graphify-refresh.mjs";
+import { graphFreshnessForAnchors } from "./directive-runner.mjs";
 
 let passed = 0;
 let failed = 0;
@@ -39,8 +43,34 @@ function parentDir(file) {
   return ix === -1 ? "." : file.slice(0, ix);
 }
 
+// The fixture tree the fake graphs describe. refreshOnce now reads the working
+// tree back to confirm the promoted graph matches it, so a graph that points at
+// nothing is correctly refused — which means the fixtures have to point at
+// something real, exactly as the production graph does.
+const SRC_REL = "src/fixture.mjs";
+const SRC_ABS = "mem:/src/fixture.mjs";
+const SRC_ROOT = "mem:";
+const SRC_TEXT = [
+  "import path from 'node:path';",
+  "const HEADER = 1;",
+  "",
+  "export function shallowSymbol() { return HEADER; }",
+  "",
+  "export function deepSymbol() { return path; }",
+].join("\n");
+const DEEP_LINE = 6; // deepSymbol sits on line 6 of SRC_TEXT.
+
 function graph(nodes) {
-  return JSON.stringify({ nodes: Array.from({ length: nodes }, (_, i) => ({ id: `n${i}` })), links: [] });
+  const list = Array.from({ length: nodes }, (_, i) => ({ id: `n${i}` }));
+  // The DEEPEST located symbol is the one the content check samples, so the
+  // fixture has to carry one. Everything above it is filler, as in a real graph.
+  list[list.length - 1] = {
+    id: `n${nodes - 1}`,
+    label: "deepSymbol()",
+    source_file: SRC_REL,
+    source_location: `L${DEEP_LINE}`,
+  };
+  return JSON.stringify({ nodes: list, links: [] });
 }
 
 function state(fingerprint, nodes = 1) {
@@ -48,7 +78,7 @@ function state(fingerprint, nodes = 1) {
 }
 
 function fakeFs(over = {}) {
-  const files = new Map(Object.entries(over.files || {}));
+  const files = new Map(Object.entries({ [SRC_ABS]: SRC_TEXT, ...(over.files || {}) }));
   const mtimes = new Map(Object.entries(over.mtimes || {}));
   const dirs = new Set(over.dirs || []);
   for (const file of files.keys()) dirs.add(parentDir(file));
@@ -137,6 +167,7 @@ function deps(fs, over = {}) {
     stateFile: STATE,
     minIntervalMs: INTERVAL,
     timeoutMs: 777,
+    sourceRoot: SRC_ROOT,
     ...over,
   };
 }
@@ -415,6 +446,170 @@ async function t14_stampWriteFailureDoesNotFailPromotion() {
   ok("T14: stamp-file write failure is logged and does not fail a correct promotion");
 }
 
+// =====================================================================
+// THE STAMP MUST NAME THE COMMIT THE BUILD SAW, AND THE CONTENT MUST BE
+// CHECKED AGAINST THE TREE.
+//
+// Measured at f22349d with the stamp matching HEAD, the tree clean, and the
+// guard reporting FRESH:
+//
+//     symbol                        graph   actual   off by
+//     buildExecutionPrompt()        L1716   L1858     +142
+//     graphFreshnessForAnchors()    L1610   L1693      +83
+//     activeGraphAnchorsForFiles()  L1641   L1724      +83
+//
+// The old guard compared the STAMP against HEAD and never the CONTENT against
+// the file, so all three existing stamp mutations (make it stale, remove it,
+// treat it as fresh) stayed green while every anchor the system emitted was
+// wrong. T15 is the mutation none of them could see: the build finishes, a
+// commit lands, and the graph must NOT be certified.
+// =====================================================================
+
+async function t15_commitLandingDuringTheBuildIsNotStampedAsFresh() {
+  const fs = fakeFs({
+    files: { [ACTIVE]: graph(2), [BUILT]: graph(6), [STATE]: state("old") },
+    mtimes: { [ACTIVE]: NOW - 5000 },
+  });
+  const STAMP = `${ACTIVE}.commit.stamp`;
+
+  // HEAD moves WHILE graphify runs — the ~87s rebuild measured on this repo is
+  // longer than the 100s between two real commits on 2026-09-04.
+  let head = "buildstart";
+  const spawnSync = (cmd, args) => {
+    if (cmd === "git") {
+      if (args.join(" ") === "rev-parse HEAD") return { status: 0, stdout: `${head}\n`, stderr: "" };
+      if (args.join(" ") === "status --porcelain") return { status: 0, stdout: "", stderr: "" };
+      throw new Error(`unexpected git args: ${args.join(" ")}`);
+    }
+    assert.equal(cmd, "graphify", "T15: only git and graphify are spawned");
+    head = "committed-during-build";
+    return { status: 0, stdout: "ok", stderr: "" };
+  };
+
+  const result = await refreshOnce(deps(fs, { spawnSync, force: true }));
+
+  assert.equal(result.ok, true, "T15: the build itself succeeded");
+  assert.equal(result.refreshed, true, "T15: the graph is still promoted — it is the best available");
+
+  const stamp = fs.files.get(STAMP);
+  assert.equal(stamp, "buildstart", "T15: the stamp names the commit the build STARTED at, not the one that landed during it");
+  assert.notEqual(stamp, head, "T15: the stamp must not name a commit the graph never saw");
+
+  // End to end: this is the consumer that decides whether anchors are emitted.
+  const freshness = graphFreshnessForAnchors({
+    readText: () => stamp,
+    stampFile: STAMP,
+    repoCommit: head,
+  });
+  assert.equal(freshness.fresh, false, "T15: the anchor guard must REFUSE — anchors are not emitted");
+  assert.match(freshness.reason, /buildstart/, "T15: the refusal names the graph's commit");
+
+  // And the next sweep must try again rather than calling the repo unchanged.
+  const stateWrite = fs.calls.find((c) => c.op === "writeFile" && c.file === STATE);
+  assert.ok(stateWrite, "T15: state is recorded");
+  assert.equal(
+    JSON.parse(stateWrite.content).fingerprint.startsWith("buildstart:"),
+    true,
+    "T15: state records the PRE-build fingerprint so the moved repo triggers the next rebuild",
+  );
+  ok("T15: a commit landing during the build is stamped as the old commit and the anchor guard refuses");
+}
+
+async function t16_contentCheckSamplesTheDeepestSymbolPerFile() {
+  const g = {
+    nodes: [
+      { label: "topConst", source_file: "a.mjs", source_location: "L2" },
+      { label: "deepFn()", source_file: "a.mjs", source_location: "L400" },
+      { label: "midFn()", source_file: "a.mjs", source_location: "L90" },
+      { label: "otherDeep()", source_file: "b.mjs", source_location: "L50" },
+      { label: "a.mjs", source_file: "a.mjs", source_location: "L1" },
+      { label: "obj.member", source_file: "a.mjs", source_location: "L410" },
+      { label: "noLocation", source_file: "a.mjs" },
+    ],
+  };
+
+  const picked = contentCheckCandidates(g);
+
+  assert.deepEqual(
+    picked.map((c) => `${c.file}:${c.line}:${c.label}`),
+    ["a.mjs:400:deepFn", "b.mjs:50:otherDeep"],
+    "T16: one candidate per file, the deepest, deepest file first, () stripped",
+  );
+  assert.equal(picked.some((c) => c.label.includes(".")), false, "T16: member expressions are not line-anchorable and are excluded");
+  assert.equal(contentCheckCandidates(g, 1).length, 1, "T16: the sample honours its limit");
+  assert.equal(contentCheckCandidates({ nodes: [] }).length, 0, "T16: an empty graph yields no candidates");
+  assert.equal(typeof CONTENT_CHECK_SAMPLE, "number", "T16: the sample size is exported");
+  ok("T16: the content check samples the deepest symbol per file, where drift accumulates");
+}
+
+async function t17_contentCheckDistinguishesDriftFromExtractorGaps() {
+  const text = ["const a = 1;", "", "export function deepSymbol() {}"].join("\n");
+  const readFile = async (file) => {
+    if (file === "mem:/src/fixture.mjs") return text;
+    throw new Error(`ENOENT: ${file}`);
+  };
+  const node = (line, label = "deepSymbol()") => ({
+    nodes: [{ label, source_file: SRC_REL, source_location: `L${line}` }],
+  });
+  const run = (graphObj) => verifyGraphContent(graphObj, { _fs: { readFile }, sourceRoot: SRC_ROOT });
+
+  const right = await run(node(3));
+  assert.equal(right.verified, true, "T17: a symbol on its stated line verifies");
+  assert.equal(right.checked, 1, "T17: it counts as checked");
+
+  const drifted = await run(node(1));
+  assert.equal(drifted.verified, false, "T17: a symbol that moved is DRIFT and is refused");
+  assert.deepEqual(drifted.mismatches, ["src/fixture.mjs:1 deepSymbol"], "T17: the mismatch names file, line and symbol");
+
+  const pastEnd = await run(node(999));
+  assert.equal(pastEnd.verified, false, "T17: a line beyond the end of the file is refused");
+  assert.match(pastEnd.mismatches[0], /file has 3 lines/, "T17: the mismatch says how long the file actually is");
+
+  // An extractor that names something absent from the file is a GAP, not drift.
+  // Counting it against the graph would refuse every fresh build.
+  const absent = await run(node(3, "symbolTheExtractorInvented()"));
+  assert.equal(absent.checked, 0, "T17: a symbol that appears nowhere in the file is skipped, not counted");
+  assert.equal(absent.skipped, 1, "T17: and it is reported as skipped");
+  assert.equal(absent.verified, false, "T17: with nothing checked there is no evidence, so it is not certified");
+  assert.match(absent.reason, /no locatable symbols/i, "T17: the reason says there was nothing to check");
+
+  const missingFile = await verifyGraphContent(node(3), { _fs: { readFile }, sourceRoot: "mem:/elsewhere" });
+  assert.equal(missingFile.verified, false, "T17: an unreadable source file leaves nothing checked");
+  assert.equal(missingFile.skipped, 1, "T17: the unreadable file is skipped");
+  ok("T17: the content check separates real drift from extractor gaps and never certifies on zero evidence");
+}
+
+async function t18_aGraphThatFailsTheContentCheckLosesItsStamp() {
+  const STAMP = `${ACTIVE}.commit.stamp`;
+  const fs = fakeFs({
+    // A stamp from an EARLIER run is already sitting there. Merely skipping the
+    // write would leave it certifying this new graph.
+    files: { [ACTIVE]: graph(2), [BUILT]: graph(4), [STATE]: state("old"), [STAMP]: "earlier-commit" },
+    mtimes: { [ACTIVE]: NOW - 5000 },
+  });
+  const h = spawnHarness({ status: 0, stdout: "ok", stderr: "" });
+  const logs = [];
+
+  const result = await refreshOnce(deps(fs, {
+    spawnSync: h.spawnSync,
+    fingerprint: "newhead:0:0",
+    log: (m) => logs.push(m),
+    // The promoted graph does not describe the tree.
+    verifyContent: async () => ({ verified: false, checked: 3, skipped: 0, mismatches: ["src/fixture.mjs:6 deepSymbol"], reason: "1/3 sampled symbols are not where the graph says" }),
+  }));
+
+  assert.equal(result.ok, false, "T18: a graph that fails the content check is a failed refresh");
+  assert.equal(result.refreshed, false, "T18: it is not reported as refreshed");
+  assert.match(result.reason, /content-check-failed/, "T18: the reason names the content check");
+  assert.equal(fs.files.has(STAMP), false, "T18: the stale stamp is REMOVED, not merely left unwritten");
+  assert.equal(fs.calls.some((c) => c.op === "unlink" && c.file === STAMP), true, "T18: removal is explicit");
+  const stateWrite = fs.calls.find((c) => c.op === "writeFile" && c.file === STATE);
+  assert.equal(stateWrite, undefined, "T18: state is NOT advanced, so the next sweep rebuilds instead of calling the repo unchanged");
+  assert.ok(logs.some((m) => /content check/i.test(m)), "T18: the failure is logged");
+  assert.ok(logs.some((m) => /src\/fixture\.mjs:6/.test(m)), "T18: the specific mismatch is logged");
+  ok("T18: a graph failing the content check loses its stamp and does not advance state");
+}
+
 async function main() {
   assert.ok(BUILT_GRAPH, "exported BUILT_GRAPH exists");
   assert.ok(ACTIVE_GRAPH, "exported ACTIVE_GRAPH exists");
@@ -437,6 +632,10 @@ async function main() {
     t12_freshClonePromotionCreatesMissingActiveDirectory,
     t13_successfulPromotionStampsActiveGraphWithCommitOnly,
     t14_stampWriteFailureDoesNotFailPromotion,
+    t15_commitLandingDuringTheBuildIsNotStampedAsFresh,
+    t16_contentCheckSamplesTheDeepestSymbolPerFile,
+    t17_contentCheckDistinguishesDriftFromExtractorGaps,
+    t18_aGraphThatFailsTheContentCheckLosesItsStamp,
   ];
   for (const t of tests) {
     try {

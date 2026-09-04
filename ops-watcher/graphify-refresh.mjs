@@ -26,6 +26,32 @@
 // are two corpora kept side by side. So the fresh graph is PROMOTED into
 // active/ by writing beside it and renaming. A half-written graph is worse than
 // a stale one: the analyst would answer confidently from a truncated file.
+//
+// WHY THE STAMP IS TAKEN BEFORE THE BUILD. Measured 2026-09-04: a full rebuild
+// of this repo takes ~87 seconds, and commits during a working session land
+// closer together than that (c1bb281 at 21:26:41, f22349d at 21:28:21 — 100s
+// apart). The stamp used to be read AFTER the build finished, so a commit that
+// landed while graphify was running got stamped onto a graph extracted before
+// it. The stale-graph guard compares stamp against HEAD, so that graph then
+// passed as FRESH while every line number in it had moved:
+//
+//     symbol                        graph   actual   off by
+//     buildExecutionPrompt()        L1716   L1858     +142
+//     graphFreshnessForAnchors()    L1610   L1693      +83
+//     activeGraphAnchorsForFiles()  L1641   L1724      +83
+//
+// Stamping the commit the build STARTED at makes that case fail closed: the
+// stamp names a commit older than HEAD, the existing refusal fires, and no
+// anchors are emitted until the next rebuild catches up.
+//
+// The graphify cache was the other suspect and was RULED OUT by measurement: a
+// full re-extract at f22349d re-indexed all 272 files and produced correct line
+// numbers (L1858 / L1693 / L1724). The extractor is honest; the stamp was not.
+//
+// WHY A CONTENT CHECK TOO. A stamp is a claim about the graph. It cannot be
+// checked against the graph's contents, so any future path that stamps at the
+// wrong moment reproduces the same silent failure. verifyGraphContent turns the
+// claim into evidence by reading the tree the graph is describing.
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
@@ -76,6 +102,108 @@ export function repoFingerprint(deps = {}) {
   // content hash of a gigabyte of repo would cost more than the question.
   const dirty = run(["status", "--porcelain"]);
   return `${head}:${dirty.length}:${dirty.split("\n").length}`;
+}
+
+// How many symbols the content check reads back out of the working tree.
+export const CONTENT_CHECK_SAMPLE = 10;
+
+/**
+ * Candidates for the content check: the DEEPEST located symbol in each file,
+ * then the deepest of those across files.
+ *
+ * The depth is the whole point. A symbol near line 1 is stable no matter how
+ * stale the graph is — imports and top-level constants do not move — so a
+ * sample drawn from the head of files certifies a fossil. Measured on the two
+ * graphs sitting on this machine, a 40-symbol sample taken that way scored
+ * 40/40 on BOTH the stale graph and the fresh one: no discrimination at all.
+ * The deepest symbol per file carries every insertion made above it, and the
+ * same measurement on that sample scored 10/10 fresh against 8/10 stale.
+ */
+export function contentCheckCandidates(graph, limit = CONTENT_CHECK_SAMPLE) {
+  const perFile = new Map();
+  for (const node of graph?.nodes || []) {
+    const file = node?.source_file;
+    if (!file || typeof file !== "string") continue;
+    const matched = /(\d+)/.exec(String(node.source_location || ""));
+    if (!matched) continue;
+    // A label with a path separator or a dot is a file or a member expression,
+    // not a symbol that sits on one line under its own name.
+    const label = String(node.label || "").replace(/\(\)$/, "");
+    if (!label || label.includes("/") || label.includes("\\") || label.includes(".")) continue;
+    const line = Number(matched[1]);
+    if (!Number.isInteger(line) || line < 1) continue;
+    const current = perFile.get(file);
+    if (!current || line > current.line) perFile.set(file, { file, line, label });
+  }
+  return [...perFile.values()]
+    .sort((a, b) => b.line - a.line || a.file.localeCompare(b.file))
+    .slice(0, limit);
+}
+
+// Real and in-memory paths both work with a plain "/" join: Windows Node
+// accepts mixed separators, so "D:\repo" + "/ops-watcher/x.mjs" resolves, and
+// the tests' "mem:" roots stay intact instead of being mangled by path.join.
+function joinRepoPath(root, rel) {
+  return String(root).endsWith("/") ? `${root}${rel}` : `${root}/${rel}`;
+}
+
+/**
+ * Read the working tree back and confirm the graph describes it.
+ *
+ * A stamp is a claim; this is evidence. Every sampled symbol must be found on
+ * the line the graph puts it on. A symbol whose name appears nowhere in its
+ * file is SKIPPED rather than counted against the graph — that is an extractor
+ * limitation, not drift — but a symbol that exists at a different line, or
+ * beyond the end of the file, is exactly the drift this check is for.
+ *
+ * Returns { verified, checked, skipped, mismatches, reason }. Never throws.
+ */
+export async function verifyGraphContent(graph, deps = {}) {
+  const _fs = deps._fs || fs;
+  const sourceRoot = deps.sourceRoot || REPO_ROOT;
+  const candidates = contentCheckCandidates(graph, deps.contentSample || CONTENT_CHECK_SAMPLE);
+
+  const mismatches = [];
+  let checked = 0;
+  let skipped = 0;
+
+  for (const candidate of candidates) {
+    let lines;
+    try {
+      lines = String(await _fs.readFile(joinRepoPath(sourceRoot, candidate.file), "utf8")).split("\n");
+    } catch {
+      skipped += 1; // The file is gone; that is the planner's problem, not the graph's.
+      continue;
+    }
+    if (!lines.some((line) => line.includes(candidate.label))) {
+      skipped += 1;
+      continue;
+    }
+    checked += 1;
+    if (candidate.line > lines.length) {
+      mismatches.push(`${candidate.file}:${candidate.line} ${candidate.label} (file has ${lines.length} lines)`);
+      continue;
+    }
+    if (!lines[candidate.line - 1].includes(candidate.label)) {
+      mismatches.push(`${candidate.file}:${candidate.line} ${candidate.label}`);
+    }
+  }
+
+  if (checked === 0) {
+    // No evidence is not evidence of freshness. Refusing to certify costs the
+    // planner one more refusal; certifying on nothing costs a wrong edit.
+    return { verified: false, checked: 0, skipped, mismatches, reason: "no locatable symbols to check" };
+  }
+  if (mismatches.length) {
+    return {
+      verified: false,
+      checked,
+      skipped,
+      mismatches,
+      reason: `${mismatches.length}/${checked} sampled symbols are not where the graph says`,
+    };
+  }
+  return { verified: true, checked, skipped, mismatches, reason: `${checked} sampled symbols confirmed in the tree` };
 }
 
 /**
@@ -129,6 +257,19 @@ export async function refreshOnce(deps = {}) {
   log(`graphify-refresh: rebuilding — ${decision.reason}`);
   const started = nowMs(deps.now);
 
+  // BEFORE the build, not after. The build takes ~87s on this repo and commits
+  // land closer together than that; a fingerprint read after it names a commit
+  // the graph never saw. Reading it here means a build that raced a commit
+  // stamps the OLDER commit, HEAD disagrees, and the guard refuses — which is
+  // what it was built to do. Reading it after meant the guard certified a graph
+  // whose line numbers had all moved.
+  //
+  // The same pre-build value goes into the state file. Recording the post-build
+  // fingerprint would make the next sweep say "repo unchanged since the last
+  // refresh" and never rebuild, leaving the mismatch in place until something
+  // else happened to move the tree.
+  const fingerprint = deps.fingerprint || repoFingerprint(deps);
+
   // --no-cluster on purpose: clustering calls an LLM to name communities, and
   // this step must stay free and offline. The analyst answers structural
   // questions from nodes and links, not from community labels.
@@ -175,8 +316,6 @@ export async function refreshOnce(deps = {}) {
     return { ok: false, refreshed: false, reason: "promotion-failed" };
   }
 
-  const fingerprint = deps.fingerprint || repoFingerprint(deps);
-
   // Promote first, stamp second — the order is the correctness argument.
   // venture-planner.mjs refuses to propose whenever the stamp beside the
   // active graph disagrees with `git rev-parse HEAD` (or is missing), so a
@@ -186,6 +325,23 @@ export async function refreshOnce(deps = {}) {
   // against plain HEAD, so only the commit goes in the stamp.
   const stampFile = activeGraph + GRAPH_STAMP_SUFFIX;
   const stampedCommit = String(fingerprint).split(":")[0];
+
+  // Evidence before the claim. If the promoted graph does not describe the tree
+  // it is supposed to describe, the stamp is REMOVED rather than merely skipped:
+  // a stamp left over from an earlier run would certify this new graph, which is
+  // the same silent failure with an older date on it.
+  const verify = deps.verifyContent || verifyGraphContent;
+  const content = await verify(fresh, { ...deps, _fs });
+  if (!content.verified) {
+    log(`graphify-refresh: promoted graph FAILED the content check — ${content.reason}`);
+    for (const miss of (content.mismatches || []).slice(0, 5)) log(`graphify-refresh:   ${miss}`);
+    log("graphify-refresh: removing the commit stamp — nothing may treat this graph as fresh");
+    try { await _fs.unlink(stampFile); } catch { /* nothing to remove */ }
+    // The state file is deliberately NOT written: leaving the old fingerprint in
+    // place is what makes the next eligible sweep try again.
+    return { ok: false, refreshed: false, reason: `content-check-failed: ${content.reason}`, mismatches: content.mismatches };
+  }
+
   try {
     await _fs.writeFile(stampFile, stampedCommit, "utf8");
   } catch (err) {
@@ -206,7 +362,16 @@ export async function refreshOnce(deps = {}) {
 
   const durationMs = nowMs(deps.now) - started;
   log(`graphify-refresh: promoted ${fresh.nodes.length} nodes (was ${priorNodes}) in ${Math.round(durationMs / 1000)}s`);
-  return { ok: true, refreshed: true, nodes: fresh.nodes.length, priorNodes, durationMs };
+  log(`graphify-refresh: stamped ${stampedCommit} — ${content.reason}`);
+  return {
+    ok: true,
+    refreshed: true,
+    nodes: fresh.nodes.length,
+    priorNodes,
+    durationMs,
+    stampedCommit,
+    contentChecked: content.checked,
+  };
 }
 
 // ---- CLI ----
