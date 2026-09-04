@@ -71,6 +71,7 @@ import {
   parseDecisionOptionsFromComments,
 } from "./telegram-decision-options.mjs";
 import { cardWorthy, buildDigest, renderDigest } from "./owner-surface.mjs";
+import { parseDecisionBriefFromComments } from "./decision-brief.mjs";
 
 export { buildDecisionOptionsCommentBody };
 
@@ -126,16 +127,67 @@ export function buildButtons(shortId, comments = [], { log = () => {} } = {}) {
   return buildDefaultButtons(shortId);
 }
 
-function buildMessageText(it, shortId) {
+// Cut on a sentence boundary. A card that ends mid-word reads as broken and the
+// owner cannot tell whether the rest mattered.
+function trimTo(text, budget) {
+  const s = String(text || "").trim();
+  if (s.length <= budget) return s;
+  const cut = s.slice(0, budget);
+  const stop = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf(", "), cut.lastIndexOf(" "));
+  return (stop > budget * 0.5 ? cut.slice(0, stop) : cut).trim() + "\u2026";
+}
+
+/**
+ * The card the owner actually decides from.
+ *
+ * WHAT THIS USED TO BE, and why the owner was right to complain: the title, and
+ * nothing else. Meanwhile the issue carried a full five-slot decision brief \u2014
+ * the question, the current state with its sources, the options with their
+ * consequences, a recommendation with reasoning, and the cost of waiting \u2014 and
+ * the card showed none of it. He had to open the board to find out what he was
+ * approving, which makes both the card and the brief half useless.
+ *
+ * It now leads with the QUESTION rather than the subject line, then the
+ * recommendation the APPROVE button actually approves, then what waiting costs.
+ * The current state and the full option list stay behind DETAILS: a card that
+ * tries to be the whole brief is the flood again, in a smaller font.
+ *
+ * Falls back to the old shape when an issue carries no brief \u2014 most of the
+ * board predates the gate that requires one.
+ */
+export function buildMessageText(it, shortId, brief = null) {
   const title = escMd(it.title || "(tanpa judul)");
-  // Concise card: no long description. Details available via the DETAIL button.
-  return [
-    `\u26A0\uFE0F Perlu keputusan Anda`,
+  if (!brief) {
+    return [
+      `\u26A0\uFE0F Perlu keputusan Anda`,
+      ``,
+      `${title}`,
+      ``,
+      `Ketuk salah satu tombol di bawah untuk memutuskan.`,
+    ].join("\n");
+  }
+
+  const chosen = Array.isArray(brief.pilihan)
+    ? brief.pilihan.find((o) => o && o.key === brief.rekomendasi?.pilihan)
+    : null;
+  const saranLabel = chosen ? chosen.label : (brief.rekomendasi?.pilihan || "");
+  const lines = [
+    `\u26A0\uFE0F Perlu keputusan Anda \u00B7 ${escMd(shortId)}`,
     ``,
-    `${title}`,
-    ``,
-    `Ketuk salah satu tombol di bawah untuk memutuskan.`,
-  ].join("\n");
+    `${escMd(trimTo(brief.pertanyaan, 220))}`,
+  ];
+  if (saranLabel) {
+    lines.push(``, `*Saran:* ${escMd(trimTo(saranLabel, 90))}`);
+    if (brief.rekomendasi?.alasan) {
+      lines.push(escMd(trimTo(brief.rekomendasi.alasan, 260)));
+    }
+  }
+  if (brief.kalau_didiamkan) {
+    lines.push(``, `*Kalau didiamkan:* ${escMd(trimTo(brief.kalau_didiamkan, 220))}`);
+  }
+  const jumlah = Array.isArray(brief.pilihan) ? brief.pilihan.length : 0;
+  lines.push(``, `${jumlah} pilihan \u00B7 keadaan sekarang dan sumbernya ada di DETAIL.`);
+  return lines.join("\n");
 }
 
 // Core, dependency-injected for testability (same pattern as review-runner).
@@ -247,8 +299,11 @@ export async function runNotifyOnce(deps) {
       continue;
     }
 
-    // Send the Telegram message.
-    const text = buildMessageText(it, shortId);
+    // Send the Telegram message. `comments` arrives newest-first straight from
+    // the endpoint, which is the order parseDecisionBriefFromComments wants —
+    // a re-escalation supersedes the brief before it.
+    const brief = parseDecisionBriefFromComments(comments);
+    const text = buildMessageText(it, shortId, brief);
     const buttons = buildButtons(shortId, comments, { log });
     const sendOpts = {};
     if (telegramBase) sendOpts.baseUrl = telegramBase;

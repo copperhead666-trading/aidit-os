@@ -10,9 +10,16 @@
 // WHAT IT IS: Claude Code on the Lenovo, in print mode (`claude -p`), reached
 // over the Tailscale SSH path. Verified live 2026-09-04 — v2.1.258 answered.
 //
-// WHAT IT ACTUALLY BUYS, stated honestly rather than flatteringly. It runs on
-// the owner's Claude account, so it is NOT extra quota — a SOEKARNO call costs
-// what a call here costs. What it genuinely adds:
+// WHAT IT ACTUALLY BUYS. An earlier version of this comment said SOEKARNO was
+// not extra quota because it ran on the owner's Claude account. That was wrong,
+// and the owner corrected it: the Lenovo's Claude is signed in as
+// pusatberasmurah@gmail.com, a DIFFERENT account from the one the ASUS session
+// uses (adityainofficial@gmail.com) — verified in ~/.claude.json on that machine.
+//
+// So this lane is real additional capacity, not just concurrency. It should be
+// loaded accordingly, and it is a live data point for the owner's standing
+// question about how many paid accounts to keep. What it adds:
+//   - a genuinely separate Claude subscription;
 //   - a second machine, so its work runs concurrently with an ASUS lane;
 //   - a reviewer that CANNOT see the repo. The Lenovo has no clone of it
 //     (`Test-Path 'D:\AI\Active FounderOS-Aidit'` is False). A reviewer that

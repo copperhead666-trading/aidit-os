@@ -38,7 +38,7 @@ import { fileURLToPath } from "node:url";
 import {
   OWNER_CHAT_ID, sendMessage, answerCallbackQuery, editMessageText, getUpdates, tokenStatus, redact,
 } from "./telegram-client.mjs";
-import { runNotifyOnce } from "./telegram-notify.mjs";
+import { buildMessageText, runNotifyOnce } from "./telegram-notify.mjs";
 import { runListenerOnce, parseCallbackData, processUpdateForCallback } from "./telegram-listener.mjs";
 import {
   buildDecisionOptionsCommentBody,
@@ -330,6 +330,178 @@ async function runOneAction(actionLetter, opts = {}) {
   await tgS.close();
   await pcS.close();
   return { result, tgCalls: tgS.calls, pc: { issues: pcS.issues, comments: pcS.comments, patchLog: pcS.patchLog } };
+}
+
+
+function decisionBrief(overrides = {}) {
+  return {
+    pertanyaan: "Apakah aturan komisi SJS kuartal ini memakai model bertingkat 2-5%?",
+    yang_sudah_ada: [
+      {
+        kutipan: "Dokumen ops menyebut komisi masih 3% flat untuk semua tier.",
+        sumber: "ventures/sjs-superapps/config/commission.json",
+      },
+    ],
+    pilihan: [
+      {
+        key: "tetap",
+        label: "Tetap 3% flat",
+        konsekuensi: "Tidak ada perubahan rilis, tetapi margin tier bawah tetap tipis.",
+      },
+      {
+        key: "bertingkat",
+        label: "Bertingkat 2-5%",
+        konsekuensi: "Perlu perubahan config dan satu rilis, tetapi margin tier bawah membaik.",
+      },
+      {
+        key: "tunda",
+        label: "Tunda sampai audit selesai",
+        konsekuensi: "Tidak ada perubahan hari ini, tetapi keputusan komisi masuk antrean lagi.",
+      },
+    ],
+    rekomendasi: {
+      pilihan: "bertingkat",
+      alasan: "Tier bawah menyumbang mayoritas transaksi sehingga perubahan ini paling jelas dampaknya.",
+    },
+    kalau_didiamkan: "Komisi berjalan memakai angka lama dan koreksi mundur makin mahal.",
+    ...overrides,
+  };
+}
+
+function contentLine(text) {
+  return text.split("\n")[2];
+}
+
+function assertNoUndefinedOrEmptySaran(text) {
+  assert.doesNotMatch(text, /undefined/);
+  assert.doesNotMatch(text, /^\*Saran:\*\s*$/m);
+}
+
+async function testDecisionCardNoBriefKeepsLegacyBytes() {
+  const name = "(0d) buildMessageText without brief keeps the legacy title-only card byte-for-byte";
+  try {
+    const issue = { title: "Komisi *SJS_ [legacy] \\ path" };
+    const expected = [
+      "⚠️ Perlu keputusan Anda",
+      "",
+      "Komisi \\*SJS\\_ \\[legacy] \\\\ path",
+      "",
+      "Ketuk salah satu tombol di bawah untuk memutuskan.",
+    ].join("\n");
+    const actual = buildMessageText(issue, "KOL-LEGACY");
+    assert.equal(Buffer.compare(Buffer.from(actual, "utf8"), Buffer.from(expected, "utf8")), 0);
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testDecisionCardWithBriefLeadsWithQuestion() {
+  const name = "(0e) buildMessageText with brief leads with pertanyaan, not the issue title";
+  try {
+    const issue = { title: "GENERIC PAPERCLIP TITLE ONLY" };
+    const brief = decisionBrief();
+    const text = buildMessageText(issue, "KOL-DECIDE", brief);
+    assert.ok(text.includes(brief.pertanyaan), "brief question appears on the card");
+    assert.equal(contentLine(text), brief.pertanyaan, "first content line is the decision question");
+    assert.notEqual(contentLine(text), issue.title, "issue title is not the leading content line");
+    assert.ok(!contentLine(text).includes(issue.title), "raw title is absent from the leading content line");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testDecisionCardRecommendationUsesOptionLabel() {
+  const name = "(0f) buildMessageText renders recommendation as option label, not option key";
+  try {
+    const text = buildMessageText({ title: "Generic title" }, "KOL-REC", decisionBrief());
+    assert.ok(text.includes("*Saran:* Bertingkat 2-5%"), "recommendation label is rendered");
+    assert.doesNotMatch(text, /^bertingkat$/m, "bare recommendation key is not rendered on its own line");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testDecisionCardUnmatchedRecommendationStillRendersKey() {
+  const name = "(0g) buildMessageText renders unmatched recommendation key instead of undefined/empty Saran";
+  try {
+    const text = buildMessageText(
+      { title: "Generic title" },
+      "KOL-MISS",
+      decisionBrief({ rekomendasi: { pilihan: "manual_override", alasan: "Ada pilihan darurat yang belum masuk daftar tombol." } }),
+    );
+    assert.ok(text.includes("*Saran:* manual\\_override"), "unmatched key is rendered as fallback text");
+    assertNoUndefinedOrEmptySaran(text);
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testDecisionCardShowsCostOfWaiting() {
+  const name = "(0h) buildMessageText includes kalau_didiamkan on the card";
+  try {
+    const brief = decisionBrief();
+    const text = buildMessageText({ title: "Generic title" }, "KOL-WAIT", brief);
+    assert.ok(text.includes("*Kalau didiamkan:* Komisi berjalan memakai angka lama dan koreksi mundur makin mahal."));
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testDecisionCardShowsOptionCountAndDefersStateToDetail() {
+  const name = "(0i) buildMessageText shows option count and points current state/sources to DETAIL";
+  try {
+    const brief = decisionBrief();
+    const text = buildMessageText({ title: "Generic title" }, "KOL-COUNT", brief);
+    assert.ok(text.includes(`${brief.pilihan.length} pilihan · keadaan sekarang dan sumbernya ada di DETAIL.`));
+    assert.ok(!text.includes(brief.yang_sudah_ada[0].kutipan), "current-state quote stays out of the card");
+    assert.ok(!text.includes(brief.yang_sudah_ada[0].sumber), "current-state source stays behind DETAIL");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testDecisionCardStaysUnderTelegramLimitWithHugeBrief() {
+  const name = "(0j) buildMessageText keeps deliberately huge brief under Telegram 4096-char limit";
+  try {
+    const huge = "Kalimat panjang yang tetap punya batas kata dan titik. ".repeat(140);
+    const brief = decisionBrief({
+      pertanyaan: `${huge}Apakah Anda memilih opsi yang direkomendasikan sekarang?`,
+      yang_sudah_ada: [{ kutipan: huge, sumber: huge }],
+      pilihan: Array.from({ length: 5 }, (_, i) => ({
+        key: `opsi_${i + 1}`,
+        label: `Opsi ${i + 1} ${huge}`,
+        konsekuensi: huge,
+      })),
+      rekomendasi: { pilihan: "opsi_4", alasan: huge },
+      kalau_didiamkan: huge,
+    });
+    const text = buildMessageText({ title: huge }, "KOL-HUGE", brief);
+    assert.ok(text.length < 4096, `card length ${text.length} must be strictly under 4096`);
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testDecisionCardTruncatesCleanly() {
+  const name = "(0k) buildMessageText truncates long fields cleanly with ellipsis and no mid-word sentinel";
+  try {
+    const longQuestion = `${"Batas aman keputusan ini tetap jelas untuk pemilik. ".repeat(20)}supercalifragilisticmidwordshouldnotappear?`;
+    const text = buildMessageText({ title: "Generic title" }, "KOL-TRIM", decisionBrief({ pertanyaan: longQuestion }));
+    const questionLine = contentLine(text);
+    assert.ok(questionLine.endsWith("…"), "truncated question ends with the ellipsis character");
+    assert.doesNotMatch(questionLine, /supercalifragilisticmidwordshouldnotappear|supercalifragilistic/);
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testDecisionCardEscapesBriefMarkdownSpecials() {
+  const name = "(0l) buildMessageText escapes legacy-Markdown specials in pertanyaan and rekomendasi.alasan";
+  try {
+    const brief = decisionBrief({
+      pertanyaan: "Apakah *ops_owner [mode\\raw harus dipilih?",
+      rekomendasi: {
+        pilihan: "bertingkat",
+        alasan: "Alasan *raw_owner [note\\path tetap aman untuk Telegram.",
+      },
+    });
+    const text = buildMessageText({ title: "Generic title" }, "KOL-MD", brief);
+    assert.ok(text.includes("Apakah \\*ops\\_owner \\[mode\\\\raw harus dipilih?"));
+    assert.ok(text.includes("Alasan \\*raw\\_owner \\[note\\\\path tetap aman untuk Telegram."));
+    ok(name);
+  } catch (e) { bad(name, e); }
 }
 
 async function testTokenStatusNoLeak() {
@@ -1315,6 +1487,15 @@ async function main() {
     await testSendMessageParseEntityFallback();
     await testSendMessageNonParse400NoFallback();
     await testSendMessageSuccessNoFallback();
+    await testDecisionCardNoBriefKeepsLegacyBytes();
+    await testDecisionCardWithBriefLeadsWithQuestion();
+    await testDecisionCardRecommendationUsesOptionLabel();
+    await testDecisionCardUnmatchedRecommendationStillRendersKey();
+    await testDecisionCardShowsCostOfWaiting();
+    await testDecisionCardShowsOptionCountAndDefersStateToDetail();
+    await testDecisionCardStaysUnderTelegramLimitWithHugeBrief();
+    await testDecisionCardTruncatesCleanly();
+    await testDecisionCardEscapesBriefMarkdownSpecials();
     await testNotifySendsAndMarks();
     await testNotifyTelegramFailureNoCrash();
     await testApprove();
