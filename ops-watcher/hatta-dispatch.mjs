@@ -44,6 +44,77 @@ export function readHarnessEvidence(file = HARNESS_EVIDENCE_FILE, _fs = fsSync) 
 }
 const HARNESS_SCRIPT = path.resolve(REPO_ROOT, "hatta", "harness.mjs");
 
+/**
+ * The harness prints ONE JSON evidence object on stdout when it exits normally.
+ * Pull it back out so the wrapper can see what actually happened instead of
+ * treating every non-zero exit as an undifferentiated failure.
+ *
+ * Takes the LAST JSON-looking line, not the first: the harness may print
+ * progress before the final object, and the final object is the verdict.
+ *
+ * Best-effort and EXPORTED so the regression test exercises the real parser.
+ * Never throws — a wrapper that crashes while logging is worse than one that
+ * logs nothing.
+ */
+export function parseHarnessStdout(stdout) {
+  try {
+    const lines = String(stdout || "").split(/\r?\n/);
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      const line = lines[i].trim();
+      if (!line.startsWith("{")) continue;
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+      } catch {
+        // Not the evidence line. Keep walking backwards.
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The usage record for the NORMAL-EXIT path — the one where the inner timeout
+ * leaked. EXPORTED and pure so the regression test can assert the WIRING, not
+ * merely the parser: a test that only exercises parseHarnessStdout stays green
+ * while the flag it produces is thrown away between the parser and the log,
+ * which is precisely the bug being fixed here.
+ *
+ * @returns the exact object handed to logLaneUsage.
+ */
+export function buildNormalExitUsage({ prompt, stdout, stderr, exitCode, durationMs }) {
+  const evidence = parseHarnessStdout(stdout);
+  // "Reached MAX_ITERATIONS" is NOT a timeout, and the two must stay
+  // distinguishable or one blind spot has simply been swapped for another: a
+  // run can exhaust the 4-iteration ceiling in 40 SECONDS, which is a
+  // completely different failure from sitting at a 120s wall. Only the
+  // harness's own typed flag counts; the error string is carried separately so
+  // the distinction survives into the log.
+  const timedOut = evidence?.timedOut === true;
+  return {
+    lane: "hatta",
+    promptLength: typeof prompt === "string" ? prompt.length : null,
+    ok: exitCode === 0,
+    timedOut,
+    exitCode,
+    durationMs,
+    turns: typeof evidence?.iterations === "number" ? evidence.iterations : null,
+    stdout,
+    stderr,
+    cli: evidence
+      ? {
+          model: typeof evidence.model === "string" ? evidence.model : undefined,
+          endpoint: typeof evidence.endpoint === "string" ? evidence.endpoint : undefined,
+          toolCalls: Array.isArray(evidence.toolCalls) ? evidence.toolCalls.length : undefined,
+          filesWritten: Array.isArray(evidence.filesWritten) ? evidence.filesWritten.length : undefined,
+          error: typeof evidence.error === "string" ? evidence.error : undefined,
+        }
+      : null,
+  };
+}
+
 async function main() {
   const prompt = process.argv[2];
   if (typeof prompt !== "string" || prompt.length === 0) {
@@ -112,8 +183,22 @@ async function main() {
     process.exit(1);
   }
   const exitCode = typeof r.status === "number" ? r.status : 1;
-  await recordLaneOutcome("hatta", { ok: exitCode === 0, stdout: r.stdout, stderr: r.stderr });
-  await logLaneUsage({ lane: "hatta", promptLength: prompt.length, ok: exitCode === 0, exitCode, durationMs });
+  // THE NORMAL-EXIT PATH, AND THE PLACE THE INNER TIMEOUT LEAKED.
+  //
+  // The block above handles the OUTER wrapper timeout (spawnSync killed the
+  // child) and correctly passes timedOut: true. But the harness also has its
+  // OWN 120s per-call abort. When that fires, the harness does not hang: it
+  // records "timedOut": true in the evidence JSON it prints and then exits
+  // NORMALLY, arriving here. Nothing parsed that stdout, so an inner timeout was
+  // logged as an ordinary failure.
+  //
+  // The baseline proves it: both recorded HATTA runs sat at p50 122,670ms —
+  // 120s plus overhead, unmistakably the inner abort — and lane-usage.jsonl said
+  // timedOut=0 for the lane. Under-reported in exactly the spot that was
+  // supposed to have been fixed.
+  const usage = buildNormalExitUsage({ prompt, stdout: r.stdout, stderr: r.stderr, exitCode, durationMs });
+  await recordLaneOutcome("hatta", { ok: exitCode === 0, stdout: r.stdout, stderr: r.stderr, timedOut: usage.timedOut });
+  await logLaneUsage(usage);
   process.exit(exitCode);
 }
 
