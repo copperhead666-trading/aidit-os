@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { runTask } from "../hatta/harness.mjs";
+import { OllamaChatTimeoutError, postChat, runTask } from "../hatta/harness.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -189,6 +189,183 @@ await t("H4 rereading the same path elides the earlier copy and keeps the newest
     assert.equal(reads[1].content, file.content);
     assert.equal(reads[1].content_elided, undefined);
   });
+});
+
+await t("H5 read_file schema advertises offset and limit", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedBody = null;
+  globalThis.fetch = async (_url, options) => {
+    capturedBody = JSON.parse(options.body);
+    return {
+      ok: true,
+      json: async () => ({ message: { role: "assistant", content: "done" } }),
+    };
+  };
+
+  try {
+    await postChat([{ role: "user", content: "schema check" }]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const readTool = capturedBody.tools.find((tool) => tool.function.name === "read_file");
+  assert.ok(readTool, "read_file tool schema must be sent to Ollama");
+  const props = readTool.function.parameters.properties;
+  assert.equal(props.offset.type, "integer");
+  assert.match(props.offset.description, /0-based line index/);
+  assert.equal(props.limit.type, "integer");
+  assert.match(props.limit.description, /Number of lines/);
+  assert.deepEqual(readTool.function.parameters.required, ["path"]);
+});
+
+await t("H6 read_file returns a requested line slice with total and range metadata", async () => {
+  await withWorkspaceFiles({ slice: "zero\none\ntwo\nthree\n" }, async ([file]) => {
+    const snapshots = [];
+    const evidence = await runTask("read a slice", {
+      chat: makeChat([
+        { message: { role: "assistant", content: "", tool_calls: [toolCall("read_file", { path: file.rel, offset: 1, limit: 2 })] } },
+        { message: { role: "assistant", content: "done" } },
+      ], snapshots),
+      persist: async () => {},
+      now: fixedClock(),
+    });
+
+    assert.equal(evidence.ok, true);
+    const reads = readFileResults(snapshots[1]);
+    assert.equal(reads.length, 1);
+    assert.equal(reads[0].content, "one\ntwo\n");
+    assert.equal(reads[0].totalLines, 4);
+    assert.deepEqual(reads[0].range, { offset: 1, limit: 2 });
+    assert.equal(reads[0].hasMoreBefore, true);
+    assert.equal(reads[0].hasMoreAfter, true);
+  });
+});
+
+await t("H7 read_file clamps negative offset, oversized limit, and past-end offset", async () => {
+  await withWorkspaceFiles({ clamp: "a\nb\nc\n" }, async ([file]) => {
+    const snapshots = [];
+    const evidence = await runTask("read clamped slices", {
+      chat: makeChat([
+        { message: { role: "assistant", content: "", tool_calls: [toolCall("read_file", { path: file.rel, offset: -50, limit: 99 })] } },
+        { message: { role: "assistant", content: "", tool_calls: [toolCall("read_file", { path: file.rel, offset: 99, limit: 10 })] } },
+        { message: { role: "assistant", content: "done" } },
+      ], snapshots),
+      persist: async () => {},
+      now: fixedClock(),
+    });
+
+    assert.equal(evidence.ok, true);
+
+    const firstRead = readFileResults(snapshots[1])[0];
+    assert.equal(firstRead.content, file.content);
+    assert.equal(firstRead.totalLines, 3);
+    assert.deepEqual(firstRead.range, { offset: 0, limit: 3 });
+    assert.equal(firstRead.hasMoreBefore, false);
+    assert.equal(firstRead.hasMoreAfter, false);
+
+    const finalReads = readFileResults(snapshots[2]);
+    assert.equal(finalReads.length, 2);
+    assert.equal(finalReads[1].content, "");
+    assert.equal(finalReads[1].totalLines, 3);
+    assert.deepEqual(finalReads[1].range, { offset: 3, limit: 0 });
+    assert.equal(finalReads[1].hasMoreBefore, true);
+    assert.equal(finalReads[1].hasMoreAfter, false);
+  });
+});
+
+await t("H8 postChat AbortError is recorded as timedOut in runTask evidence", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalTimeout = process.env.HATTA_REQUEST_TIMEOUT_MS;
+  process.env.HATTA_REQUEST_TIMEOUT_MS = "1";
+  globalThis.fetch = async (_url, options) => new Promise((_resolve, reject) => {
+    const abort = () => {
+      const error = new Error("aborted");
+      error.name = "AbortError";
+      reject(error);
+    };
+    if (options.signal.aborted) abort();
+    else options.signal.addEventListener("abort", abort, { once: true });
+  });
+
+  try {
+    const evidence = await runTask("real abort timeout", {
+      chat: postChat,
+      persist: async () => {},
+      now: fixedClock(),
+    });
+
+    assert.equal(evidence.ok, false);
+    assert.equal(evidence.timedOut, true);
+    assert.equal(evidence.error, "Ollama chat timed out after 1ms");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalTimeout === undefined) delete process.env.HATTA_REQUEST_TIMEOUT_MS;
+    else process.env.HATTA_REQUEST_TIMEOUT_MS = originalTimeout;
+  }
+});
+
+await t("H9 only the typed inner timeout error sets evidence.timedOut", async () => {
+  const textOnly = await runTask("this task text says Ollama chat timed out after 1ms", {
+    chat: async () => { throw new Error("Ollama chat timed out after 1ms"); },
+    persist: async () => {},
+    now: fixedClock(),
+  });
+  assert.equal(textOnly.ok, false);
+  assert.equal(textOnly.timedOut, false);
+
+  const typed = await runTask("typed timeout", {
+    chat: async () => { throw new OllamaChatTimeoutError(123); },
+    persist: async () => {},
+    now: fixedClock(),
+  });
+  assert.equal(typed.ok, false);
+  assert.equal(typed.timedOut, true);
+  assert.equal(typed.error, "Ollama chat timed out after 123ms");
+});
+
+await t("H10 network errors, HTTP errors, and failed tool results are not timeouts", async () => {
+  const originalFetch = globalThis.fetch;
+
+  try {
+    globalThis.fetch = async () => { throw new Error("ECONNREFUSED"); };
+    const network = await runTask("network refusal", {
+      chat: postChat,
+      persist: async () => {},
+      now: fixedClock(),
+    });
+    assert.equal(network.ok, false);
+    assert.equal(network.timedOut, false);
+    assert.equal(network.error, "ECONNREFUSED");
+
+    globalThis.fetch = async () => ({
+      ok: false,
+      status: 503,
+      text: async () => "provider unavailable",
+    });
+    const http = await runTask("http error", {
+      chat: postChat,
+      persist: async () => {},
+      now: fixedClock(),
+    });
+    assert.equal(http.ok, false);
+    assert.equal(http.timedOut, false);
+    assert.match(http.error, /Ollama chat failed: HTTP 503/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const failedTool = await runTask("missing file", {
+    chat: makeChat([
+      { message: { role: "assistant", content: "", tool_calls: [toolCall("read_file", { path: "hatta/workspace/does-not-exist-for-timeout-test.txt" })] } },
+      { message: { role: "assistant", content: "done" } },
+    ], []),
+    persist: async () => {},
+    now: fixedClock(),
+  });
+  assert.equal(failedTool.ok, true);
+  assert.equal(failedTool.timedOut, false);
+  assert.equal(failedTool.toolCalls.length, 1);
+  assert.equal(failedTool.toolCalls[0].ok, false);
 });
 
 console.log("");

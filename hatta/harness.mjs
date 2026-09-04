@@ -114,6 +114,8 @@ const tools = [
         type: "object",
         properties: {
           path: { type: "string", description: "Workspace-relative file path." },
+          offset: { type: "integer", description: "0-based line index to start reading from. Defaults to 0; negative values are clamped to 0." },
+          limit: { type: "integer", description: "Number of lines to return. Defaults to the end of the file; out-of-range values are clamped." },
         },
         required: ["path"],
       },
@@ -196,6 +198,7 @@ function makeEvidence(startedAt) {
     filesWritten: [],
     finalMessage: null,
     error: null,
+    timedOut: false,
     startedAt,
     finishedAt: null,
   };
@@ -340,6 +343,40 @@ export function protectedWorkspacePathReason(requested, { write = false } = {}) 
   return null;
 }
 
+function lineSegments(content) {
+  const segments = content.match(/[^\r\n]*(?:\r\n|\n|\r|$)/g) || [];
+  if (segments.at(-1) === "") segments.pop();
+  return segments;
+}
+
+function clampedInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : fallback;
+}
+
+function sliceContentByLines(content, args = {}) {
+  const lines = lineSegments(content);
+  const totalLines = lines.length;
+  const requestedOffset = Math.max(0, clampedInteger(args?.offset, 0));
+  const start = Math.min(requestedOffset, totalLines);
+  const hasLimit = args && Object.hasOwn(args, "limit") && args.limit !== undefined && args.limit !== null;
+  const requestedLimit = hasLimit
+    ? Math.max(0, clampedInteger(args.limit, 0))
+    : totalLines - start;
+  const end = Math.min(totalLines, start + requestedLimit);
+
+  return {
+    content: lines.slice(start, end).join(""),
+    totalLines,
+    range: {
+      offset: start,
+      limit: end - start,
+    },
+    hasMoreBefore: start > 0,
+    hasMoreAfter: end < totalLines,
+  };
+}
+
 async function readFileTool(args) {
   const resolved = resolveWorkspacePath(args?.path);
   if (!resolved.ok) return { ok: false, error: resolved.error };
@@ -348,10 +385,16 @@ async function readFileTool(args) {
 
   try {
     const content = await fs.readFile(resolved.resolved, "utf8");
+    const slice = sliceContentByLines(content, args);
     return {
       ok: true,
       path: relativeToWorkspace(resolved.resolved),
-      content,
+      bytes: Buffer.byteLength(content, "utf8"),
+      content: slice.content,
+      totalLines: slice.totalLines,
+      range: slice.range,
+      hasMoreBefore: slice.hasMoreBefore,
+      hasMoreAfter: slice.hasMoreAfter,
     };
   } catch (error) {
     return { ok: false, error: `read_file failed: ${error.message}` };
@@ -829,6 +872,14 @@ function appendToolResultMessage(messages, name, result) {
   elideSupersededReadFileResults(messages);
 }
 
+export class OllamaChatTimeoutError extends Error {
+  constructor(requestTimeoutMs) {
+    super(`Ollama chat timed out after ${requestTimeoutMs}ms`);
+    this.name = "OllamaChatTimeoutError";
+    this.requestTimeoutMs = requestTimeoutMs;
+  }
+}
+
 async function executeToolCall(toolCall, evidence) {
   const name = toolCall?.function?.name || toolCall?.name;
   const args = parseToolArguments(toolCall?.function?.arguments ?? toolCall?.arguments);
@@ -851,7 +902,7 @@ async function executeToolCall(toolCall, evidence) {
   return { name, result };
 }
 
-async function postChat(messages) {
+export async function postChat(messages) {
   if (ENDPOINT_CONFIG.error) throw new Error(ENDPOINT_CONFIG.error);
 
   const requestTimeoutMs = Number.parseInt(process.env.HATTA_REQUEST_TIMEOUT_MS || "120000", 10);
@@ -878,7 +929,7 @@ async function postChat(messages) {
 
     return response.json();
   } catch (error) {
-    if (error?.name === "AbortError") throw new Error(`Ollama chat timed out after ${requestTimeoutMs}ms`);
+    if (error?.name === "AbortError") throw new OllamaChatTimeoutError(requestTimeoutMs);
     throw error;
   } finally {
     clearTimeout(timeout);
@@ -919,7 +970,8 @@ export async function runTask(prompt, {
     evidence.error = `Reached MAX_ITERATIONS (${MAX_ITERATIONS}) before a final answer.`;
     return evidence;
   } catch (error) {
-    evidence.error = error.message;
+    if (error instanceof OllamaChatTimeoutError) evidence.timedOut = true;
+    evidence.error = error?.message || String(error);
     return evidence;
   } finally {
     evidence.finishedAt = now();
