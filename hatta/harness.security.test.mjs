@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   validateCommand,
   resolveWorkspacePath,
@@ -18,7 +19,13 @@ import {
   runTask,
 } from "./harness.mjs";
 
-const WORKSPACE_ROOT = path.resolve("D:\\AI\\Active FounderOS-Aidit");
+// THE SANDBOX BOUNDARY THIS WHOLE FILE EXISTS TO TEST. It must be derived the
+// same way harness.mjs derives it (both files live in <repo>/hatta/), never
+// hardcoded: a security test that asserts against a directory which does not
+// exist on the machine running it proves nothing about the boundary that is
+// actually enforced. It would keep passing while the real sandbox was broken —
+// which is exactly the state this repository was in until 2026-09-04.
+const WORKSPACE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cases = [];
 let passed = 0;
 let failed = 0;

@@ -26,7 +26,12 @@ const SEEN_CAP = 5000;
 const POLL_DEFAULT_SEC = 60;
 const STATE_FILE = path.join(__dirname, "state.json");
 const EVENTS_FILE = path.join(__dirname, "events.jsonl");
-const SECRETS_DIR = "D:\\AI\\Active FounderOS-Aidit\\.paperclip\\instances\\default\\secrets";
+// The Paperclip instance lives at <repo>/.paperclip (gitignored, but always
+// under the checkout), so this is DERIVED from ROOT. Hardcoding it meant the
+// watcher silently resolved NO Paperclip token the moment the checkout moved or
+// the folder was renamed — and a missing token reads as "board unreachable",
+// which is a different and much more misleading failure.
+const SECRETS_DIR = path.join(ROOT, ".paperclip", "instances", "default", "secrets");
 const GBRAIN_DB = path.join(ROOT, "knowledge", "store", ".gbrain", "brain.pglite");
 const GRAPH_ACTIVE = path.join(ROOT, "graphify-out", "active", "graph.json");
 const GRAPH_LEGACY = path.join(ROOT, "graphify-out", "legacy", "graph.json");

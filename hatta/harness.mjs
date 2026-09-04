@@ -70,8 +70,15 @@ const RG_FORCED_ARGS = [
   "--glob", "!**/.env.*",
 ];
 
+// The prompt must name the SAME root the sandbox actually enforces. It used to
+// name a hardcoded "D:\AI\Active FounderOS-Aidit" while WORKSPACE_ROOT is
+// derived, so on any machine where those differ the model was told its boundary
+// was somewhere the enforcement code disagreed with — it would build paths under
+// the path it had been told about and have every one of them refused, with no
+// message explaining why. Interpolating WORKSPACE_ROOT makes the two the same
+// fact by construction.
 const SYSTEM_PROMPT =
-  "You are Hatta, a workspace-scoped technical executor for the Active FounderOS-Aidit project. Your write/read/list access is restricted to D:\\AI\\Active FounderOS-Aidit and its subfolders only. You cannot access any other directory. Use the available tools to accomplish the task. Be concise.";
+  `You are Hatta, a workspace-scoped technical executor for the Aidit OS project. Your write/read/list access is restricted to ${WORKSPACE_ROOT} and its subfolders only. You cannot access any other directory. Use the available tools to accomplish the task. Be concise.`;
 
 function resolveEndpoint(rawHost) {
   const raw = rawHost || DEFAULT_ENDPOINT;
