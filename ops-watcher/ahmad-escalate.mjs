@@ -146,7 +146,31 @@ export async function runEscalateOnce(deps) {
       log(`ahmad-escalate: ${out.reason}`);
       return out;
     }
-    log(`ahmad-escalate: ${issueIdentifier} OWNER_REQUIRED label added`);
+
+    // READ BACK. judgeWrite reads the response; it cannot see whether the row
+    // actually changed. On 2026-09-04 three escalations reported "label added"
+    // with HTTP 200 and left the issue with labelIds: [] — the KOL-68 shape
+    // this file's own comment above warns about, produced by the file itself.
+    // The same PATCH replayed by hand a minute later persisted, so the loss is
+    // timing: the issue had just been created and the write raced it.
+    //
+    // A 200 is not evidence. ledger.mjs settled this argument already —
+    // verifyAndSettle appends and then re-reads. Same discipline here: an
+    // escalation that cannot prove its label is a failure, loudly, because a
+    // silent one leaves the owner with a decision that never reaches a card.
+    const confirm = await _get(`${base}/api/issues/${it.id}`);
+    const confirmedIds = Array.isArray(confirm?.body?.labelIds) ? confirm.body.labelIds : [];
+    if (!confirmedIds.includes(labelId)) {
+      const out = {
+        ok: false,
+        reason: "label PATCH returned success but the label is not on the issue",
+        identifier: issueIdentifier,
+        escalated: false,
+      };
+      log(`ahmad-escalate: ${issueIdentifier} ${out.reason} — NOT escalated, nothing else written`);
+      return out;
+    }
+    log(`ahmad-escalate: ${issueIdentifier} OWNER_REQUIRED label added and confirmed on re-read`);
   } else {
     log(`ahmad-escalate: ${issueIdentifier} already has OWNER_REQUIRED — skipping PATCH (idempotent), still posting comment`);
   }

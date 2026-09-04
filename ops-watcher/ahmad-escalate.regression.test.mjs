@@ -48,6 +48,22 @@ const ISSUE = {
   description: "something stalled",
 };
 
+// The board answers two shapes: the company issue list, and one issue by id.
+// runEscalateOnce re-reads the issue after the label PATCH — a 200 is not
+// evidence the row changed, as three real escalations proved on 2026-09-04 —
+// so a fake that only knows the list would fail an escalation that worked.
+function boardGet(issues, labelIds = ["lbl-owner-required"]) {
+  return async (url) => {
+    const u = String(url);
+    if (u.endsWith(`/companies/${COMPANY_ID}/issues`)) return { networkError: false, body: issues };
+    const m = /\/api\/issues\/([^/?]+)$/.exec(u);
+    if (m) {
+      const found = issues.find((i) => i.id === m[1]) || {};
+      return { networkError: false, body: { ...found, labelIds } };
+    }
+    throw new Error("unexpected GET " + u);
+  };
+}
 // ---- T1: escalating an issue that doesn't yet have OWNER_REQUIRED ----
 async function t1_addsLabelAndPostsComment() {
   const calls = { patch: [], comment: [], ensureLabel: 0 };
@@ -57,10 +73,7 @@ async function t1_addsLabelAndPostsComment() {
     issueIdentifier: "KOL-42",
     reason: "Masalah ini butuh keputusan pemilik karena menyangkut uang sungguhan.",
     brief: VALID_BRIEF,
-    httpGet: async (url) => {
-      if (url.endsWith(`/companies/${COMPANY_ID}/issues`)) return { networkError: false, body: [ISSUE] };
-      throw new Error("unexpected GET " + url);
-    },
+    httpGet: boardGet([ISSUE]),
     ensureLabel: async (base, companyId, name, color) => {
       calls.ensureLabel += 1;
       assert.equal(name, "OWNER_REQUIRED", "T1: ensureLabel called with OWNER_REQUIRED");
@@ -107,7 +120,7 @@ async function t2_alreadyEscalatedSkipsPatchButStillComments() {
     issueIdentifier: "KOL-42",
     reason: "Alasan kedua — masih butuh perhatian pemilik.",
     brief: VALID_BRIEF,
-    httpGet: async () => ({ networkError: false, body: [alreadyEscalatedIssue] }),
+    httpGet: boardGet([alreadyEscalatedIssue]),
     ensureLabel: async () => ({ id: "lbl-owner-required", created: false }),
     patchIssue: async (base, issueId, patch) => {
       calls.patch.push({ issueId, patch });
@@ -138,7 +151,7 @@ async function t3_issueNotFound() {
     companyId: COMPANY_ID,
     issueIdentifier: "KOL-999",
     reason: "some reason",
-    httpGet: async () => ({ networkError: false, body: [ISSUE] }), // only KOL-42 exists
+    httpGet: boardGet([ISSUE]), // only KOL-42 exists
     ensureLabel: async () => ({ id: "lbl-owner-required" }),
     patchIssue: async () => { calls.patch.push({}); return { networkError: false, status: 200 }; },
     postComment: async () => { calls.comment.push({}); return { networkError: false, status: 201 }; },
@@ -183,7 +196,7 @@ async function t5_networkErrorOnEnsureLabel() {
     issueIdentifier: "KOL-42",
     reason: "some reason",
     brief: VALID_BRIEF,
-    httpGet: async () => ({ networkError: false, body: [ISSUE] }),
+    httpGet: boardGet([ISSUE]),
     ensureLabel: async () => ({ id: null, networkError: true, networkErrorMessage: "label fetch failed" }),
     patchIssue: async () => { calls.patch.push({}); return { networkError: false }; },
     postComment: async () => { calls.comment.push({}); return { networkError: false }; },
@@ -205,7 +218,7 @@ async function t6_networkErrorOnPatchIssue() {
     issueIdentifier: "KOL-42",
     reason: "some reason",
     brief: VALID_BRIEF,
-    httpGet: async () => ({ networkError: false, body: [ISSUE] }),
+    httpGet: boardGet([ISSUE]),
     ensureLabel: async () => ({ id: "lbl-owner-required" }),
     patchIssue: async () => ({ networkError: true, networkErrorMessage: "PATCH failed" }),
     postComment: async () => { calls.comment.push({}); return { networkError: false, status: 201 }; },
@@ -226,7 +239,7 @@ async function t7_networkErrorOnPostComment() {
     issueIdentifier: "KOL-42",
     reason: "some reason",
     brief: VALID_BRIEF,
-    httpGet: async () => ({ networkError: false, body: [ISSUE] }),
+    httpGet: boardGet([ISSUE]),
     ensureLabel: async () => ({ id: "lbl-owner-required" }),
     patchIssue: async () => { calls.patch.push({}); return { networkError: false, status: 200 }; },
     postComment: async () => ({ networkError: true, networkErrorMessage: "comment post failed" }),
@@ -269,7 +282,7 @@ async function t9_rejectedPatchIsNotAnEscalation() {
     issueIdentifier: "KOL-42",
     reason: "some reason",
     brief: VALID_BRIEF,
-    httpGet: async () => ({ networkError: false, body: [ISSUE] }),
+    httpGet: boardGet([ISSUE]),
     ensureLabel: async () => ({ id: "lbl-owner-required" }),
     patchIssue: async () => ({ networkError: false, authRequired: true, status: 401, body: null }),
     postComment: async () => { calls.comment.push({}); return { networkError: false, status: 201 }; },
@@ -291,7 +304,7 @@ async function t10_rejectedCommentIsNotAnEscalation() {
     issueIdentifier: "KOL-42",
     reason: "some reason",
     brief: VALID_BRIEF,
-    httpGet: async () => ({ networkError: false, body: [ISSUE] }),
+    httpGet: boardGet([ISSUE]),
     ensureLabel: async () => ({ id: "lbl-owner-required" }),
     patchIssue: async () => ({ networkError: false, status: 200 }),
     postComment: async () => ({ networkError: false, status: 500, body: null }),
@@ -312,7 +325,7 @@ async function g1_noBriefRefusesBeforeWrites() {
     companyId: COMPANY_ID,
     issueIdentifier: "KOL-42",
     reason: "some reason",
-    httpGet: async () => ({ networkError: false, body: [ISSUE] }),
+    httpGet: boardGet([ISSUE]),
     ensureLabel: async () => { calls.ensureLabel += 1; return { id: "lbl-owner-required" }; },
     patchIssue: async (base, issueId, patch) => { calls.patch.push({ issueId, patch }); return { networkError: false, status: 200 }; },
     postComment: async (base, issueId, body, opts) => {
@@ -341,7 +354,7 @@ async function g2_refusalIsRecorded() {
     companyId: COMPANY_ID,
     issueIdentifier: "KOL-42",
     reason: "some reason",
-    httpGet: async () => ({ networkError: false, body: [ISSUE] }),
+    httpGet: boardGet([ISSUE]),
     ensureLabel: async () => { throw new Error("G2: ensureLabel must not be called"); },
     patchIssue: async () => { throw new Error("G2: patchIssue must not be called"); },
     postComment: async (base, issueId, body, opts) => {
@@ -370,7 +383,7 @@ async function g3_recordRefusalFalseSuppressesComment() {
     issueIdentifier: "KOL-42",
     reason: "some reason",
     recordRefusal: false,
-    httpGet: async () => ({ networkError: false, body: [ISSUE] }),
+    httpGet: boardGet([ISSUE]),
     ensureLabel: async () => { throw new Error("G3: ensureLabel must not be called"); },
     patchIssue: async () => { throw new Error("G3: patchIssue must not be called"); },
     postComment: async () => { calls.comment.push({}); return { networkError: false, status: 201 }; },
@@ -393,7 +406,7 @@ async function g4_literalKol67ShapeIsRefused() {
     reason: "some reason",
     brief: { pertanyaan: "SJS HRD KPI commission rules need your input" },
     recordRefusal: false,
-    httpGet: async () => ({ networkError: false, body: [ISSUE] }),
+    httpGet: boardGet([ISSUE]),
     ensureLabel: async () => { throw new Error("G4: ensureLabel must not be called"); },
     patchIssue: async () => { throw new Error("G4: patchIssue must not be called"); },
     postComment: async () => { throw new Error("G4: postComment must not be called when recordRefusal=false"); },
@@ -417,7 +430,7 @@ async function g5_briefCommentFailureKeepsEscalationLanded() {
     issueIdentifier: "KOL-42",
     reason: "Masalah ini butuh keputusan pemilik karena menyangkut uang sungguhan.",
     brief: VALID_BRIEF,
-    httpGet: async () => ({ networkError: false, body: [ISSUE] }),
+    httpGet: boardGet([ISSUE]),
     ensureLabel: async () => ({ id: "lbl-owner-required" }),
     patchIssue: async (base, issueId, patch) => {
       calls.patch.push({ issueId, patch });
@@ -443,6 +456,35 @@ async function g5_briefCommentFailureKeepsEscalationLanded() {
   ok("G5: brief comment failure reports partial success without inviting blind retry");
 }
 
+// ---- G6: a 200 that did not stick ------------------------------------------
+// The real incident, 2026-09-04. Three escalations logged "OWNER_REQUIRED label
+// added" on an HTTP 200 and left the issue with labelIds: []. The decisions were
+// real and reached the owner only through the daily digest, never a card — the
+// exact KOL-68 shape this file was written to prevent, produced by this file.
+// judgeWrite reads the response; only a re-read can see whether the row moved.
+async function g6_patchSucceedsButLabelIsNotThere() {
+  const calls = { patch: 0, comment: 0 };
+  const r = await runEscalateOnce({
+    base: BASE,
+    companyId: COMPANY_ID,
+    issueIdentifier: "KOL-42",
+    reason: "Keputusan ini menyangkut uang sungguhan.",
+    brief: VALID_BRIEF,
+    // The re-read reports NO labels, whatever the PATCH claimed.
+    httpGet: boardGet([ISSUE], []),
+    ensureLabel: async () => ({ id: "lbl-owner-required", created: false }),
+    patchIssue: async () => { calls.patch += 1; return { networkError: false, status: 200, issue: { labelIds: ["lbl-owner-required"] } }; },
+    postComment: async () => { calls.comment += 1; return { networkError: false, status: 201, comment: { id: "c" } }; },
+    log: () => {},
+  });
+
+  assert.equal(r.ok, false, "G6: an unconfirmed label is not an escalation");
+  assert.equal(r.escalated, false, "G6: escalated stays false");
+  assert.match(String(r.reason), /label is not on the issue/, "G6: the reason names what could not be confirmed");
+  assert.equal(calls.patch, 1, "G6: the PATCH was attempted once");
+  assert.equal(calls.comment, 0, "G6: no comment is posted on an escalation that cannot prove its label");
+  ok("G6: a PATCH that returns 200 without landing is refused, not reported as escalated");
+}
 async function main() {
   const tests = [
     t1_addsLabelAndPostsComment,
@@ -460,6 +502,7 @@ async function main() {
     g3_recordRefusalFalseSuppressesComment,
     g4_literalKol67ShapeIsRefused,
     g5_briefCommentFailureKeepsEscalationLanded,
+    g6_patchSucceedsButLabelIsNotThere,
   ];
   for (const t of tests) await t();
   console.log(`\nahmad-escalate.regression.test.mjs: ${pass}/${tests.length} passed`);
