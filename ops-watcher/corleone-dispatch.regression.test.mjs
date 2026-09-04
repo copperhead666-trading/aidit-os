@@ -42,6 +42,35 @@ function makeDeps(spawnResult, overrides = {}) {
   };
 }
 
+function jsonl(events) {
+  return `${events.map((event) => typeof event === "string" ? event : JSON.stringify(event)).join("\n")}\n`;
+}
+
+function realisticJsonlStream() {
+  return jsonl([
+    { type: "thread.started", thread_id: "session-123" },
+    { type: "turn.started" },
+    {
+      type: "item.completed",
+      item: {
+        type: "message",
+        content: [{ type: "output_text", text: "first readable answer" }],
+      },
+    },
+    {
+      type: "turn.completed",
+      model: "gpt-5",
+      usage: { input_tokens: 10, cached_input_tokens: 2, output_tokens: 4, reasoning_output_tokens: 1, total_tokens: 14 },
+    },
+    { type: "turn.started" },
+    {
+      type: "turn.completed",
+      model: "gpt-5-codex",
+      usage: { input_tokens: 20, output_tokens: 8, total_tokens: 28 },
+    },
+  ]);
+}
+
 async function t1_buildsNodeBackedInvocationForWindowsShim() {
   assert.equal(typeof mod.buildCodexInvocation, "function", "buildCodexInvocation is exported");
   const prompt = "alpha beta \"quoted\" %PATH% && still-one-arg";
@@ -49,7 +78,7 @@ async function t1_buildsNodeBackedInvocationForWindowsShim() {
   const invocation = mod.buildCodexInvocation(prompt, { codexJs });
 
   assert.equal(invocation.file, process.execPath, "Windows shim path runs through node directly");
-  assert.deepEqual(invocation.args, [codexJs, "exec", "-s", "workspace-write", prompt]);
+  assert.deepEqual(invocation.args, [codexJs, "exec", "--json", "-c", "model_reasoning_effort=medium", "-s", "workspace-write", prompt]);
   assert.equal(invocation.args.at(-1), prompt, "the free-form prompt stays one argv element");
   assert.ok(!("shell" in invocation.options), "the invocation does not opt into shell parsing");
   ok("T1: Windows codex.cmd shim is bypassed without shell parsing the prompt");
@@ -61,7 +90,7 @@ async function t2_buildsDirectCodexInvocationWithoutShim() {
   const invocation = mod.buildCodexInvocation(prompt, { codexJs: null });
 
   assert.equal(invocation.file, "codex");
-  assert.deepEqual(invocation.args, ["exec", "-s", "workspace-write", prompt]);
+  assert.deepEqual(invocation.args, ["exec", "--json", "-c", "model_reasoning_effort=medium", "-s", "workspace-write", prompt]);
   assert.equal(invocation.args.at(-1), prompt, "the prompt is still one argv element");
   assert.ok(!("shell" in invocation.options), "direct codex invocation also stays shell:false by default");
   ok("T2: direct Codex invocation keeps the safe argv shape");
@@ -79,6 +108,9 @@ async function t3_successLogsChildOutputForLaneUsageDetail() {
   assert.equal(deps.usage[0].stdout, "final answer\n", "stdout is passed through for byte accounting");
   assert.equal(deps.usage[0].stderr, "debug line\n", "stderr is passed through for byte accounting");
   assert.equal(deps.usage[0].durationMs, 25, "duration comes from injected clock");
+  assert.equal(deps.usage[0].turns, null, "unparseable stdout yields a complete record with null turns");
+  assert.equal(deps.usage[0].cli.reasoningEffort, "medium", "default effort is logged in cli detail");
+  assert.equal(deps.usage[0].cli.model, null, "missing model remains null");
   ok("T3: successful runs pass child stdout/stderr into lane usage detail");
 }
 
@@ -108,6 +140,8 @@ async function t5_timeoutLogsTimedOutAndPartialOutput() {
   assert.equal(deps.usage[0].exitCode, 1);
   assert.equal(deps.usage[0].stdout, "partial before kill");
   assert.equal(deps.usage[0].stderr, "working...\n");
+  assert.ok(Object.prototype.hasOwnProperty.call(deps.usage[0], "turns"), "timeout usage includes turns");
+  assert.ok(Object.prototype.hasOwnProperty.call(deps.usage[0], "cli"), "timeout usage includes cli detail");
   ok("T5: timeouts log timedOut plus partial child output");
 }
 
@@ -137,6 +171,119 @@ async function t7_laneGuardSkipDoesNotSpawn() {
   ok("T7: lane guard skip is recorded and does not spawn Codex");
 }
 
+async function t8_defaultEffortReachesSpawnArgv() {
+  const deps = makeDeps({ status: 0, stdout: "", stderr: "" });
+  await mod.dispatchCorleone("default effort", deps);
+
+  assert.equal(deps.calls.length, 1, "codex spawned once");
+  assert.ok(deps.calls[0].args.includes("--json"), "--json reaches argv");
+  assert.ok(deps.calls[0].args.includes("-c"), "-c reaches argv");
+  assert.ok(deps.calls[0].args.includes("model_reasoning_effort=medium"), "default effort reaches argv");
+  ok("T8: default effort is passed as a per-invocation config override");
+}
+
+async function t9_eachExplicitEffortReachesSpawnArgv() {
+  for (const effort of ["low", "medium", "high"]) {
+    const deps = makeDeps({ status: 0, stdout: "", stderr: "" }, { effort });
+    await mod.dispatchCorleone(`effort ${effort}`, deps);
+
+    assert.equal(deps.calls.length, 1, `${effort} spawned once`);
+    assert.ok(deps.calls[0].args.includes(`model_reasoning_effort=${effort}`), `${effort} reaches argv`);
+    assert.equal(deps.usage[0].cli.reasoningEffort, effort, `${effort} is logged in cli detail`);
+  }
+  ok("T9: explicit low, medium, and high efforts reach argv and lane usage");
+}
+
+async function t10_unknownEffortIsRefusedWithoutSpawn() {
+  const deps = makeDeps({ status: 0, stdout: "must not run", stderr: "" }, { effort: "turbo" });
+  const result = await mod.dispatchCorleone("bad effort", deps);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.exitCode, 2);
+  assert.match(result.diagnostic, /invalid --effort turbo/);
+  assert.equal(deps.calls.length, 0, "codex is not spawned for an unknown effort");
+  assert.equal(deps.usage.length, 0, "no lane usage record claims a codex run happened");
+  ok("T10: unknown --effort values are refused before spawn");
+}
+
+async function t11_parserExtractsTurnsAndCliFromRealisticJsonl() {
+  assert.equal(typeof mod.parseCodexExecJsonl, "function", "parseCodexExecJsonl is exported");
+  const parsed = mod.parseCodexExecJsonl(realisticJsonlStream(), { effort: "medium" });
+
+  assert.equal(parsed.turns, 2, "turn count is derived from turn events");
+  assert.equal(parsed.cli.reasoningEffort, "medium");
+  assert.equal(parsed.cli.sessionId, "session-123");
+  assert.equal(parsed.cli.model, "gpt-5-codex");
+  assert.equal(parsed.cli.inputTokens, 20);
+  assert.equal(parsed.cli.cachedInputTokens, 2);
+  assert.equal(parsed.cli.outputTokens, 8);
+  assert.equal(parsed.cli.reasoningOutputTokens, 1);
+  assert.equal(parsed.cli.totalTokens, 28);
+  assert.equal(parsed.readableStdout, "first readable answer\n");
+  ok("T11: parser extracts turns, readable text, and scalar cli detail from JSONL");
+}
+
+async function t12_malformedJsonlIsSkippedAndRecordStillGetsParsedFields() {
+  const stdout = jsonl([
+    "{\"type\":\"turn.started\"",
+    { type: "turn.started" },
+    { type: "turn.completed", model: "gpt-5", usage: { input_tokens: 3, output_tokens: 5, total_tokens: 8 } },
+  ]);
+  const deps = makeDeps({ status: 0, stdout, stderr: "" });
+  const result = await mod.dispatchCorleone("mixed jsonl", deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(deps.usage[0].turns, 1, "malformed line is skipped while valid turn events count");
+  assert.equal(deps.usage[0].cli.model, "gpt-5");
+  assert.equal(deps.usage[0].cli.inputTokens, 3);
+  assert.equal(deps.usage[0].cli.outputTokens, 5);
+  ok("T12: malformed JSONL lines are skipped without throwing or dropping the usage record");
+}
+
+async function t13_nothingUsableStillLogsNullsNotGaps() {
+  const deps = makeDeps({ status: 0, stdout: "not json\n{}\n", stderr: "" });
+  await mod.dispatchCorleone("empty jsonl", deps);
+
+  assert.equal(deps.usage.length, 1, "one usage record is still logged");
+  assert.ok(Object.prototype.hasOwnProperty.call(deps.usage[0], "turns"), "turns key exists");
+  assert.equal(deps.usage[0].turns, null);
+  assert.ok(Object.prototype.hasOwnProperty.call(deps.usage[0], "cli"), "cli key exists");
+  assert.equal(deps.usage[0].cli.reasoningEffort, "medium");
+  assert.equal(deps.usage[0].cli.sessionId, null);
+  assert.equal(deps.usage[0].cli.model, null);
+  assert.equal(deps.usage[0].cli.inputTokens, null);
+  assert.equal(deps.usage[0].cli.cachedInputTokens, null);
+  assert.equal(deps.usage[0].cli.outputTokens, null);
+  assert.equal(deps.usage[0].cli.reasoningOutputTokens, null);
+  assert.equal(deps.usage[0].cli.totalTokens, null);
+  ok("T13: unusable JSONL still yields a complete usage record with null event fields");
+}
+
+async function t14_cliArgsParserAcceptsEffortFlagShapes() {
+  assert.deepEqual(mod.parseDispatchArgs(["prompt"]).effort, "medium");
+  assert.deepEqual(mod.parseDispatchArgs(["prompt", "--effort", "low"]).effort, "low");
+  assert.deepEqual(mod.parseDispatchArgs(["prompt", "--effort=high"]).effort, "high");
+  const badArgs = mod.parseDispatchArgs(["prompt", "--effort", "unknown"]);
+  assert.equal(badArgs.ok, false);
+  assert.match(badArgs.diagnostic, /invalid --effort unknown/);
+  ok("T14: CLI argument parsing validates effort values");
+}
+
+async function t15_timeoutPathLogsParsedTurnsAndCliDetail() {
+  const deps = makeDeps({ status: null, signal: "SIGTERM", stdout: realisticJsonlStream(), stderr: "working...\n" }, { timeoutMs: 123, effort: "high" });
+  const result = await mod.dispatchCorleone("slow json task", deps);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.timedOut, true);
+  assert.equal(deps.usage[0].timedOut, true);
+  assert.equal(deps.usage[0].turns, 2);
+  assert.equal(deps.usage[0].cli.reasoningEffort, "high");
+  assert.equal(deps.usage[0].cli.sessionId, "session-123");
+  assert.equal(deps.usage[0].cli.model, "gpt-5-codex");
+  assert.equal(deps.usage[0].cli.totalTokens, 28);
+  ok("T15: timeout usage records still include parsed turns and cli detail");
+}
+
 async function main() {
   console.log("# corleone-dispatch regression tests");
   const tests = [
@@ -147,6 +294,14 @@ async function main() {
     t5_timeoutLogsTimedOutAndPartialOutput,
     t6_spawnErrorLogsOutputAndErrorMessage,
     t7_laneGuardSkipDoesNotSpawn,
+    t8_defaultEffortReachesSpawnArgv,
+    t9_eachExplicitEffortReachesSpawnArgv,
+    t10_unknownEffortIsRefusedWithoutSpawn,
+    t11_parserExtractsTurnsAndCliFromRealisticJsonl,
+    t12_malformedJsonlIsSkippedAndRecordStillGetsParsedFields,
+    t13_nothingUsableStillLogsNullsNotGaps,
+    t14_cliArgsParserAcceptsEffortFlagShapes,
+    t15_timeoutPathLogsParsedTurnsAndCliDetail,
   ];
 
   for (const t of tests) {

@@ -6,7 +6,7 @@
 // node+allowlist security boundary intact (no widening exe to arbitrary
 // binaries) while letting AHMAD actually reach CORLEONE.
 //
-//   node ops-watcher/corleone-dispatch.mjs "<prompt>"
+//   node ops-watcher/corleone-dispatch.mjs "<prompt>" [--effort low|medium|high]
 //
 // === Windows .cmd-shim handling (the bug this fixes) ===
 // On this machine `codex` resolves to an npm-global `codex.cmd` batch shim (not a
@@ -46,6 +46,159 @@ const REPO_ROOT = path.resolve(__dirname, "..");
 const TIMEOUT_MS = 8 * 60 * 1000; // 480000ms, under ahmad-mcp-server.mjs's 9-min RUN_TIMEOUT_MS cap
 
 const IS_WIN = process.platform === "win32";
+const ALLOWED_REASONING_EFFORTS = new Set(["low", "medium", "high"]);
+// Default to medium per invocation: global high has made every dispatch pay a
+// large latency tax, while defaulting to low can under-think broad repo tasks
+// in a way that costs more than the saved seconds. Callers can still override.
+export const DEFAULT_REASONING_EFFORT = "medium";
+
+function scalarOrNull(value) {
+  if (value === null) return null;
+  if (["string", "number", "boolean"].includes(typeof value)) return value;
+  return null;
+}
+
+function findScalarByKey(value, keys) {
+  if (!value || typeof value !== "object") return undefined;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findScalarByKey(item, keys);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) {
+      const scalar = scalarOrNull(value[key]);
+      if (scalar !== null) return scalar;
+    }
+  }
+  for (const item of Object.values(value)) {
+    const found = findScalarByKey(item, keys);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+function setIfReported(cli, field, value) {
+  const scalar = scalarOrNull(value);
+  if (scalar !== null) cli[field] = scalar;
+}
+
+function collectContentText(content, out) {
+  if (typeof content === "string") {
+    out.push(content);
+    return;
+  }
+  if (Array.isArray(content)) {
+    for (const item of content) collectContentText(item, out);
+    return;
+  }
+  if (!content || typeof content !== "object") return;
+  if (typeof content.text === "string" && (!content.type || content.type === "output_text" || content.type === "text")) {
+    out.push(content.text);
+  }
+  if (content.content !== undefined) collectContentText(content.content, out);
+}
+
+function collectReadableText(event, out) {
+  const type = typeof event.type === "string" ? event.type : "";
+  if ((type.includes("message") || type === "final_answer") && typeof event.message === "string") {
+    out.push(event.message);
+  }
+  if ((type.includes("message") || type === "final_answer") && event.content !== undefined) {
+    collectContentText(event.content, out);
+  }
+  if (event.item && typeof event.item === "object" && event.item.type === "message") {
+    collectContentText(event.item.content, out);
+  }
+}
+
+function nullCliDetail(effort = null) {
+  return {
+    reasoningEffort: effort,
+    sessionId: null,
+    model: null,
+    inputTokens: null,
+    cachedInputTokens: null,
+    outputTokens: null,
+    reasoningOutputTokens: null,
+    totalTokens: null,
+  };
+}
+
+export function parseCodexExecJsonl(stdout, options = {}) {
+  const cli = nullCliDetail(options.effort ?? null);
+  let turnStarted = 0;
+  let turnCompleted = 0;
+  let explicitTurns = null;
+  const turnIds = new Set();
+  const readable = [];
+
+  for (const rawLine of String(stdout || "").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!event || typeof event !== "object" || Array.isArray(event)) continue;
+
+    const type = typeof event.type === "string" ? event.type : "";
+    if (type === "turn.started") turnStarted++;
+    if (type === "turn.completed") turnCompleted++;
+    if (Number.isFinite(event.turns)) explicitTurns = event.turns;
+    if (Number.isFinite(event.turn_count)) explicitTurns = event.turn_count;
+    if (Number.isFinite(event.turnCount)) explicitTurns = event.turnCount;
+    const turnId = findScalarByKey(event, ["turn_id", "turnId"]);
+    if (turnId !== undefined) turnIds.add(String(turnId));
+
+    setIfReported(cli, "sessionId", findScalarByKey(event, ["session_id", "sessionId", "thread_id", "conversation_id"]));
+    setIfReported(cli, "model", findScalarByKey(event, ["model"]));
+    setIfReported(cli, "inputTokens", findScalarByKey(event, ["input_tokens", "inputTokens"]));
+    setIfReported(cli, "cachedInputTokens", findScalarByKey(event, ["cached_input_tokens", "cachedInputTokens"]));
+    setIfReported(cli, "outputTokens", findScalarByKey(event, ["output_tokens", "outputTokens"]));
+    setIfReported(cli, "reasoningOutputTokens", findScalarByKey(event, ["reasoning_output_tokens", "reasoningOutputTokens"]));
+    setIfReported(cli, "totalTokens", findScalarByKey(event, ["total_tokens", "totalTokens"]));
+    collectReadableText(event, readable);
+  }
+
+  const countedTurns = turnStarted || turnCompleted ? Math.max(turnStarted, turnCompleted) : null;
+  const turns = explicitTurns ?? countedTurns ?? (turnIds.size > 0 ? turnIds.size : null);
+  const readableStdout = readable.length > 0 ? `${readable.join("\n").replace(/\n*$/, "")}\n` : "";
+  return { turns, cli, readableStdout };
+}
+
+export function normalizeReasoningEffort(effort) {
+  const value = effort ?? DEFAULT_REASONING_EFFORT;
+  return ALLOWED_REASONING_EFFORTS.has(value) ? value : null;
+}
+
+export function parseDispatchArgs(argv) {
+  const [prompt, ...rest] = argv;
+  if (typeof prompt !== "string" || prompt.length === 0) {
+    return { ok: false, exitCode: 2, diagnostic: 'usage: node ops-watcher/corleone-dispatch.mjs "<prompt>" [--effort low|medium|high]\n' };
+  }
+
+  let effort = DEFAULT_REASONING_EFFORT;
+  for (let i = 0; i < rest.length; i++) {
+    const arg = rest[i];
+    if (arg === "--effort") {
+      effort = rest[++i];
+    } else if (typeof arg === "string" && arg.startsWith("--effort=")) {
+      effort = arg.slice("--effort=".length);
+    } else {
+      return { ok: false, exitCode: 2, diagnostic: `corleone-dispatch: unknown argument ${arg}\n` };
+    }
+  }
+
+  if (!ALLOWED_REASONING_EFFORTS.has(effort)) {
+    return { ok: false, exitCode: 2, diagnostic: `corleone-dispatch: invalid --effort ${effort}; expected low, medium, or high\n` };
+  }
+  return { ok: true, prompt, effort };
+}
 
 // On Windows, find the real codex.js entry script that the npm `codex.cmd`
 // shim wraps, so we can spawn node on it directly (bypassing cmd.exe). Returns
@@ -73,16 +226,18 @@ export function resolveCodexEntry() {
 
 export function buildCodexInvocation(prompt, deps = {}) {
   const codexJs = deps.codexJs === undefined ? resolveCodexEntry() : deps.codexJs;
+  const effort = normalizeReasoningEffort(deps.effort);
+  const args = ["exec", "--json", "-c", `model_reasoning_effort=${effort}`, "-s", "workspace-write", prompt];
   if (codexJs) {
     return {
       file: process.execPath,
-      args: [codexJs, "exec", "-s", "workspace-write", prompt],
+      args: [codexJs, ...args],
       options: {},
     };
   }
   return {
     file: "codex",
-    args: ["exec", "-s", "workspace-write", prompt],
+    args,
     options: {},
   };
 }
@@ -95,6 +250,12 @@ export async function dispatchCorleone(prompt, deps = {}) {
   const _resolveCodexEntry = deps.resolveCodexEntry || resolveCodexEntry;
   const now = deps.now || Date.now;
   const timeoutMs = deps.timeoutMs || TIMEOUT_MS;
+  const effort = normalizeReasoningEffort(deps.effort);
+
+  if (!effort) {
+    const diagnostic = `corleone-dispatch: invalid --effort ${deps.effort}; expected low, medium, or high\n`;
+    return { ok: false, stdout: "", stderr: "", diagnostic, exitCode: 2 };
+  }
 
   const guard = await _guardLaneStart("corleone");
   if (guard.skip) {
@@ -109,7 +270,7 @@ export async function dispatchCorleone(prompt, deps = {}) {
   // interactive approval (confirmed via `codex exec --help`). Deliberately NOT
   // using --dangerously-bypass-approvals-and-sandbox (documented as extremely
   // dangerous, out of scope here).
-  const { file, args } = buildCodexInvocation(prompt, { codexJs: _resolveCodexEntry() });
+  const { file, args } = buildCodexInvocation(prompt, { codexJs: _resolveCodexEntry(), effort });
   const t0 = now();
   const r = _spawnSync(file, args, {
     cwd: REPO_ROOT,
@@ -121,37 +282,47 @@ export async function dispatchCorleone(prompt, deps = {}) {
   const durationMs = now() - t0;
   const stdout = r.stdout || "";
   const stderr = r.stderr || "";
+  const parsed = parseCodexExecJsonl(stdout, { effort });
+  const usageDetail = {
+    lane: "corleone",
+    promptLength: prompt.length,
+    durationMs,
+    stdout,
+    stderr,
+    turns: parsed.turns,
+    cli: parsed.cli,
+  };
 
   if (r.signal === "SIGTERM" && r.status === null) {
     // spawnSync sets status=null + signal="SIGTERM" on timeout kill.
     const diagnostic = `corleone-dispatch: codex timed out after ${timeoutMs}ms\n`;
     await _recordLaneOutcome("corleone", { ok: false, stdout, stderr, timedOut: true });
-    await _logLaneUsage({ lane: "corleone", promptLength: prompt.length, ok: false, timedOut: true, exitCode: 1, durationMs, stdout, stderr });
-    return { ok: false, stdout, stderr, timedOut: true, diagnostic, exitCode: 1 };
+    await _logLaneUsage({ ...usageDetail, ok: false, timedOut: true, exitCode: 1 });
+    return { ok: false, stdout: parsed.readableStdout, stderr, timedOut: true, diagnostic, exitCode: 1, turns: parsed.turns, cli: parsed.cli };
   }
   if (r.error) {
     const err = r.error && r.error.message ? r.error.message : String(r.error);
     const effectiveStderr = stderr || err;
     const diagnostic = `corleone-dispatch: failed to spawn codex: ${err}\n`;
     await _recordLaneOutcome("corleone", { ok: false, stdout, stderr: effectiveStderr });
-    await _logLaneUsage({ lane: "corleone", promptLength: prompt.length, ok: false, exitCode: 1, durationMs, stdout, stderr: effectiveStderr });
-    return { ok: false, stdout, stderr: effectiveStderr, timedOut: false, diagnostic, exitCode: 1 };
+    await _logLaneUsage({ ...usageDetail, ok: false, exitCode: 1, stderr: effectiveStderr });
+    return { ok: false, stdout: parsed.readableStdout, stderr: effectiveStderr, timedOut: false, diagnostic, exitCode: 1, turns: parsed.turns, cli: parsed.cli };
   }
 
   const exitCode = typeof r.status === "number" ? r.status : 1;
   await _recordLaneOutcome("corleone", { ok: exitCode === 0, stdout, stderr });
-  await _logLaneUsage({ lane: "corleone", promptLength: prompt.length, ok: exitCode === 0, exitCode, durationMs, stdout, stderr });
-  return { ok: exitCode === 0, stdout, stderr, timedOut: false, exitCode };
+  await _logLaneUsage({ ...usageDetail, ok: exitCode === 0, exitCode });
+  return { ok: exitCode === 0, stdout: parsed.readableStdout, stderr, timedOut: false, exitCode, turns: parsed.turns, cli: parsed.cli };
 }
 
 async function main() {
-  const prompt = process.argv[2];
-  if (typeof prompt !== "string" || prompt.length === 0) {
-    process.stderr.write('usage: node ops-watcher/corleone-dispatch.mjs "<prompt>"\n');
-    process.exit(2);
+  const parsedArgs = parseDispatchArgs(process.argv.slice(2));
+  if (!parsedArgs.ok) {
+    process.stderr.write(parsedArgs.diagnostic);
+    process.exit(parsedArgs.exitCode);
   }
 
-  const result = await dispatchCorleone(prompt);
+  const result = await dispatchCorleone(parsedArgs.prompt, { effort: parsedArgs.effort });
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
   if (result.diagnostic) process.stderr.write(result.diagnostic);
@@ -166,4 +337,10 @@ const isEntry = (() => {
     return false;
   }
 })();
-if (isEntry) main();
+if (isEntry) {
+  main().catch((e) => {
+    const err = e && e.message ? e.message : String(e);
+    process.stderr.write(`corleone-dispatch: wrapper failed: ${err}\n`);
+    process.exit(1);
+  });
+}
