@@ -1641,6 +1641,192 @@ await t("sweep execution: done posts one DIRECTIVE RESULT, patches done, labels 
   assert.equal(cards.length, 0);
 });
 
+// =====================================================================
+// G1-G4 WIRED IN. venture-gate.regression.test.mjs proves the decisions; these
+// prove the sweep and the executor ACT on them. Testing the gate alone would
+// stay green if the call site stopped consulting it — the exact miss that left
+// a mutation green earlier tonight.
+// =====================================================================
+
+async function sweepWithApprovedDirective(extra, stateSeed = null) {
+  await resetTmp();
+  const planAt = "2026-09-01T09:00:00.000Z";
+  const after = "2026-09-01T09:30:00.000Z";
+  const issues = [issue({ id: "kolg", identifier: "KOL-G1", title: "approved directive" })];
+  const comments = { kolg: [c(`${PLAN_MARKER} (iso):\n${goodPlan}`, planAt), c(TG_APPROVE, after)] };
+  let executeCalls = 0;
+  const made = makeSweepDeps({
+    issues,
+    comments,
+    extra: {
+      executeDirective: async () => {
+        executeCalls++;
+        return { outcome: "done", filesChanged: ["ops-watcher/foo.mjs"], verifyTail: "ok" };
+      },
+      ...extra,
+    },
+  });
+  const res = await runDirectiveSweepOnce(made.deps);
+  return { ...made, res, executeCalls: () => executeCalls };
+}
+
+await t("G1 wired: at the nightly ceiling the sweep DECLINES and executes nothing", async () => {
+  const run = await sweepWithApprovedDirective({
+    nightlyCeilingCheck: () => ({ allowed: false, day: "2026-09-05", executed: 6, ceiling: 6, reason: "nightly ceiling reached: 6/6 executions on 2026-09-05 — remaining approved directives WAIT for the next day, nothing is dropped" }),
+  });
+  assert.equal(run.executeCalls(), 0, "no lane is dispatched at the ceiling");
+  assert.equal(run.res.executed, 0);
+  assert.ok(run.res.executionDeclined, "the sweep records that it declined");
+  assert.equal(run.res.executionDeclined.kind, "nightly-ceiling");
+  assert.equal(run.res.executionDeclined.waiting, 1, "the approved directive is WAITING, not dropped");
+  // Still approved: nothing was refused, commented on, or closed.
+  assert.equal(run.res.approved.length, 1);
+  assert.equal(run.posts.filter((p) => /^DIRECTIVE RESULT/.test(p.body.body)).length, 0);
+});
+
+await t("G1 wired: below the ceiling the sweep executes and COUNTS the execution", async () => {
+  let recorded = 0;
+  const run = await sweepWithApprovedDirective({
+    nightlyCeilingCheck: () => ({ allowed: true, day: "d", executed: 0, ceiling: 6, reason: "0/6" }),
+    recordNightlyExecution: () => { recorded += 1; },
+  });
+  assert.equal(run.executeCalls(), 1);
+  assert.equal(run.res.executed, 1);
+  assert.equal(recorded, 1, "an execution that ran must be counted, or the ceiling never binds");
+  assert.equal(run.res.executionDeclined, undefined);
+});
+
+await t("G2 wired: a halt in effect declines execution before the ceiling is even consulted", async () => {
+  let ceilingConsulted = 0;
+  const run = await sweepWithApprovedDirective({
+    ventureHaltCheck: () => ({ halted: true, day: "2026-09-05", consecutiveFailures: 2, reason: "venture execution HALTED for 2026-09-05 after 2 consecutive failures (last: KOL-2 aborted) — waiting for the owner" }),
+    nightlyCeilingCheck: () => { ceilingConsulted += 1; return { allowed: true, day: "d", executed: 0, ceiling: 6, reason: "0/6" }; },
+  });
+  assert.equal(run.executeCalls(), 0, "a halted night dispatches nothing");
+  assert.equal(run.res.executionDeclined.kind, "halt");
+  assert.match(run.res.executionDeclined.reason, /HALTED/);
+  assert.equal(run.res.executionDeclined.waiting, 1);
+  assert.equal(ceilingConsulted, 1, "the ceiling is still evaluated, but the halt is what decides");
+});
+
+await t("G2 wired: the halt is TOLD to the owner, not left as a log line", async () => {
+  // A system that stopped and a system that went quiet look identical from the
+  // outside. This is the difference.
+  const run = await sweepWithApprovedDirective({
+    executeDirective: async () => ({ outcome: "reverted", reason: "verify-red" }),
+    recordVentureOutcome: () => ({ halted: true, justHalted: true, consecutiveFailures: 2, reason: "two in a row" }),
+  });
+  assert.ok(run.res.ventureHalt, "the sweep reports the halt in its summary");
+  assert.equal(run.res.ventureHalt.consecutiveFailures, 2);
+  assert.equal(run.res.ventureHalt.identifier, "KOL-G1");
+  const halted = run.messages.filter((m) => /DIHENTIKAN sampai pagi/.test(String(m.text || m)));
+  assert.equal(halted.length, 1, `exactly one halt message reaches the owner, got ${run.messages.length} messages`);
+  assert.match(String(halted[0].text || halted[0]), /2 kegagalan berturut-turut/);
+});
+
+await t("G2 wired: a successful execution records the outcome so the streak can reset", async () => {
+  const seen = [];
+  const run = await sweepWithApprovedDirective({
+    recordVentureOutcome: (state, outcome) => { seen.push(outcome); return { halted: false, justHalted: false }; },
+  });
+  assert.equal(run.executeCalls(), 1);
+  assert.deepEqual(seen, ["done"], "the outcome reaches the streak recorder");
+});
+
+await t("G3 wired: an uncommitted venture file is refused by the sweep's scope gate", async () => {
+  await resetTmp();
+  const venturePlan = goodPlan.replace("ops-watcher/foo.mjs, docs/bar.md", "ventures/caveman-trading-os/src/a.py");
+  const { deps, posts } = makeSweepDeps({
+    issues: [issue({ id: "kolg3", identifier: "KOL-G3" })],
+    comments: { kolg3: [] },
+    plan: venturePlan,
+    extra: {
+      activeVentures: async () => [{ id: "caveman-trading-os", status: "active", repoPath: "ventures/caveman-trading-os" }],
+      ventureForPath: async (p) => (String(p).startsWith("ventures/caveman-trading-os") ? { id: "caveman-trading-os", status: "active", repoPath: "ventures/caveman-trading-os" } : null),
+      // The venture's uncommitted set, as git would report it.
+      ventureUncommittedPaths: () => ["ventures/caveman-trading-os/src/a.py"],
+    },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.refused, 1, "an active venture path that is uncommitted is still refused");
+  const refusal = posts.map((p) => p.body.body).join("\n");
+  assert.match(refusal, /uncommitted in caveman-trading-os/);
+  assert.match(refusal, /KOL-66/, "the refusal says whose decision it is");
+});
+
+await t("G4 wired: a commit to the venture during execution ABORTS and reverts", async () => {
+  // The plan said nothing about git. This is the fence that does not depend on
+  // the plan admitting what it intends to do.
+  const plan = parsePlan(goodPlan.replace("ops-watcher/foo.mjs, docs/bar.md", "ventures/caveman-trading-os/src/a.py"));
+  const made = makeExecDeps({ mutateOnDispatch: true });
+  made.deps.activeVentures = async () => [{ id: "caveman-trading-os", status: "active", repoPath: "ventures/caveman-trading-os" }];
+  made.deps.ventureForPath = async () => ({ id: "caveman-trading-os", status: "active", repoPath: "ventures/caveman-trading-os" });
+  made.deps.ventureUncommittedPaths = () => [];
+  let call = 0;
+  made.deps.ventureGitPosition = () => {
+    call += 1;
+    // First read is the "before"; the second, after dispatch, shows a commit.
+    return { id: "caveman-trading-os", head: call === 1 ? "aaaaaaa" : "bbbbbbb", branch: "main", remoteRefs: "r 1", status: "" };
+  };
+
+  const res = await executeApprovedDirective(issue(), plan, made.deps);
+  assert.equal(res.outcome, "aborted", `a venture commit must abort, got ${res.outcome}`);
+  assert.equal(res.reason, "venture-git-write");
+  assert.match(res.violations.join(" "), /HEAD moved aaaaaaa -> bbbbbbb/);
+  assert.equal(made.calls.restore, 1, "and the snapshot is restored");
+  assert.ok(call >= 2, "the position is read before AND after execution");
+});
+
+await t("G4 wired: a plan that ASKS for a git write is refused by the scope gate", async () => {
+  // The pre-flight half. Cheap, and it stops the obvious case before a lane is
+  // ever dispatched — but it is not the fence that holds, because it depends on
+  // the plan saying what it intends to do. That is why the position comparison
+  // above exists as well.
+  const plan = parsePlan(goodPlan.replace(
+    "- Terapkan perubahan lalu verifikasi secara lokal.",
+    "- Jalankan git push origin main setelah selesai.",
+  ));
+  assert.match(plan.steps.join(" "), /git push/, "the fixture really does contain the step");
+  const made = makeExecDeps({ mutateOnDispatch: true });
+  const res = await executeApprovedDirective(issue(), plan, made.deps);
+  assert.equal(res.outcome, "refused", `a plan asking for a git write must be refused, got ${res.outcome}`);
+  assert.match(res.violations.join(" "), /plan asks for a git write/);
+  assert.equal(made.calls.dispatch, 0, "and no lane sees it");
+
+  // Reading git is not writing to it.
+  const readOnly = parsePlan(goodPlan.replace("- Terapkan perubahan lalu verifikasi secara lokal.", "- Baca git status untuk konteks."));
+  const clean = makeExecDeps({ mutateOnDispatch: true });
+  const okRes = await executeApprovedDirective(issue(), readOnly, clean.deps);
+  assert.notEqual(okRes.outcome, "refused", `git status is not a write, got ${okRes.outcome} ${JSON.stringify(okRes.violations || "")}`);
+});
+
+await t("G4 wired: an unchanged venture executes normally", async () => {
+  const plan = parsePlan(goodPlan.replace("ops-watcher/foo.mjs, docs/bar.md", "ventures/caveman-trading-os/src/a.py"));
+  const made = makeExecDeps({ mutateOnDispatch: true });
+  made.deps.activeVentures = async () => [{ id: "caveman-trading-os", status: "active", repoPath: "ventures/caveman-trading-os" }];
+  made.deps.ventureForPath = async () => ({ id: "caveman-trading-os", status: "active", repoPath: "ventures/caveman-trading-os" });
+  made.deps.ventureUncommittedPaths = () => [];
+  const frozen = { id: "caveman-trading-os", head: "aaaaaaa", branch: "main", remoteRefs: "r 1", status: "" };
+  made.deps.ventureGitPosition = () => ({ ...frozen });
+
+  const res = await executeApprovedDirective(issue(), plan, made.deps);
+  assert.equal(res.outcome, "done", `an untouched venture repository must not block execution, got ${res.outcome} ${res.reason || ""}`);
+});
+
+await t("G4 wired: an unreadable venture git position refuses BEFORE dispatch", async () => {
+  const plan = parsePlan(goodPlan.replace("ops-watcher/foo.mjs, docs/bar.md", "ventures/caveman-trading-os/src/a.py"));
+  const made = makeExecDeps({ mutateOnDispatch: true });
+  made.deps.activeVentures = async () => [{ id: "caveman-trading-os", status: "active", repoPath: "ventures/caveman-trading-os" }];
+  made.deps.ventureForPath = async () => ({ id: "caveman-trading-os", status: "active", repoPath: "ventures/caveman-trading-os" });
+  made.deps.ventureUncommittedPaths = () => [];
+  made.deps.ventureGitPosition = () => null;
+
+  const res = await executeApprovedDirective(issue(), plan, made.deps);
+  assert.equal(res.outcome, "refused");
+  assert.match(res.violations.join(" "), /cannot read the venture's git position/);
+  assert.equal(made.calls.dispatch, 0, "nothing is dispatched when the fence cannot be proven");
+});
+
 await t("sweep execution: reverted posts failure comment, leaves status alone, and sends exactly one Telegram", async () => {
   await resetTmp();
   const planAt = "2026-09-01T09:00:00.000Z";
@@ -1900,6 +2086,13 @@ function makeExecDeps(overrides = {}) {
     // config/ventures.json happens to say today. A test that reads the live
     // registry changes its own meaning the next time the owner edits it.
     activeVentures: async () => [],
+    // And no test shells out to a real git. Without these two, a fixture naming
+    // a venture that has no directory made the gate run `git -C <missing dir>`
+    // and print "fatal: cannot change to ..." mid-suite. A test that touches
+    // the real filesystem to answer a question about a fake registry is a test
+    // whose result depends on the machine it runs on.
+    ventureUncommittedPaths: () => [],
+    ventureGitPosition: (v) => ({ id: v?.id || "v", head: "aaaaaaa", branch: "main", remoteRefs: "refs/remotes/origin/main aaaaaaa", status: "" }),
     statFile,
     snapshotFiles: async (files /*, opts */) => {
       calls.snapshot++;

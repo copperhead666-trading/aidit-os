@@ -49,6 +49,21 @@ import { resolveSpecialistsForPacket } from "./specialists.mjs";
 // ops-watcher/ventures.mjs already own that, and a second answer here would
 // drift from the first the moment either changed.
 import { activeVentures, ventureForPath } from "./ventures.mjs";
+// G1-G4: the fences that make the owner's overnight pre-authorization real.
+// Each was a sentence in a packet until it was code, which is exactly what
+// "nothing under ventures/ may be touched" was before it became a gate.
+import {
+  NIGHTLY_EXECUTION_CEILING,
+  CONSECUTIVE_FAILURE_HALT,
+  nightlyCeilingCheck,
+  recordNightlyExecution,
+  ventureHaltCheck,
+  recordVentureOutcome,
+  checkUncommittedFiles,
+  checkPlanForVentureGitWrites,
+  ventureGitPosition,
+  compareVentureGitPosition,
+} from "./venture-gate.mjs";
 // Stage 3 reuse — import, do not rewrite. The snapshot/rollback helpers and the
 // lane registry already implement the same shape for the self-repair path; a
 // directive execution is the same shape with a different trigger. The lane
@@ -621,6 +636,26 @@ export async function validatePlanScope(plan, deps = {}) {
     if (parts.some((seg) => /^\.env/i.test(seg))) add("denied env file");
     if (HARD_DENY.has(low)) add("hard-deny operational file");
   }
+
+  // G3. The venture's uncommitted files are the owner's, and the list is
+  // DERIVED at gate time. A literal list would be wrong the moment he commits
+  // one of them, and wrong in the dangerous direction.
+  const ventures = Array.isArray(deps.ventures) ? deps.ventures : null;
+  if (ventures && ventures.length) {
+    const uncommitted = (deps.checkUncommittedFiles || checkUncommittedFiles)(
+      Array.isArray(plan?.files) ? plan.files : [],
+      ventures,
+      deps,
+    );
+    for (const v of uncommitted.violations) violations.push(v);
+  }
+
+  // G4, pre-flight half. The half that actually holds is the before/after
+  // comparison of the venture's git position, which does not depend on the
+  // plan admitting what it intends to do.
+  const gitWrites = (deps.checkPlanForVentureGitWrites || checkPlanForVentureGitWrites)(plan);
+  for (const v of gitWrites.violations) violations.push(v);
+
   return { ok: violations.length === 0, violations };
 }
 
@@ -1345,7 +1380,7 @@ export async function runDirectiveSweepOnce(deps = {}) {
         plannedThisSweep += 1;
         continue;
       }
-      const scope = await validatePlanScope(parsed, deps);
+      const scope = await validatePlanScope(parsed, { ...deps, ventures: sweepVentures });
       if (!scope.ok) {
         const reason = "file-scope-out-of-scope";
         const attempt = recordPlanFailureAttempt(state, key, prior, { reason, violations: scope.violations });
@@ -1477,7 +1512,26 @@ export async function runDirectiveSweepOnce(deps = {}) {
         if (record && record.planKey === planKey) record.capReportedAt = iso(nowMs);
         await persistState(state);
       }
-      const toExecute = executable.slice(0, MAX_EXECUTIONS_PER_SWEEP);
+      // G2. A losing streak stops the night BEFORE anything else is attempted.
+      // Two consecutive venture failures halt venture execution until morning,
+      // and the halt is a fact that gets said out loud rather than a silence.
+      const halt = (deps.ventureHaltCheck || ventureHaltCheck)(state, { now });
+      // G1. The nightly ceiling. MAX_EXECUTIONS_PER_SWEEP caps a sweep; the
+      // heartbeat runs every five minutes, so it never capped a night.
+      const nightly = (deps.nightlyCeilingCheck || nightlyCeilingCheck)(state, { now });
+
+      let toExecute = executable.slice(0, MAX_EXECUTIONS_PER_SWEEP);
+      if (halt.halted) {
+        // Declined, not dropped. The directives stay approved and executable.
+        log(`directive-runner: DECLINING execution — ${halt.reason}`);
+        summary.executionDeclined = { kind: "halt", reason: halt.reason, waiting: toExecute.length };
+        toExecute = [];
+      } else if (!nightly.allowed) {
+        log(`directive-runner: DECLINING execution — ${nightly.reason}`);
+        summary.executionDeclined = { kind: "nightly-ceiling", reason: nightly.reason, waiting: toExecute.length };
+        toExecute = [];
+      }
+
       for (const item of toExecute) {
         const { issue: exIssue, plan: exPlan, identifier: exIdent, issueKey, planKey } = item;
         let result;
@@ -1491,6 +1545,30 @@ export async function runDirectiveSweepOnce(deps = {}) {
           continue;
         }
         const outcome = result.outcome;
+
+        // G1 + G2 bookkeeping. Counted whatever the outcome, because an attempt
+        // that failed still spent the lane time and the owner's attention the
+        // ceiling exists to ration. A no-op is not counted: nothing was tried.
+        if (outcome !== "no-op" && outcome !== "skipped") {
+          (deps.recordNightlyExecution || recordNightlyExecution)(state, { now });
+          const streak = (deps.recordVentureOutcome || recordVentureOutcome)(state, outcome, {
+            now,
+            reason: `${exIdent} ${outcome}${result.reason ? `: ${result.reason}` : ""}`,
+          });
+          if (streak.justHalted) {
+            log(`directive-runner: VENTURE EXECUTION HALTED — ${streak.reason}`);
+            summary.ventureHalt = { reason: streak.reason, consecutiveFailures: streak.consecutiveFailures, identifier: exIdent };
+            // The halt is reported to the owner, not left as a log line nobody
+            // reads. It is the difference between a system that stopped and a
+            // system that went quiet.
+            const htg = await deliverAlert(() => sendOwnerMsg(
+              `Eksekusi venture DIHENTIKAN sampai pagi: ${streak.consecutiveFailures} kegagalan berturut-turut, terakhir ${exIdent}. Tidak ada directive venture lain yang dijalankan malam ini.`,
+            ));
+            if (!htg.delivered) summary.errors.push(`${exIdent}: venture-halt telegram NOT sent (${htg.reason})`);
+          }
+          await persistState(state);
+        }
+
         if (outcome !== "done") {
           recordExecutionFailure(state, issueKey, planKey, {
             reason: `${outcome}${result.reason ? `: ${result.reason}` : ""}`,
@@ -2112,9 +2190,35 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
   try {
     // 1. Re-validate scope. The plan was written by a model and approved by a
     //    human, and neither is a security boundary.
-    const scope = await validatePlanScope(plan, deps);
+    const scope = await validatePlanScope(plan, { ...deps, ventures });
     if (!scope.ok) {
       return emit({ outcome: "refused", violations: scope.violations });
+    }
+
+    // G4. The venture repository's git position BEFORE anything runs.
+    //
+    // The "no git" hard stop is prompt text. CORLEONE's workspace-write sandbox
+    // and HATTA's path jail happen to cover it; SJAHRIR's compliance is
+    // assumed, and assumption is not a fence. Comparing what the repository
+    // actually did catches a commit or a push whichever lane made it, and
+    // whether or not the plan admitted it would.
+    //
+    // Only for ventures this plan actually touches — reading git for a venture
+    // nobody is editing is cost with no evidence attached.
+    const gitPositionFn = deps.ventureGitPosition || ventureGitPosition;
+    const planFiles = (Array.isArray(plan?.files) ? plan.files : []).map((f) => String(f || "").replace(/\\/g, "/"));
+    const touchedVentures = ventures.filter((v) => {
+      const base = String(v?.repoPath || "").replace(/\\/g, "/").replace(/\/+$/, "");
+      return base && planFiles.some((f) => f === base || f.startsWith(`${base}/`));
+    });
+    const gitBefore = touchedVentures.map((v) => ({ venture: v, position: gitPositionFn(v, deps) }));
+    for (const entry of gitBefore) {
+      if (!entry.position) {
+        return emit({
+          outcome: "refused",
+          violations: [`${entry.venture.id}: cannot read the venture's git position — refusing rather than running unable to prove nothing was committed`],
+        });
+      }
     }
 
     // 2. Verify-command guard: VERIFY must start with "node ops-watcher/".
@@ -2160,6 +2264,20 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
       stdout: dispatch && dispatch.stdout,
       stderr: dispatch && dispatch.stderr,
     }, deps.recordOutcomeDeps || {});
+
+    // G4, the half that actually holds. Checked BEFORE verify, because a
+    // commit or a push to the venture is not something a green suite excuses —
+    // it is the one action that leaves this machine, and the snapshot/restore
+    // below cannot undo a push.
+    const comparePositionFn = deps.compareVentureGitPosition || compareVentureGitPosition;
+    for (const entry of gitBefore) {
+      const nowPosition = gitPositionFn(entry.venture, deps);
+      const cmp = comparePositionFn(entry.position, nowPosition);
+      if (!cmp.ok) {
+        await restoreFn(snapshot, { _fs: deps._fs });
+        return emit({ outcome: "aborted", violations: cmp.violations, reason: "venture-git-write" });
+      }
+    }
 
     // 7. Verify stage A: the plan's VERIFY command.
     const runVerifyFn = deps.runVerify || (async (cmd) => spawnCapture(nodeCommandToArgv(cmd)));
