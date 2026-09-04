@@ -207,12 +207,12 @@ export async function httpGet(url, { token } = {}) {
   }
 }
 
-async function resolvePaperclipToken() {
+export async function resolvePaperclipToken(_fs = fs, _secretsDir = SECRETS_DIR) {
   let entries;
-  try { entries = await fs.readdir(SECRETS_DIR); } catch { return null; }
+  try { entries = await _fs.readdir(_secretsDir); } catch { return null; }
   const pick = entries.find((f) => /token/i.test(f)) || entries.find((f) => !f.startsWith("."));
   if (!pick) return null;
-  try { return (await fs.readFile(path.join(SECRETS_DIR, pick), "utf8")).trim() || null; }
+  try { return (await _fs.readFile(path.join(_secretsDir, pick), "utf8")).trim() || null; }
   catch { return null; }
 }
 

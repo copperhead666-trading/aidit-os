@@ -10,7 +10,9 @@
 
 import assert from "node:assert/strict";
 import http from "node:http";
-import { discoverPaperclipPort, httpGet, emitEvent } from "./watcher.mjs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { discoverPaperclipPort, httpGet, emitEvent, resolvePaperclipToken } from "./watcher.mjs";
 
 const FIXTURE_FINGERPRINT = "REGRESSION-FIXTURE-BACKUP-DIR-12345";
 const HEALTH_PATH = "/api/health";
@@ -318,6 +320,38 @@ async function testUnwrittenEventIsNotDeduped() {
   }
 }
 
+async function testPaperclipTokenUsesRepoRelativeSecretsDir() {
+  const name = "(f1) resolvePaperclipToken reads the repo-relative .paperclip secrets dir";
+  try {
+    const watcherDir = path.dirname(fileURLToPath(import.meta.resolve("./watcher.mjs")));
+    const repoRoot = path.resolve(watcherDir, "..");
+    const expectedDir = path.join(repoRoot, ".paperclip", "instances", "default", "secrets");
+    const calls = [];
+    const fakeFs = {
+      readdir: async (dir) => {
+        calls.push(["readdir", dir]);
+        return ["paperclip-token.txt"];
+      },
+      readFile: async (file, encoding) => {
+        calls.push(["readFile", file, encoding]);
+        return "  fixture-token  \n";
+      },
+    };
+
+    const token = await resolvePaperclipToken(fakeFs);
+    assert.equal(token, "fixture-token", "token should be trimmed");
+    assert.deepEqual(calls[0], ["readdir", expectedDir], "must read secrets from repo-relative .paperclip path");
+    assert.deepEqual(
+      calls[1],
+      ["readFile", path.join(expectedDir, "paperclip-token.txt"), "utf8"],
+      "must read the selected token file from the same repo-relative secrets dir",
+    );
+    ok(name);
+  } catch (err) {
+    bad(name, err);
+  }
+}
+
 async function main() {
   console.log("# ops-watcher regression tests");
   await testCorrectInstanceWhenMultiplePortsRespond();
@@ -330,6 +364,7 @@ async function main() {
   await testRetrySuccessFirstSweepNoSleep();
   await testDefaultOneSweepNoSleep();
   await testUnwrittenEventIsNotDeduped();
+  await testPaperclipTokenUsesRepoRelativeSecretsDir();
 
   console.log("");
   console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
@@ -337,7 +372,6 @@ async function main() {
     for (const f of failures) console.log(`  FAILED: ${f}`);
     process.exit(1);
   }
-  process.exit(0);
 }
 
 main().catch((err) => {
