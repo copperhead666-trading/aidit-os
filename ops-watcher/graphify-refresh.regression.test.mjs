@@ -34,6 +34,11 @@ const STATE = "mem:/ops-watcher/graphify-refresh-state.json";
 const TMP = `${ACTIVE}.incoming`;
 const INTERVAL = 1000;
 
+function parentDir(file) {
+  const ix = file.lastIndexOf("/");
+  return ix === -1 ? "." : file.slice(0, ix);
+}
+
 function graph(nodes) {
   return JSON.stringify({ nodes: Array.from({ length: nodes }, (_, i) => ({ id: `n${i}` })), links: [] });
 }
@@ -45,11 +50,14 @@ function state(fingerprint, nodes = 1) {
 function fakeFs(over = {}) {
   const files = new Map(Object.entries(over.files || {}));
   const mtimes = new Map(Object.entries(over.mtimes || {}));
+  const dirs = new Set(over.dirs || []);
+  for (const file of files.keys()) dirs.add(parentDir(file));
   const calls = [];
   const fail = over.fail || {};
 
   const api = {
     calls,
+    dirs,
     files,
     async stat(file) {
       calls.push({ op: "stat", file });
@@ -63,10 +71,16 @@ function fakeFs(over = {}) {
       if (!files.has(file)) throw new Error(`ENOENT: ${file}`);
       return files.get(file);
     },
+    async mkdir(file, options) {
+      calls.push({ op: "mkdir", file, options });
+      if (fail.mkdir) throw fail.mkdir;
+      dirs.add(file);
+    },
     async copyFile(from, to) {
       calls.push({ op: "copyFile", from, to });
       if (fail.copyFile) throw fail.copyFile;
       if (!files.has(from)) throw new Error(`ENOENT: ${from}`);
+      if (!dirs.has(parentDir(to))) throw new Error(`ENOENT: no such file or directory, copyfile '${from}' -> '${to}'`);
       files.set(to, files.get(from));
     },
     async rename(from, to) {
@@ -338,6 +352,28 @@ async function t11_repoFingerprintIncludesPorcelainStatus() {
   ok("T11: repoFingerprint changes when porcelain status changes under the same HEAD");
 }
 
+async function t12_freshClonePromotionCreatesMissingActiveDirectory() {
+  const fs = fakeFs({
+    files: { [BUILT]: graph(5) },
+  });
+  const h = spawnHarness({ status: 0, stdout: "ok", stderr: "" });
+
+  const result = await refreshOnce(deps(fs, { spawnSync: h.spawnSync, fingerprint: "fresh-clone-fp" }));
+
+  assert.equal(result.ok, true, "T12: fresh clone promotion succeeds");
+  assert.equal(result.refreshed, true, "T12: fresh clone reports refreshed");
+  assert.equal(result.nodes, 5, "T12: fresh clone promotes the rebuilt graph");
+  assert.equal(result.priorNodes, 0, "T12: missing prior active graph counts as zero prior nodes");
+  assert.deepEqual(
+    opSlice(fs, ["mkdir", "copyFile", "rename"]).map((c) => c.op),
+    ["mkdir", "copyFile", "rename"],
+    "T12: promotion creates the active directory before copyFile and rename",
+  );
+  assert.deepEqual(fs.calls.find((c) => c.op === "mkdir"), { op: "mkdir", file: parentDir(ACTIVE), options: { recursive: true } }, "T12: mkdir targets active graph parent recursively");
+  assert.equal(fs.files.get(ACTIVE), graph(5), "T12: active graph receives the built graph after directory creation");
+  ok("T12: fresh clone promotion creates graphify-out/active before copying incoming graph");
+}
+
 async function main() {
   assert.ok(BUILT_GRAPH, "exported BUILT_GRAPH exists");
   assert.ok(ACTIVE_GRAPH, "exported ACTIVE_GRAPH exists");
@@ -357,6 +393,7 @@ async function main() {
     t9_promotionFailureCleansIncomingFile,
     t10_stateWriteFailureDoesNotFailRun,
     t11_repoFingerprintIncludesPorcelainStatus,
+    t12_freshClonePromotionCreatesMissingActiveDirectory,
   ];
   for (const t of tests) {
     try {

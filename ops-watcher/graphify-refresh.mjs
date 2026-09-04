@@ -160,6 +160,12 @@ export async function refreshOnce(deps = {}) {
   // atomic here, and it is what keeps the analyst from ever reading half a file.
   const tmp = `${activeGraph}.incoming`;
   try {
+    // The destination directory does not exist on a fresh clone: graphify-out/
+    // is gitignored, so nothing creates graphify-out/active/ before the first
+    // promotion. Without this, copyFile throws ENOENT and EVERY first promotion
+    // fails after paying the full ~48s build cost, leaving the analyst with no
+    // graph and nothing but a log line nobody reads.
+    await _fs.mkdir(path.dirname(activeGraph), { recursive: true });
     await _fs.copyFile(builtGraph, tmp);
     await _fs.rename(tmp, activeGraph);
   } catch (err) {
