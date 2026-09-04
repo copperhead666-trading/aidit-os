@@ -126,10 +126,19 @@ export function contentCheckCandidates(graph, limit = CONTENT_CHECK_SAMPLE) {
     if (!file || typeof file !== "string") continue;
     const matched = /(\d+)/.exec(String(node.source_location || ""));
     if (!matched) continue;
-    // A label with a path separator or a dot is a file or a member expression,
-    // not a symbol that sits on one line under its own name.
+    // Only IDENTIFIER-shaped labels. A label with a separator, a dot or a space
+    // is a file, a member expression, or a docstring — graphify emits nodes
+    // whose label IS the docstring text, and those never appear verbatim on the
+    // line they are attributed to.
+    //
+    // Measured on the caveman-trading-os graph (Python, 3,372 located symbols):
+    //   identifier-shaped labels   300/300 found on the exact line
+    //   prose/docstring labels      90/300
+    // Sampling the second kind would refuse every fresh venture graph. This
+    // repository has no Python, so the distinction only surfaced once a graph
+    // was built over a venture.
     const label = String(node.label || "").replace(/\(\)$/, "");
-    if (!label || label.includes("/") || label.includes("\\") || label.includes(".")) continue;
+    if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(label)) continue;
     const line = Number(matched[1]);
     if (!Number.isInteger(line) || line < 1) continue;
     const current = perFile.get(file);
@@ -372,6 +381,139 @@ export async function refreshOnce(deps = {}) {
     stampedCommit,
     contentChecked: content.checked,
   };
+}
+
+// ===========================================================================
+// N5. A GRAPH PER VENTURE, STAMPED WITH THE VENTURE'S OWN COMMIT.
+//
+// The two repositories move independently, and that is the whole design.
+// Stamping a venture graph with the Aidit OS commit would be wrong in both
+// directions at once: an Aidit OS commit would invalidate a venture graph that
+// is still perfectly correct, and a venture commit would fail to invalidate one
+// that has gone wrong. The second half is precisely the "fresh stamp, stale
+// content" failure this file was rewritten for hours earlier.
+//
+// WHERE THE BUILD LANDS. `graphify update <path>` writes graphify-out/ beside
+// the target root and ignores the working directory — measured, not assumed.
+// So the build necessarily touches the venture repository. graphify-out/ is
+// gitignored there (checked), and the copy Aidit OS actually reads is promoted
+// into this repository at graphify-out/ventures/<id>/graph.json, so nothing
+// here depends on a file inside a business repo staying put.
+// ===========================================================================
+
+export const VENTURE_GRAPH_ROOT = path.join(REPO_ROOT, "graphify-out", "ventures");
+
+export function ventureGraphPath(id) {
+  return path.join(VENTURE_GRAPH_ROOT, String(id), "graph.json");
+}
+
+export function ventureGraphStampPath(id) {
+  return ventureGraphPath(id) + GRAPH_STAMP_SUFFIX;
+}
+
+function gitIn(dir, args, deps = {}) {
+  const _spawn = deps.spawnSync || spawnSync;
+  const r = _spawn("git", ["-C", dir, ...args], {
+    encoding: "utf8", shell: false, windowsHide: true, timeout: 30_000, maxBuffer: 8 * 1024 * 1024,
+  });
+  if (!r || r.status !== 0 || typeof r.stdout !== "string") return null;
+  return r.stdout;
+}
+
+/**
+ * The venture's commit, and whether its tree is clean.
+ *
+ * A DIRTY venture cannot produce a trustworthy graph: line numbers in an
+ * uncommitted file are guaranteed by nothing, and the stamp names a commit that
+ * does not describe what is actually on disk. Returns
+ * { head, dirty, dirtyFiles } or null when git cannot answer.
+ */
+export function ventureCommitState(venturePath, deps = {}) {
+  const head = gitIn(venturePath, ["rev-parse", "HEAD"], deps);
+  if (head === null) return null;
+  const status = gitIn(venturePath, ["status", "--porcelain"], deps);
+  if (status === null) return null;
+  const dirtyFiles = status.split(/\r?\n/).filter((l) => l.trim()).length;
+  return { head: head.trim(), dirty: dirtyFiles > 0, dirtyFiles };
+}
+
+/**
+ * Build and promote one venture's graph. Never throws.
+ */
+export async function refreshVentureGraph(venture, deps = {}) {
+  const _fs = deps._fs || fs;
+  const _spawn = deps.spawnSync || spawnSync;
+  const log = deps.log || ((m) => console.log(m));
+  const id = String(venture?.id || "");
+  if (!id || !venture?.repoPath) return { ok: false, refreshed: false, reason: "venture has no id or repoPath" };
+
+  const venturePath = deps.venturePath || path.join(REPO_ROOT, String(venture.repoPath));
+  const target = deps.ventureGraph || ventureGraphPath(id);
+
+  // Read the commit BEFORE the build, for the same reason the Aidit OS graph
+  // does: a commit landing during the build must stamp the older commit and
+  // fail closed, never the newer one.
+  const commitState = (deps.ventureCommitState || ventureCommitState)(venturePath, deps);
+  if (!commitState) {
+    log(`graphify-refresh: ${id} — cannot read the venture's git state, not building`);
+    return { ok: false, refreshed: false, reason: "venture-git-unreadable" };
+  }
+  if (commitState.dirty) {
+    // Refuse loudly and REMOVE any stamp: a graph promoted from a dirty tree
+    // would carry line numbers nothing guarantees.
+    log(`graphify-refresh: ${id} — venture tree is DIRTY (${commitState.dirtyFiles} file(s)); refusing to stamp a graph over uncommitted work`);
+    try { await _fs.unlink(target + GRAPH_STAMP_SUFFIX); } catch { /* nothing to remove */ }
+    return { ok: false, refreshed: false, reason: `venture-dirty: ${commitState.dirtyFiles} uncommitted file(s)`, head: commitState.head };
+  }
+
+  const r = _spawn("graphify", ["update", venturePath, "--no-cluster"], {
+    cwd: REPO_ROOT, encoding: "utf8", shell: false, windowsHide: true,
+    timeout: deps.timeoutMs || BUILD_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024,
+  });
+  if (r.error || (typeof r.status === "number" && r.status !== 0)) {
+    const why = r.error ? (r.error.message || String(r.error)) : `exit ${r.status}`;
+    log(`graphify-refresh: ${id} build FAILED (${why}) — the existing venture graph is left untouched`);
+    return { ok: false, refreshed: false, reason: `build-failed: ${why}` };
+  }
+
+  // graphify wrote beside the venture root; that is where the build lands.
+  const built = deps.builtVentureGraph || path.join(venturePath, "graphify-out", "graph.json");
+  const fresh = await readJson(built, _fs);
+  if (!fresh || !Array.isArray(fresh.nodes) || fresh.nodes.length === 0) {
+    log(`graphify-refresh: ${id} rebuilt graph is unreadable or empty — NOT promoting`);
+    return { ok: false, refreshed: false, reason: "rebuilt graph unusable" };
+  }
+
+  const tmp = `${target}.incoming`;
+  try {
+    await _fs.mkdir(path.dirname(target), { recursive: true });
+    await _fs.copyFile(built, tmp);
+    await _fs.rename(tmp, target);
+  } catch (err) {
+    log(`graphify-refresh: ${id} promotion failed (${err && err.message ? err.message : err})`);
+    try { await _fs.unlink(tmp); } catch { /* nothing to clean */ }
+    return { ok: false, refreshed: false, reason: "promotion-failed" };
+  }
+
+  // Same evidence-before-claim rule as the Aidit OS graph, against the
+  // VENTURE's tree.
+  const verify = deps.verifyContent || verifyGraphContent;
+  const content = await verify(fresh, { ...deps, _fs, sourceRoot: venturePath });
+  if (!content.verified) {
+    log(`graphify-refresh: ${id} promoted graph FAILED the content check — ${content.reason}`);
+    for (const miss of (content.mismatches || []).slice(0, 5)) log(`graphify-refresh:   ${miss}`);
+    try { await _fs.unlink(target + GRAPH_STAMP_SUFFIX); } catch { /* nothing to remove */ }
+    return { ok: false, refreshed: false, reason: `content-check-failed: ${content.reason}`, mismatches: content.mismatches };
+  }
+
+  try {
+    await _fs.writeFile(target + GRAPH_STAMP_SUFFIX, commitState.head, "utf8");
+  } catch (err) {
+    log(`graphify-refresh: ${id} stamp write failed (${err && err.message ? err.message : err})`);
+  }
+
+  log(`graphify-refresh: ${id} promoted ${fresh.nodes.length} nodes, stamped ${commitState.head} — ${content.reason}`);
+  return { ok: true, refreshed: true, id, nodes: fresh.nodes.length, head: commitState.head, contentChecked: content.checked };
 }
 
 // ---- CLI ----

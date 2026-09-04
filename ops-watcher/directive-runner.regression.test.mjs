@@ -16,6 +16,7 @@ import {
   parsePlan,
   validatePlanScope,
   activeVenturePathsFor,
+  routeFilesToGraphs,
   validateVerifyCommand,
   runDirectiveSweepOnce,
   capturePlanForExecution,
@@ -787,6 +788,86 @@ await t("ventures gate: an active venture path survives the execution scope gate
   assert.equal(refused.outcome, "refused", "a parked venture is refused at execution time");
   assert.equal(parked.calls.dispatch, 0, "and no lane is dispatched");
   assert.match(refused.violations.join(" "), /not active/, "the refusal says the venture is not active");
+});
+
+// =====================================================================
+// N5. A GRAPH PER VENTURE, STAMPED WITH THE VENTURE'S OWN COMMIT.
+//
+// The two repositories move independently. A single stamp cannot speak for
+// both: an Aidit OS commit would invalidate a venture graph that is still
+// correct, and a venture commit would fail to invalidate one that has gone
+// wrong — the second is exactly the "fresh stamp, stale content" failure this
+// system paid for earlier.
+// =====================================================================
+
+await t("N5 routing: venture files go to the venture graph, everything else to the Aidit OS graph", () => {
+  const routes = routeFilesToGraphs(
+    [
+      "ops-watcher/foo.mjs",
+      "ventures/caveman-trading-os/src/a.py",
+      "ventures/caveman-trading-os/docs/b.md",
+      "docs/c.md",
+    ],
+    REGISTRY,
+    { ventureHeadCommit: () => "cafebabe" },
+  );
+
+  assert.deepEqual([...routes.keys()].sort(), ["aidit", "venture:caveman-trading-os"]);
+  assert.deepEqual(routes.get("aidit").files, ["ops-watcher/foo.mjs", "docs/c.md"]);
+  assert.deepEqual(routes.get("venture:caveman-trading-os").files, [
+    "ventures/caveman-trading-os/src/a.py",
+    "ventures/caveman-trading-os/docs/b.md",
+  ]);
+
+  const v = routes.get("venture:caveman-trading-os");
+  assert.match(v.graphFile.replace(/\\/g, "/"), /graphify-out\/ventures\/caveman-trading-os\/graph\.json$/);
+  assert.match(v.stampFile.replace(/\\/g, "/"), /graphify-out\/ventures\/caveman-trading-os\/graph\.json\.commit\.stamp$/);
+  assert.equal(v.repoCommit, "cafebabe", "the venture graph is checked against the VENTURE's HEAD");
+  assert.equal(routes.get("aidit").repoCommit, undefined, "the Aidit OS route uses this repository's own HEAD");
+});
+
+await t("N5 routing: a plan with no venture files does not consult a venture graph at all", () => {
+  const routes = routeFilesToGraphs(["ops-watcher/foo.mjs"], REGISTRY, {
+    ventureHeadCommit: () => { throw new Error("git must not be consulted"); },
+  });
+  assert.deepEqual([...routes.keys()], ["aidit"]);
+});
+
+await t("N5: an unreadable venture HEAD yields no anchors rather than anchors from the wrong graph", async () => {
+  const graph = {
+    nodes: [{ id: "a", label: "runFooCheck", type: "function", source_file: "ventures/caveman-trading-os/src/a.py", source_location: "L10" }],
+    edges: [],
+  };
+  await withActiveGraph(graph, () => {
+    const plan = { ...parsePlan(goodPlan), files: ["ventures/caveman-trading-os/src/a.py"] };
+    // ventureHeadCommit returning null is "I cannot establish freshness", and a
+    // graph whose freshness cannot be established is not a fresh graph.
+    const p = buildExecutionPrompt(issue(), plan, null, REGISTRY);
+    const line = p.split("\n").find((l) => l.includes("ventures/caveman-trading-os/src/a.py")) || "";
+    assert.equal(line.includes("KG anchors"), false, `no anchors when the venture HEAD is unknown, got: ${line}`);
+  });
+});
+
+await t("N5: the Aidit OS graph never answers for a venture path", async () => {
+  // The failure this prevents: the Aidit OS graph is fresh and stamped, the
+  // venture graph does not exist, and a venture file quietly gets anchors from
+  // a graph that has never seen it.
+  const graph = {
+    nodes: [
+      { id: "a", label: "aiditSymbol", type: "function", source_file: "ops-watcher/foo.mjs", source_location: "L10" },
+      { id: "b", label: "ventureSymbol", type: "function", source_file: "ventures/caveman-trading-os/src/a.py", source_location: "L20" },
+    ],
+    edges: [],
+  };
+  await withActiveGraph(graph, () => {
+    const plan = { ...parsePlan(goodPlan), files: ["ops-watcher/foo.mjs", "ventures/caveman-trading-os/src/a.py"] };
+    const p = buildExecutionPrompt(issue(), plan, null, REGISTRY);
+    const aiditLine = p.split("\n").find((l) => l.includes("- ops-watcher/foo.mjs")) || "";
+    const ventureLine = p.split("\n").find((l) => l.includes("- ventures/caveman-trading-os/src/a.py")) || "";
+    assert.ok(aiditLine.includes("aiditSymbol"), `the Aidit OS file still gets its anchors: ${aiditLine}`);
+    assert.equal(ventureLine.includes("ventureSymbol"), false, "the venture file must NOT be answered by the Aidit OS graph");
+    assert.equal(ventureLine.includes("KG anchors"), false, "and gets no anchors at all when its own graph is absent");
+  });
 });
 
 await t("activeVenturePathsFor filters by status and is deterministic", () => {

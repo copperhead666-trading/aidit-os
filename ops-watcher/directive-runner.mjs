@@ -1867,8 +1867,85 @@ function headCommitForAnchors(deps = {}) {
   return String(exec("git", ["rev-parse", "HEAD"], { cwd: REPO_ROOT, encoding: "utf8" })).trim();
 }
 
+// N5. Which graph describes which file.
+//
+// A path under ventures/<id>/ is described by that venture's graph, stamped
+// with the VENTURE repository's HEAD; everything else by the Aidit OS graph,
+// stamped with this repository's. The two repositories move independently, so a
+// single stamp cannot speak for both: an Aidit OS commit would invalidate a
+// venture graph that is still correct, and a venture commit would fail to
+// invalidate one that has gone wrong.
+//
+// Returns a Map of graphKey -> { files, graphFile, stampFile, repoCommit, root }.
+export function routeFilesToGraphs(files, ventures = [], deps = {}) {
+  const routes = new Map();
+  const repoRoot = deps.repoRoot || REPO_ROOT;
+  const bases = (Array.isArray(ventures) ? ventures : [])
+    .map((v) => ({ id: String(v?.id || ""), base: String(v?.repoPath || "").replace(/\\/g, "/").replace(/\/+$/, ""), venture: v }))
+    .filter((v) => v.id && v.base);
+
+  for (const raw of files) {
+    const file = normalizeGraphRepoPath(raw);
+    if (!file) continue;
+    const owner = bases.find((b) => file === b.base || file.startsWith(`${b.base}/`));
+    const key = owner ? `venture:${owner.id}` : "aidit";
+    if (!routes.has(key)) {
+      routes.set(key, owner
+        ? {
+          key,
+          venture: owner.venture,
+          files: [],
+          graphFile: path.join(repoRoot, "graphify-out", "ventures", owner.id, "graph.json"),
+          stampFile: path.join(repoRoot, "graphify-out", "ventures", owner.id, "graph.json") + GRAPH_STAMP_SUFFIX,
+          // The venture's OWN commit is what this graph's stamp must match.
+          repoCommit: (deps.ventureHeadCommit || ventureHeadCommit)(owner.venture, deps),
+        }
+        : { key, venture: null, files: [], graphFile: deps.graphFile || ACTIVE_GRAPH_FILE, stampFile: null, repoCommit: undefined });
+    }
+    routes.get(key).files.push(file);
+  }
+  return routes;
+}
+
+// The venture repository's HEAD, or null. A null routes to "no anchors": a
+// graph whose freshness cannot be established is not a fresh graph.
+export function ventureHeadCommit(venture, deps = {}) {
+  const exec = deps._exec || execFileSync;
+  const venturePath = deps.venturePath || path.join(REPO_ROOT, String(venture?.repoPath || ""));
+  try {
+    const head = String(exec("git", ["-C", venturePath, "rev-parse", "HEAD"], { encoding: "utf8" })).trim();
+    return head || null;
+  } catch {
+    return null;
+  }
+}
+
 function activeGraphAnchorsForFiles(files, deps = {}) {
   if (!files.length) return new Map();
+
+  // Route first. When a plan touches a venture, that venture's files are
+  // answered by its own graph and its own stamp, and a refusal on one graph
+  // never suppresses anchors from the other.
+  const ventures = Array.isArray(deps.ventures) ? deps.ventures : [];
+  if (ventures.length && !deps.singleGraph) {
+    const routes = (deps.routeFilesToGraphs || routeFilesToGraphs)(files, ventures, deps);
+    if (routes.size > 1 || (routes.size === 1 && !routes.has("aidit"))) {
+      const merged = new Map();
+      for (const route of routes.values()) {
+        const sub = activeGraphAnchorsForFiles(route.files, {
+          ...deps,
+          singleGraph: true,
+          ventures: [],
+          graphFile: route.graphFile,
+          ...(route.stampFile ? { stampFile: route.stampFile } : {}),
+          ...(route.repoCommit !== undefined ? { repoCommit: route.repoCommit } : {}),
+        });
+        for (const [k, v] of sub) merged.set(k, v);
+      }
+      return merged;
+    }
+  }
+
   // Fail CLOSED. Anything other than a proven-fresh graph produces no anchors
   // and the caller falls back to the plain file list, which is exactly today's
   // behaviour and is never wrong, only less helpful.
@@ -2013,6 +2090,10 @@ export function buildExecutionPrompt(issue, plan, specialists = null, ventures =
   // buildExecutionPrompt stays pure and deterministic.
   const graphAnchors = activeGraphAnchorsForFiles(files, {
     planText: [title, objective, ...steps].join("\n"),
+    // The same resolved registry the HARD STOPS use, so a venture's files get
+    // anchors from the venture's own graph rather than from a graph that has
+    // never seen them.
+    ventures,
   });
   const fileLines = files.length
     ? files.map((f) => formatExecutionFileLine(f, graphAnchors)).join("\n")

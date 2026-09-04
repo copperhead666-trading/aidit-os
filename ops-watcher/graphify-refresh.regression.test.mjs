@@ -13,6 +13,8 @@ import {
   MIN_REFRESH_INTERVAL_MS,
   STATE_FILE,
   contentCheckCandidates,
+  refreshVentureGraph,
+  ventureGraphPath,
   refreshOnce,
   repoFingerprint,
   shouldRefresh,
@@ -610,6 +612,122 @@ async function t18_aGraphThatFailsTheContentCheckLosesItsStamp() {
   ok("T18: a graph failing the content check loses its stamp and does not advance state");
 }
 
+// =====================================================================
+// N5. A venture graph is stamped with the VENTURE repository's commit, and a
+// DIRTY venture gets no graph at all. Line numbers in an uncommitted file are
+// guaranteed by nothing.
+// =====================================================================
+
+const VENTURE = { id: "caveman-trading-os", status: "active", repoPath: "ventures/caveman-trading-os" };
+const V_GRAPH = "mem:/graphify-out/ventures/caveman-trading-os/graph.json";
+const V_BUILT = "mem:/venture/graphify-out/graph.json";
+const V_STAMP = `${V_GRAPH}.commit.stamp`;
+
+function ventureDeps(fs, over = {}) {
+  return {
+    _fs: fs,
+    log: () => {},
+    venturePath: "mem:/venture",
+    ventureGraph: V_GRAPH,
+    builtVentureGraph: V_BUILT,
+    sourceRoot: "mem:/venture",
+    now: () => NOW,
+    ...over,
+  };
+}
+
+async function t19_ventureGraphIsStampedWithTheVenturesOwnCommit() {
+  const fs = fakeFs({ files: { [V_BUILT]: graph(7), [SRC_ABS]: SRC_TEXT, "mem:/venture/src/fixture.mjs": SRC_TEXT } });
+  const h = spawnHarness({ status: 0, stdout: "ok", stderr: "" });
+
+  const result = await refreshVentureGraph(VENTURE, ventureDeps(fs, {
+    spawnSync: h.spawnSync,
+    ventureCommitState: () => ({ head: "ventureHEADcommit", dirty: false, dirtyFiles: 0 }),
+  }));
+
+  assert.equal(result.ok, true, `venture graph promoted: ${result.reason || ""}`);
+  assert.equal(result.refreshed, true);
+  assert.equal(result.nodes, 7);
+  assert.equal(fs.files.get(V_STAMP), "ventureHEADcommit", "T19: stamped with the VENTURE's HEAD, not this repository's");
+  assert.equal(fs.files.get(V_GRAPH), graph(7), "T19: the built graph is promoted into Aidit OS");
+  // graphify is pointed at the venture, and the build lands beside the venture
+  // root — measured behaviour, it ignores cwd.
+  assert.deepEqual(h.calls[0].args, ["update", "mem:/venture", "--no-cluster"]);
+  ok("T19: a venture graph is stamped with the venture repository's own commit");
+}
+
+async function t20_dirtyVentureRefusesAndRemovesAnyStamp() {
+  const fs = fakeFs({ files: { [V_BUILT]: graph(7), [V_GRAPH]: graph(3), [V_STAMP]: "an-earlier-commit" } });
+  const h = spawnHarness([]); // graphify must never be spawned.
+  const logs = [];
+
+  const result = await refreshVentureGraph(VENTURE, ventureDeps(fs, {
+    spawnSync: h.spawnSync,
+    log: (m) => logs.push(m),
+    ventureCommitState: () => ({ head: "c74b6e9", dirty: true, dirtyFiles: 5 }),
+  }));
+
+  assert.equal(result.ok, false, "T20: a dirty venture produces no graph");
+  assert.equal(result.refreshed, false);
+  assert.match(result.reason, /venture-dirty: 5 uncommitted file\(s\)/);
+  assert.equal(h.calls.length, 0, "T20: the build is not even attempted — no CPU spent on a graph that cannot be trusted");
+  assert.equal(fs.files.has(V_STAMP), false, "T20: an earlier stamp is REMOVED, not left certifying the old graph");
+  assert.ok(logs.some((m) => /DIRTY \(5 file\(s\)\)/.test(m)), "T20: the refusal says how many files made it dirty");
+  ok("T20: a dirty venture refuses a graph and loses any stamp it had");
+}
+
+async function t21_ventureGraphMustAlsoPassTheContentCheck() {
+  const fs = fakeFs({ files: { [V_BUILT]: graph(7), [V_STAMP]: "an-earlier-commit" } });
+  const h = spawnHarness({ status: 0, stdout: "ok", stderr: "" });
+
+  const result = await refreshVentureGraph(VENTURE, ventureDeps(fs, {
+    spawnSync: h.spawnSync,
+    ventureCommitState: () => ({ head: "ventureHEAD", dirty: false, dirtyFiles: 0 }),
+    verifyContent: async () => ({ verified: false, checked: 4, skipped: 0, mismatches: ["src/a.py:10 thing"], reason: "1/4 sampled symbols are not where the graph says" }),
+  }));
+
+  assert.equal(result.ok, false, "T21: evidence before the claim, for a venture graph too");
+  assert.match(result.reason, /content-check-failed/);
+  assert.equal(fs.files.has(V_STAMP), false, "T21: and the stamp is removed");
+  ok("T21: a venture graph that does not describe its tree is not stamped either");
+}
+
+async function t22_ventureGitUnreadableIsNotTreatedAsClean() {
+  const fs = fakeFs({ files: { [V_BUILT]: graph(7) } });
+  const h = spawnHarness([]);
+
+  const result = await refreshVentureGraph(VENTURE, ventureDeps(fs, {
+    spawnSync: h.spawnSync,
+    ventureCommitState: () => null,
+  }));
+
+  assert.equal(result.ok, false, "T22: unreadable git state builds nothing");
+  assert.equal(result.reason, "venture-git-unreadable");
+  assert.equal(h.calls.length, 0);
+  ok("T22: a venture whose git state cannot be read is never assumed clean");
+}
+
+async function t23_contentCheckSamplesOnlyIdentifierShapedLabels() {
+  // graphify emits nodes whose label IS a docstring. Measured on the
+  // caveman-trading-os graph: identifier-shaped labels scored 300/300 on the
+  // exact line, prose labels 90/300. Sampling the second kind would refuse
+  // every fresh venture graph. This repository has no Python, so the
+  // distinction only appeared once a graph was built over a venture.
+  const g = {
+    nodes: [
+      { label: "realSymbol", source_file: "a.py", source_location: "L400" },
+      { label: "Return the secret. Raises at startup if absent.", source_file: "b.py", source_location: "L500" },
+      { label: ".__init__()", source_file: "c.py", source_location: "L600" },
+      { label: "another_symbol", source_file: "d.py", source_location: "L300" },
+    ],
+  };
+  const picked = contentCheckCandidates(g).map((c) => c.label);
+  assert.deepEqual(picked, ["realSymbol", "another_symbol"], "only identifier-shaped labels are sampled");
+  assert.equal(picked.some((l) => l.includes(" ")), false, "a docstring is never treated as a symbol");
+  assert.equal(picked.some((l) => l.startsWith(".")), false, "a member expression is never treated as a symbol");
+  ok("T23: the content check samples identifier-shaped labels only, so python docstrings do not fail a fresh graph");
+}
+
 async function main() {
   assert.ok(BUILT_GRAPH, "exported BUILT_GRAPH exists");
   assert.ok(ACTIVE_GRAPH, "exported ACTIVE_GRAPH exists");
@@ -636,6 +754,11 @@ async function main() {
     t16_contentCheckSamplesTheDeepestSymbolPerFile,
     t17_contentCheckDistinguishesDriftFromExtractorGaps,
     t18_aGraphThatFailsTheContentCheckLosesItsStamp,
+    t19_ventureGraphIsStampedWithTheVenturesOwnCommit,
+    t20_dirtyVentureRefusesAndRemovesAnyStamp,
+    t21_ventureGraphMustAlsoPassTheContentCheck,
+    t22_ventureGitUnreadableIsNotTreatedAsClean,
+    t23_contentCheckSamplesOnlyIdentifierShapedLabels,
   ];
   for (const t of tests) {
     try {
