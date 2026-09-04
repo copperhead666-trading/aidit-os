@@ -8,7 +8,8 @@
 //   node ops-watcher/decision-ledger.regression.test.mjs
 //
 // Covers:
-//   (L1) config/decision-ledger.json parses and has exactly 39 records.
+//   (L1) config/decision-ledger.json parses and still holds all 39 merged
+//        records; the count may grow but never shrink.
 //   (L2) All 39 record ids are unique.
 //   (L3) The 15 original ids are all still present.
 //   (L4) All 24 migrated ids are present, and every one carries
@@ -17,6 +18,8 @@
 //   (L5) No record among the original 15 carries migrated_from.
 //   (L6) Every record has a non-empty id, type and statement.
 //   (L7) Top level has merged_legacy_ledger_at and does NOT have ratified_from.
+//   (L8) Any record added after the merge carries full provenance and does
+//        not claim to be migrated.
 
 import assert from "node:assert/strict";
 import path from "node:path";
@@ -49,19 +52,50 @@ function bad(name, err) {
 
 let ledger = null;
 
-function L1_parsesWith39Records() {
-  const name = "L1 ledger parses and has exactly 39 records";
+// This guard used to assert `records.length === 39` — the exact size of the
+// 2026-09-01 merge. That was right for a frozen ledger and wrong the moment the
+// owner records another decision, which is a normal thing to do; a ledger that
+// forbids new entries is not a ledger. What the guard is actually FOR is that
+// the merge never loses anything, so it now asserts the merge is intact and the
+// count only ever grows. L3/L4 still check all 39 by id, and L8 makes sure a new
+// record cannot be added sloppily.
+function L1_parsesAndMergeIsIntact() {
+  const name = "L1 ledger parses and still holds all 39 merged records";
   try {
     const text = readFileSync(LEDGER_PATH, "utf8");
     ledger = JSON.parse(text);
     assert.ok(ledger && Array.isArray(ledger.records), "records array missing");
-    assert.equal(ledger.records.length, 39, "record count");
+    assert.ok(
+      ledger.records.length >= ORIGINAL_15.length + MIGRATED_24.length,
+      `record count fell below the merged 39 (got ${ledger.records.length})`,
+    );
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// A record added after the merge must be as auditable as the ones that came
+// through it. Without this, "the count may grow" would be a hole.
+function L8_postMergeRecordsCarryProvenance() {
+  const name = "L8 every record added after the merge carries full provenance";
+  try {
+    const known = new Set([...ORIGINAL_15, ...MIGRATED_24]);
+    const added = ledger.records.filter((r) => !known.has(r.id));
+    for (const r of added) {
+      for (const field of ["id", "type", "statement", "source_kind", "owner_origin", "created_at"]) {
+        assert.ok(
+          typeof r[field] === "string" && r[field].trim() !== "",
+          `${r.id}: ${field} must be a non-empty string`,
+        );
+      }
+      assert.equal(typeof r.canonical, "boolean", `${r.id}: canonical must be a boolean`);
+      assert.equal(r.migrated_from, undefined, `${r.id}: a post-merge record must not claim to be migrated`);
+    }
     ok(name);
   } catch (err) { bad(name, err); }
 }
 
 function L2_idsUnique() {
-  const name = "L2 all 39 record ids are unique";
+  const name = "L2 all record ids are unique";
   try {
     const ids = ledger.records.map((r) => r.id);
     assert.equal(new Set(ids).size, ids.length, "duplicate ids detected");
@@ -125,7 +159,8 @@ function L7_topLevelMarkers() {
 
 function main() {
   console.log("# ops-watcher decision-ledger merge regression tests");
-  L1_parsesWith39Records();
+  L1_parsesAndMergeIsIntact();
+  L8_postMergeRecordsCarryProvenance();
   if (ledger) {
     L2_idsUnique();
     L3_original15Present();

@@ -946,7 +946,7 @@ async function t27_invalidJsonProjectionFailsWithoutCrash() {
 
 // ---- T28: projectDecisionLedger on the real ledger -> valid JSON, all 39 ids, materially smaller ----
 async function t28_projectDecisionLedgerRealFile() {
-  const name = "T28 projectDecisionLedger on real decision-ledger.json -> valid JSON, all 39 ids, materially smaller";
+  const name = "T28 projectDecisionLedger on real decision-ledger.json -> valid JSON, every id, materially smaller";
   try {
     const ledgerPath = repoPath("config/decision-ledger.json");
     const rawText = readFileSync(ledgerPath, "utf8");
@@ -961,10 +961,13 @@ async function t28_projectDecisionLedgerRealFile() {
     assert.equal(projected.merged_legacy_ledger_at, source.merged_legacy_ledger_at, "merged_legacy_ledger_at preserved verbatim");
     // Drop the migration bookkeeping at the top level.
     assert.equal(Object.prototype.hasOwnProperty.call(projected, "imported_from"), false, "top-level imported_from migration bookkeeping dropped");
-    // All 39 record ids kept, no extras, no duplicates lost.
+    // Every record id kept, no extras, no duplicates lost. Counted against the
+    // SOURCE, not against a frozen 39: the ledger gains a record whenever the
+    // owner decides something, and a projection guard that forbids that is
+    // guarding the wrong thing. The deepEqual below is the real guarantee.
     const rawIds = source.records.map((r) => r.id).sort();
     const projectedIds = projected.records.map((r) => r.id).sort();
-    assert.equal(projected.records.length, 39, "exactly 39 records in projection");
+    assert.equal(projected.records.length, source.records.length, "projection keeps every source record");
     assert.deepEqual(projectedIds, rawIds, "all record ids preserved and matched");
     // Per-record keep list is exactly id/type/status/domain/statement/canonical.
     for (const rec of projected.records) {
