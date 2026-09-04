@@ -26,6 +26,8 @@ const MODEL = process.env.OLLAMA_MODEL_HATTA || "glm-5.3:cloud";
 const MAX_ITERATIONS = Number.parseInt(process.env.HATTA_MAX_ITER || "40", 10);
 const STDIO_LIMIT = 4000;
 const SUMMARY_LIMIT = 700;
+const READ_FILE_CONTENT_ELIDED_NOTE =
+  "Content dropped from chat history after a newer read_file result. Call read_file again with this path to reload it.";
 export const HARNESS_EVIDENCE_PATH = path.join(WORKSPACE_ROOT, "hatta", ".harness-evidence.json");
 let currentEvidence = null;
 
@@ -773,6 +775,60 @@ function summarizeResult(result) {
   return truncate(JSON.stringify(result), SUMMARY_LIMIT);
 }
 
+function parseMessageResult(content) {
+  if (typeof content !== "string") return null;
+  try {
+    const parsed = JSON.parse(content);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function makeElidedReadFileResult(result) {
+  return {
+    ok: true,
+    path: result.path,
+    bytes: Number.isFinite(result.bytes)
+      ? result.bytes
+      : Buffer.byteLength(result.content, "utf8"),
+    content_elided: true,
+    note: READ_FILE_CONTENT_ELIDED_NOTE,
+  };
+}
+
+function elideSupersededReadFileResults(messages) {
+  const readResults = [];
+  let latestContentIndex = -1;
+
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message?.role !== "tool" || message.name !== "read_file") continue;
+
+    const result = parseMessageResult(message.content);
+    if (!result || result.ok !== true || typeof result.content !== "string") continue;
+
+    readResults.push({ index, message, result });
+    latestContentIndex = index;
+  }
+
+  if (latestContentIndex < 0) return;
+
+  for (const { index, message, result } of readResults) {
+    if (index === latestContentIndex) continue;
+    message.content = JSON.stringify(makeElidedReadFileResult(result));
+  }
+}
+
+function appendToolResultMessage(messages, name, result) {
+  messages.push({
+    role: "tool",
+    name,
+    content: JSON.stringify(result),
+  });
+  elideSupersededReadFileResults(messages);
+}
+
 async function executeToolCall(toolCall, evidence) {
   const name = toolCall?.function?.name || toolCall?.name;
   const args = parseToolArguments(toolCall?.function?.arguments ?? toolCall?.arguments);
@@ -855,11 +911,7 @@ export async function runTask(prompt, {
 
       for (const toolCall of toolCalls) {
         const { name, result } = await executeToolCall(toolCall, evidence);
-        messages.push({
-          role: "tool",
-          name,
-          content: JSON.stringify(result),
-        });
+        appendToolResultMessage(messages, name, result);
       }
       await persistRunEvidence(evidence, persist);
     }
