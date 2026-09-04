@@ -186,7 +186,127 @@ Landing in `D:\Development\npm-global\node_modules`.
 
 **Undo:** `npm uninstall -g <name>`.
 
-### 4. Claude Code skills
+### 4. SOPS 3.13.3 and age
+
+```powershell
+winget install --id SecretsOPerationS.SOPS -e --silent
+winget install --id FiloSottile.age -e --silent
+```
+
+Both land as shims in `C:\Users\WIN10\AppData\Local\Microsoft\WinGet\Links`.
+`sops --version` reports `sops 3.13.3 (latest)`; `age` and `age-keygen` are both
+present.
+
+Recorded honestly: **the binaries are installed, the practice is not adopted.**
+There is no `.sops.yaml`, no age key at `~/.config/sops/age/keys.txt`, and no
+secret in this repository is encrypted. Adopting SOPS means encrypting the
+owner's Telegram bot token into the repo, and credentials are explicitly his
+line, not an agent's. It is raised for him rather than done.
+
+A dead end worth recording: the winget id is **`SecretsOPerationS.SOPS`**.
+`Mozilla.SOPS` — the name most documentation still uses — returns
+`No package found matching input criteria`; the project moved out of Mozilla.
+
+### 5. bun 1.4.0 and gbrain 0.48.2.0
+
+`gbrain`'s own documentation says to install it with bun and explicitly *not*
+with `npm install -g gbrain`, so bun came first.
+
+```powershell
+winget install --id Oven-sh.Bun -e --silent
+bun install -g github:garrytan/gbrain     # 188 packages, ~415s
+```
+
+bun lands in the WinGet Links shim directory; gbrain lands at
+`C:\Users\WIN10\.bun\bin\gbrain.exe`. bun warned that its global bin folder was
+not on PATH — see the PATH section below, which fixes that for good.
+
+`bun pm -g untrusted` reports 1 blocked postinstall. Left blocked: nothing so far
+needs it, and unblocking a postinstall is a decision, not a default.
+
+### 6. `ollama pull nomic-embed-text`
+
+The embedding model the gbrain-curator heartbeat step uses. 274 MB,
+id `0a109f422b47`. Pulled into the existing Ollama at `D:\Ollama`.
+
+Note: `ollama list` was EMPTY before this. HATTA's `glm-5.3:cloud` is a *cloud*
+model served through the Ollama daemon, so it never appears in `ollama list` and
+its absence there is not a fault. It was verified working by a real one-shot chat
+call against `http://localhost:11434/api/chat`, not by reading the list.
+
+### 7. GitHub Actions self-hosted runner 2.337.0, as a Windows service
+
+```powershell
+# registration token, scoped and short-lived
+gh api -X POST repos/copperhead666-trading/aidit-os/actions/runners/registration-token --jq .token
+
+cd C:\actions-runner
+.\config.cmd --unattended --url https://github.com/copperhead666-trading/aidit-os `
+  --token <token> --name lenovo-black --labels self-hosted,windows,x64,lenovo-black `
+  --work _work --runasservice --windowslogonaccount "NT AUTHORITY\NETWORK SERVICE" --replace
+```
+
+| | |
+|---|---|
+| Install dir | `C:\actions-runner` |
+| Zip kept at | `D:\AI\_installers\actions-runner-win-x64-2.337.0.zip` |
+| Service | `actions.runner.copperhead666-trading-aidit-os.lenovo-black` |
+| Runs as | `NT AUTHORITY\NETWORK SERVICE`, delayed automatic start |
+| Labels | `self-hosted`, `Windows`, `X64`, `lenovo-black` |
+
+Verified from GitHub's side, not just locally:
+`lenovo-black | online | busy=false | self-hosted,Windows,X64,lenovo-black`.
+
+**Undo:** `cd C:\actions-runner && .\config.cmd remove --token <a fresh removal
+token>`. That removes the Windows service and de-registers the runner. Delete
+`C:\actions-runner` afterwards.
+
+### 8. PM2 boot persistence
+
+The daemons must come back after a reboot **with nobody logged in**, so PM2 is
+resurrected by a scheduled task running as SYSTEM rather than by a user login.
+
+| | |
+|---|---|
+| `PM2_HOME` | `D:\pm2home`, set **machine-wide** so the SYSTEM daemon and an interactive `pm2` see the same state |
+| Boot script | `D:\pm2home\pm2-boot.cmd` (sets PM2_HOME, cd to the repo, `pm2 resurrect`) |
+| Task | `AiditOS-PM2-Resurrect`, AtStartup, `SYSTEM` / ServiceAccount / Highest |
+| Restart policy | 3 retries, 1 minute apart; no execution time limit |
+
+Proven, not assumed: the task was run once on demand and reported
+`LastTaskResult 0`. It was a deliberate no-op — there is no `dump.pm2` yet,
+because **nothing has been `pm2 save`d**. That is the ordering rule: PM2 must not
+start locally until the owner has shut the ASUS down, since one Telegram bot
+token cannot serve two long-pollers (both get HTTP 409). Registering the task now
+starts nothing.
+
+**Undo:** `Unregister-ScheduledTask -TaskName "AiditOS-PM2-Resurrect"`, then
+remove the machine-wide `PM2_HOME` variable and delete `D:\pm2home`.
+
+### 9. Machine-wide PATH additions
+
+This one is easy to miss and would have broken the reboot proof silently. Every
+tool the daemons call was on the **user** PATH only, and a task running as SYSTEM
+does not get the interactive user's PATH. The heartbeat's gbrain-curator step
+would have failed with "gbrain not found" after every reboot, and the GIBRAN lane
+probe would have reported a false outage.
+
+Appended to the **Machine** PATH:
+
+```
+C:\Users\WIN10\.bun\bin                              (bun, gbrain)
+D:\Development\npm-global                            (pm2, paperclipai, hermes, ast-grep)
+D:\Ollama                                            (ollama)
+D:\PostgreSQL\16\bin                                 (psql, pg_dump, pg_restore)
+C:\Users\WIN10\AppData\Local\Microsoft\WinGet\Links  (sops, age)
+C:\Users\WIN10\.local\bin                            (graphify, uv)
+D:\aidit-node\node-v22.14.0-win-x64                  (the pinned Node 22)
+```
+
+**Undo:** remove those seven entries from the Machine PATH. Nothing else on the
+machine depends on them being there — they were all user-PATH-only before.
+
+### 10. Claude Code skills
 
 Only two, deliberately: **graphify** and **impeccable**. Every installed skill is
 billed on every turn, which is why this list is small on purpose and must stay
@@ -198,15 +318,10 @@ small.
 
 Listed so the gap is visible rather than discovered later.
 
-* **gbrain** — the repo documents it as `bun install -g github:garrytan/gbrain`,
-  and its own note says explicitly *not* to `npm install -g gbrain`. `bun` is not
-  on this machine. See the session report for status.
-* **`ollama pull nomic-embed-text`** — the gbrain-curator embedding model, which
-  is only useful once gbrain itself is installed.
-* **SOPS + age** — see the session report for status.
-* **GitHub Actions self-hosted runner (as a Windows service)** — see the session
-  report for status.
-* **`tree_sitter_sql`** for graphify — see the graphify entry above.
+* **`tree_sitter_sql`** for graphify — see the graphify entry above. 2 `.sql`
+  files contribute nothing to the graph without it.
+* **SOPS adoption** (as opposed to the binary) — see entry 4. Encrypting the
+  owner's credentials into the repo is his decision, not an agent's.
 
 ---
 
@@ -215,15 +330,27 @@ Listed so the gap is visible rather than discovered later.
 If this machine has to be returned to how it was found, undo in this order so
 nothing is left pointing at something that no longer exists:
 
-1. `pm2 delete all && pm2 kill` (stop the daemons before removing what they run)
-2. GitHub Actions runner: `.\config.cmd remove --token <token>` (removes the
-   Windows service and de-registers the runner)
-3. `npm uninstall -g pm2 paperclipai hermes-agent @ast-grep/cli`
-4. `uv tool uninstall graphifyy`
-5. `pg_dump` the board, then
+1. `tailscale funnel --https=443 off` — stop publishing the cockpit to the
+   internet BEFORE stopping the thing behind it, so nothing is ever exposed
+   pointing at a dead port
+2. `Unregister-ScheduledTask -TaskName "AiditOS-PM2-Resurrect"` — otherwise the
+   next boot tries to resurrect processes whose files are about to be removed
+3. `pm2 delete all && pm2 kill` (stop the daemons before removing what they run)
+4. GitHub Actions runner:
+   `cd C:\actions-runner && .\config.cmd remove --token <a fresh removal token>`
+   (removes the Windows service and de-registers the runner), then delete
+   `C:\actions-runner`
+5. `npm uninstall -g pm2 paperclipai hermes-agent @ast-grep/cli`
+6. `uv tool uninstall graphifyy`, `bun uninstall -g gbrain`
+7. `winget uninstall SecretsOPerationS.SOPS`, `winget uninstall FiloSottile.age`,
+   `winget uninstall Oven-sh.Bun`
+8. `ollama rm nomic-embed-text`
+9. `pg_dump` the board first, then
    `D:\PostgreSQL\16\uninstall-postgresql.exe --mode unattended`, then delete
    `D:\PostgreSQL\16`
-6. Delete `D:\AI\_installers`, `D:\AI\worktrees`, and the two
-   `config/*password*.local.txt` files
-7. Leave `.env.local` alone — it is the only copy of the Telegram bot token on
-   this machine and it is gitignored, so nothing can restore it
+10. Remove the seven Machine PATH entries listed in section 9, and the
+    machine-wide `PM2_HOME` variable
+11. Delete `D:\AI\_installers`, `D:\AI\worktrees`, `D:\pm2home`, and the two
+    `config/*password*.local.txt` files
+12. Leave `.env.local` alone — it is the only copy of the Telegram bot token on
+    this machine and it is gitignored, so nothing can restore it
