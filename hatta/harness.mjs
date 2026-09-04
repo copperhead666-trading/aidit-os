@@ -23,7 +23,41 @@ const DEFAULT_ENDPOINT = "http://localhost:11434/api/chat";
 const ENDPOINT_CONFIG = resolveEndpoint(process.env.OLLAMA_HOST);
 const ENDPOINT = ENDPOINT_CONFIG.endpoint;
 const MODEL = process.env.OLLAMA_MODEL_HATTA || "glm-5.3:cloud";
-const MAX_ITERATIONS = Number.parseInt(process.env.HATTA_MAX_ITER || "40", 10);
+// The two numbers that bound a run must agree. The outer wrapper kills the run
+// after OUTER_RUN_BUDGET_MS (480000), and each model call may take up to
+// HATTA_REQUEST_TIMEOUT_MS (120000): 480000 / 120000 = 4 slow calls. A default
+// of 40 was never reachable, so a run that hit the real ceiling was killed from
+// outside and surfaced as an opaque outer timeout instead of the harness's own
+// "Reached MAX_ITERATIONS" evidence. Default to the number of slow calls the
+// budget actually affords.
+const OUTER_RUN_BUDGET_MS = Number.parseInt(process.env.HATTA_OUTER_RUN_BUDGET_MS || "480000", 10);
+const REQUEST_TIMEOUT_MS = Number.parseInt(process.env.HATTA_REQUEST_TIMEOUT_MS || "120000", 10);
+const DEFAULT_MAX_ITERATIONS = Math.max(1, Math.floor(OUTER_RUN_BUDGET_MS / REQUEST_TIMEOUT_MS));
+
+// HATTA_MAX_ITER can only lower the ceiling, never raise it. Letting an explicit
+// value win outright would reintroduce the exact bug being fixed: someone sets
+// 40, the outer wrapper still kills the run at OUTER_RUN_BUDGET_MS, and the
+// failure surfaces as an opaque outer timeout again. The budget is a physical
+// bound; the override is a preference, and a preference does not beat physics.
+// Exported so the test exercises this arithmetic rather than a copy of it.
+export function effectiveMaxIterations({
+  budgetMs = OUTER_RUN_BUDGET_MS,
+  perCallMs = REQUEST_TIMEOUT_MS,
+  override = process.env.HATTA_MAX_ITER,
+} = {}) {
+  const derived = Math.max(1, Math.floor(budgetMs / perCallMs));
+  const asked = Number.parseInt(override ?? "", 10);
+  if (!Number.isFinite(asked) || asked < 1) return derived;
+  return Math.min(asked, derived);
+}
+
+const MAX_ITERATIONS = effectiveMaxIterations();
+// Names the ceiling AND the bound that produced it. "Reached 4" on its own reads
+// as a bug; the arithmetic reads as a fact somebody can act on.
+const ITERATION_BOUND_NOTE =
+  MAX_ITERATIONS < DEFAULT_MAX_ITERATIONS
+    ? `HATTA_MAX_ITER=${process.env.HATTA_MAX_ITER}`
+    : `the ${OUTER_RUN_BUDGET_MS}ms outer budget over a ${REQUEST_TIMEOUT_MS}ms per-call timeout`;
 const STDIO_LIMIT = 4000;
 const SUMMARY_LIMIT = 700;
 const READ_FILE_CONTENT_ELIDED_NOTE =
@@ -967,7 +1001,7 @@ export async function runTask(prompt, {
       await persistRunEvidence(evidence, persist);
     }
 
-    evidence.error = `Reached MAX_ITERATIONS (${MAX_ITERATIONS}) before a final answer.`;
+    evidence.error = `Reached MAX_ITERATIONS (${MAX_ITERATIONS}, set by ${ITERATION_BOUND_NOTE}) before a final answer.`;
     return evidence;
   } catch (error) {
     if (error instanceof OllamaChatTimeoutError) evidence.timedOut = true;

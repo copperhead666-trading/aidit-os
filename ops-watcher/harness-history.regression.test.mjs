@@ -2,10 +2,14 @@
 // No Ollama call, no network: runTask is driven by an injected chat function.
 
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { OllamaChatTimeoutError, postChat, runTask } from "../hatta/harness.mjs";
+
+const execFileAsync = promisify(execFile);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -366,6 +370,56 @@ await t("H10 network errors, HTTP errors, and failed tool results are not timeou
   assert.equal(failedTool.timedOut, false);
   assert.equal(failedTool.toolCalls.length, 1);
   assert.equal(failedTool.toolCalls[0].ok, false);
+});
+
+await t("H11 default MAX_ITERATIONS agrees with the outer budget over per-call timeout", async () => {
+  // MAX_ITERATIONS is fixed at import time, so probe it in fresh child
+  // processes with different env. The child drives runTask with a chat that
+  // never produces a final answer, so the loop must end at the ceiling itself.
+  const probe = `
+    import(${JSON.stringify(pathToFileURL(path.join(ROOT, "hatta", "harness.mjs")).href)})
+      .then(async (m) => {
+        const evidence = await m.runTask("loop forever", {
+          chat: async () => ({ message: { role: "assistant", content: "", tool_calls: [{ function: { name: "unknown_probe_tool", arguments: "{}" } }] } }),
+          persist: async () => {},
+        });
+        console.log(JSON.stringify({ iterations: evidence.iterations, error: evidence.error }));
+      });
+  `;
+  const runProbe = async (env) => {
+    const { stdout } = await execFileAsync(process.execPath, ["--input-type=module", "--eval", probe], {
+      env: { ...process.env, ...env },
+    });
+    return JSON.parse(stdout.trim().split("\n").at(-1));
+  };
+
+  // 480000 / 120000 = 4. The old default of 40 was never reachable.
+  const defaultRun = await runProbe({});
+  assert.equal(defaultRun.iterations, 4);
+  // The message must name the ceiling AND the bound that produced it. "Reached
+  // 4" alone reads as a bug; the arithmetic reads as a fact somebody can act on.
+  assert.match(defaultRun.error, /Reached MAX_ITERATIONS \(4, set by the 480000ms outer budget over a 120000ms per-call timeout\)/);
+
+  // HATTA_MAX_ITER can only LOWER the ceiling.
+  const lowerOverride = await runProbe({ HATTA_MAX_ITER: "2" });
+  assert.equal(lowerOverride.iterations, 2, "an explicit ceiling below the derived one wins");
+  assert.match(lowerOverride.error, /set by HATTA_MAX_ITER=2/);
+
+  // It must NOT raise it. This is the case that was asserted backwards: an
+  // explicit 6 used to win outright, which reintroduces the exact bug being
+  // fixed — the outer wrapper still kills the run at 480000ms, and the failure
+  // surfaces as an opaque outer timeout instead of the harness's own evidence.
+  // The budget is a physical bound; the override is a preference.
+  const higherOverride = await runProbe({ HATTA_MAX_ITER: "40" });
+  assert.equal(higherOverride.iterations, 4, "an explicit ceiling above the budget does NOT win");
+
+  // Halving the per-call timeout doubles what the same budget affords.
+  const scaledRun = await runProbe({ HATTA_REQUEST_TIMEOUT_MS: "60000" });
+  assert.equal(scaledRun.iterations, 8);
+
+  // A budget smaller than a single call still yields at least 1, never 0.
+  const tinyBudget = await runProbe({ HATTA_OUTER_RUN_BUDGET_MS: "1000" });
+  assert.equal(tinyBudget.iterations, 1, "the floor is 1 iteration, not 0");
 });
 
 console.log("");
