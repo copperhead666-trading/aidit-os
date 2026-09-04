@@ -15,6 +15,10 @@ export const LANE_KEYS = {
   sjahrir: "kimi",
   hatta: "ollama",
   "hatta-flash": "ollama",
+  // SOEKARNO is Claude Code on the Lenovo, reached over SSH. It gets its own
+  // probe key rather than sharing one: a lane on another machine can be down
+  // for reasons that have nothing to do with any lane on this one.
+  soekarno: "claude",
 };
 
 function resolveLaneKey(laneName) {

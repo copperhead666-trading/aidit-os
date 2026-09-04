@@ -97,6 +97,14 @@ export const LANE_PROBES = {
   nous: { kind: "spawn", cmd: ["hermes", "--version"], label: "Nous Free / hermes (L4 free-worker)" },
   kimi: { kind: "spawn", cmd: ["kimi", "--version"], label: "Kimi Code (L3 heavy-context)" },
   codex: { kind: "spawn", cmd: ["codex", "--version"], label: "Codex CLI (L6, CORLEONE)" },
+  // Probed THROUGH ssh on purpose: for this lane "available" means the Lenovo
+  // is reachable AND Claude is installed there. A local check would answer a
+  // question nobody asked.
+  claude: {
+    kind: "spawn",
+    cmd: ["ssh", "-o", "ConnectTimeout=8", "-o", "BatchMode=yes", "WIN10@100.87.42.3", "claude --version"],
+    label: "Claude Code on the Lenovo (L5, SOEKARNO)",
+  },
 };
 
 // Map a canonical role-map lane STRING (e.g. "L2 glm-5.3:cloud", "L4 Nous free",

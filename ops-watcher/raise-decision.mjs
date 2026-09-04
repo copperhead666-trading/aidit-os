@@ -181,7 +181,14 @@ async function main() {
     console.error(`raise-decision: brief could not be read — ${brief.__parseError}`);
     process.exit(2);
   }
-  const port = await discoverPaperclipPort();
+  // Retry discovery rather than taking one probe's word for it. The default is
+  // a single sweep at 2s per candidate, and under load — a lane running the
+  // suite on the same machine is enough — that probe times out and discovery
+  // answers null. The caller then reports "instance not running" about an
+  // instance that is answering 200, and a parked decision silently never
+  // reaches the owner. Observed exactly that on 2026-09-04.
+  // pm2-supervisor.mjs:504 already retries for the same reason.
+  const port = await discoverPaperclipPort(undefined, { attempts: 3, retryDelayMs: 1500 });
   const base = port ? `http://127.0.0.1:${port}` : null;
   const r = await raiseDecisionOnce({ base, title, reason, brief, log: (m) => console.log(m) });
   if (r.reason === "brief-incomplete") console.error(r.refusal);
