@@ -122,13 +122,33 @@ async function withStaleActiveGraph(graph, fn) {
   }
 }
 
+// RESTORES the stamp as well as the graph.
+//
+// It used to restore only the graph. The stamp it wrote — the CURRENT HEAD —
+// was left behind on the machine's real graph, so after any run of this suite
+// the live graph carried a stamp naming a commit it was not built at, and the
+// stale-graph guard, which compares stamp against HEAD, certified it as FRESH.
+// Measured at f22349d with a clean tree and the guard reporting FRESH:
+// buildExecutionPrompt() was at L1716 in the graph and L1858 in the file.
+//
+// This is the same lesson as withStaleActiveGraph above, which was fixed after
+// it destroyed the real graph: a fixture that writes production state and does
+// not put it back is a worse bug than the one it is testing for. The neighbour
+// got the lesson; this one did not.
 async function withActiveGraph(graph, fn) {
+  const stampFile = `${TEST_ACTIVE_GRAPH_FILE}.commit.stamp`;
   let previous = null;
   let hadPrevious = true;
+  let previousStamp = null;
   try {
     previous = await fs.readFile(TEST_ACTIVE_GRAPH_FILE, "utf8");
   } catch {
     hadPrevious = false;
+  }
+  try {
+    previousStamp = await fs.readFile(stampFile, "utf8");
+  } catch {
+    previousStamp = null;
   }
 
   await fs.mkdir(path.dirname(TEST_ACTIVE_GRAPH_FILE), { recursive: true });
@@ -137,15 +157,19 @@ async function withActiveGraph(graph, fn) {
   // built at. Writing the graph without one is exactly the "unstamped graph"
   // case, which is refused on purpose — so a fixture that wants anchors must
   // supply the stamp too.
-  await fs.writeFile(`${TEST_ACTIVE_GRAPH_FILE}.commit.stamp`, TEST_HEAD_COMMIT, "utf8");
+  await fs.writeFile(stampFile, TEST_HEAD_COMMIT, "utf8");
   try {
     return await fn();
   } finally {
+    if (previousStamp !== null) await fs.writeFile(stampFile, previousStamp, "utf8");
+    else await fs.unlink(stampFile).catch(() => {});
     if (hadPrevious) {
       await fs.writeFile(TEST_ACTIVE_GRAPH_FILE, previous, "utf8");
     } else {
       await fs.unlink(TEST_ACTIVE_GRAPH_FILE).catch(() => {});
-      await fs.unlink(`${TEST_ACTIVE_GRAPH_FILE}.commit.stamp`).catch(() => {});
+      // The stamp is NOT unlinked here: it was already restored or removed
+      // above. Deleting it again would destroy a real stamp in the case where
+      // the graph was absent but the stamp was not.
       await fs.rmdir(path.dirname(TEST_ACTIVE_GRAPH_FILE)).catch(() => {});
       await fs.rmdir(path.dirname(path.dirname(TEST_ACTIVE_GRAPH_FILE))).catch(() => {});
     }
