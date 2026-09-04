@@ -328,7 +328,7 @@ async function t10_stateWriteFailureDoesNotFailRun() {
 
   assert.equal(result.ok, true, "T10: state write failure still returns green");
   assert.equal(result.refreshed, true, "T10: graph is still refreshed");
-  assert.deepEqual(opSlice(fs, ["copyFile", "rename", "writeFile"]).map((c) => c.op), ["copyFile", "rename", "writeFile"], "T10: state write happens after promotion");
+  assert.deepEqual(opSlice(fs, ["copyFile", "rename", "writeFile"]).map((c) => c.op), ["copyFile", "rename", "writeFile", "writeFile"], "T10: stamp and state writes both happen after promotion");
   assert.equal(fs.files.get(ACTIVE), graph(4), "T10: active graph is promoted despite state write failure");
   ok("T10: state-file write failure does not fail a correct promotion");
 }
@@ -374,6 +374,47 @@ async function t12_freshClonePromotionCreatesMissingActiveDirectory() {
   ok("T12: fresh clone promotion creates graphify-out/active before copying incoming graph");
 }
 
+async function t13_successfulPromotionStampsActiveGraphWithCommitOnly() {
+  const fs = fakeFs({
+    files: { [ACTIVE]: graph(2), [BUILT]: graph(5), [STATE]: state("old") },
+    mtimes: { [ACTIVE]: NOW - 5000 },
+  });
+  const h = spawnHarness({ status: 0, stdout: "ok", stderr: "" });
+  const STAMP = `${ACTIVE}.commit.stamp`;
+
+  const result = await refreshOnce(deps(fs, { spawnSync: h.spawnSync, fingerprint: "abc123:87:12" }));
+
+  assert.equal(result.ok, true, "T13: stamped promotion is green");
+  assert.equal(result.refreshed, true, "T13: stamped promotion reports refreshed");
+  const stamp = fs.calls.find((c) => c.op === "writeFile" && c.file === STAMP);
+  assert.ok(stamp, "T13: stamp file is written next to the active graph");
+  assert.equal(stamp.content, "abc123", "T13: stamp holds the commit only, not the dirty marker");
+  assert.equal(stamp.encoding, "utf8", "T13: stamp is written as utf8");
+  const order = opSlice(fs, ["rename", "writeFile"]).map((c) => c.op);
+  assert.deepEqual(order, ["rename", "writeFile", "writeFile"], "T13: promotion lands before the stamp, stamp before state");
+  ok("T13: promotion stamps the active graph with the bare commit after the rename");
+}
+
+async function t14_stampWriteFailureDoesNotFailPromotion() {
+  const fs = fakeFs({
+    files: { [ACTIVE]: graph(2), [BUILT]: graph(5), [STATE]: state("old") },
+    mtimes: { [ACTIVE]: NOW - 5000 },
+    fail: { writeFile: `${ACTIVE}.commit.stamp` },
+  });
+  const h = spawnHarness({ status: 0, stdout: "ok", stderr: "" });
+  const logs = [];
+
+  const result = await refreshOnce(deps(fs, { spawnSync: h.spawnSync, fingerprint: "abc123:0:0", log: (m) => logs.push(m) }));
+
+  assert.equal(result.ok, true, "T14: stamp write failure still returns green");
+  assert.equal(result.refreshed, true, "T14: graph is still refreshed");
+  assert.equal(fs.files.get(ACTIVE), graph(5), "T14: active graph is promoted despite stamp write failure");
+  const stateWrite = fs.calls.find((c) => c.op === "writeFile" && c.file === STATE);
+  assert.ok(stateWrite, "T14: state file is still written after the stamp failure");
+  assert.ok(logs.some((m) => /stamp write failed/i.test(m)), "T14: the stamp failure is logged");
+  ok("T14: stamp-file write failure is logged and does not fail a correct promotion");
+}
+
 async function main() {
   assert.ok(BUILT_GRAPH, "exported BUILT_GRAPH exists");
   assert.ok(ACTIVE_GRAPH, "exported ACTIVE_GRAPH exists");
@@ -394,6 +435,8 @@ async function main() {
     t10_stateWriteFailureDoesNotFailRun,
     t11_repoFingerprintIncludesPorcelainStatus,
     t12_freshClonePromotionCreatesMissingActiveDirectory,
+    t13_successfulPromotionStampsActiveGraphWithCommitOnly,
+    t14_stampWriteFailureDoesNotFailPromotion,
   ];
   for (const t of tests) {
     try {

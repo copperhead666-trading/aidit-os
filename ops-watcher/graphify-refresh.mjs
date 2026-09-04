@@ -31,6 +31,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { GRAPH_STAMP_SUFFIX } from "./venture-planner.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -175,6 +176,24 @@ export async function refreshOnce(deps = {}) {
   }
 
   const fingerprint = deps.fingerprint || repoFingerprint(deps);
+
+  // Promote first, stamp second — the order is the correctness argument.
+  // venture-planner.mjs refuses to propose whenever the stamp beside the
+  // active graph disagrees with `git rev-parse HEAD` (or is missing), so a
+  // stamp written BEFORE the rename above succeeded would certify a graph
+  // that is not there and wedge the planner harder than no stamp at all.
+  // The fingerprint carries "<commit>:<dirty-marker>"; the planner compares
+  // against plain HEAD, so only the commit goes in the stamp.
+  const stampFile = activeGraph + GRAPH_STAMP_SUFFIX;
+  const stampedCommit = String(fingerprint).split(":")[0];
+  try {
+    await _fs.writeFile(stampFile, stampedCommit, "utf8");
+  } catch (err) {
+    // Non-fatal on purpose: the graph is already promoted and correct. A
+    // missing stamp costs the planner one more refusal, never a wrong answer.
+    log(`graphify-refresh: stamp write failed (${err && err.message ? err.message : err}) — graph promoted without a commit stamp`);
+  }
+
   try {
     await _fs.writeFile(
       stateFile,
