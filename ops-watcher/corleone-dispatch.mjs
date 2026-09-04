@@ -53,7 +53,7 @@ const IS_WIN = process.platform === "win32";
 // spawning `codex` directly). Reads the .cmd and extracts the
 // `node_modules\...\codex.js` path it invokes (adapts to package-name changes
 // without hardcoding @openai/codex).
-function resolveCodexEntry() {
+export function resolveCodexEntry() {
   if (!IS_WIN) return null;
   const dirs = (process.env.PATH || "").split(";");
   for (const dir of dirs) {
@@ -71,6 +71,79 @@ function resolveCodexEntry() {
   return null;
 }
 
+export function buildCodexInvocation(prompt, deps = {}) {
+  const codexJs = deps.codexJs === undefined ? resolveCodexEntry() : deps.codexJs;
+  if (codexJs) {
+    return {
+      file: process.execPath,
+      args: [codexJs, "exec", "-s", "workspace-write", prompt],
+      options: {},
+    };
+  }
+  return {
+    file: "codex",
+    args: ["exec", "-s", "workspace-write", prompt],
+    options: {},
+  };
+}
+
+export async function dispatchCorleone(prompt, deps = {}) {
+  const _spawnSync = deps.spawnSync || spawnSync;
+  const _guardLaneStart = deps.guardLaneStart || guardLaneStart;
+  const _recordLaneOutcome = deps.recordLaneOutcome || recordLaneOutcome;
+  const _logLaneUsage = deps.logLaneUsage || logLaneUsage;
+  const _resolveCodexEntry = deps.resolveCodexEntry || resolveCodexEntry;
+  const now = deps.now || Date.now;
+  const timeoutMs = deps.timeoutMs || TIMEOUT_MS;
+
+  const guard = await _guardLaneStart("corleone");
+  if (guard.skip) {
+    const reason = guard.reason || "unknown";
+    const retryMinutes = Math.ceil(guard.remainingMs / 60000);
+    const diagnostic = `corleone-dispatch: lane skipped (${reason}), retry in ${retryMinutes}m — no spawn attempted\n`;
+    await _logLaneUsage({ lane: "corleone", promptLength: prompt.length, ok: false, exitCode: 3, durationMs: 0, extra: { skipped: true, reason } });
+    return { ok: false, skipped: true, reason, stdout: "", stderr: "", diagnostic, exitCode: 3 };
+  }
+
+  // `-s workspace-write` allows Codex to write files within the repo without
+  // interactive approval (confirmed via `codex exec --help`). Deliberately NOT
+  // using --dangerously-bypass-approvals-and-sandbox (documented as extremely
+  // dangerous, out of scope here).
+  const { file, args } = buildCodexInvocation(prompt, { codexJs: _resolveCodexEntry() });
+  const t0 = now();
+  const r = _spawnSync(file, args, {
+    cwd: REPO_ROOT,
+    windowsHide: true,
+    timeout: timeoutMs,
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  const durationMs = now() - t0;
+  const stdout = r.stdout || "";
+  const stderr = r.stderr || "";
+
+  if (r.signal === "SIGTERM" && r.status === null) {
+    // spawnSync sets status=null + signal="SIGTERM" on timeout kill.
+    const diagnostic = `corleone-dispatch: codex timed out after ${timeoutMs}ms\n`;
+    await _recordLaneOutcome("corleone", { ok: false, stdout, stderr, timedOut: true });
+    await _logLaneUsage({ lane: "corleone", promptLength: prompt.length, ok: false, timedOut: true, exitCode: 1, durationMs, stdout, stderr });
+    return { ok: false, stdout, stderr, timedOut: true, diagnostic, exitCode: 1 };
+  }
+  if (r.error) {
+    const err = r.error && r.error.message ? r.error.message : String(r.error);
+    const effectiveStderr = stderr || err;
+    const diagnostic = `corleone-dispatch: failed to spawn codex: ${err}\n`;
+    await _recordLaneOutcome("corleone", { ok: false, stdout, stderr: effectiveStderr });
+    await _logLaneUsage({ lane: "corleone", promptLength: prompt.length, ok: false, exitCode: 1, durationMs, stdout, stderr: effectiveStderr });
+    return { ok: false, stdout, stderr: effectiveStderr, timedOut: false, diagnostic, exitCode: 1 };
+  }
+
+  const exitCode = typeof r.status === "number" ? r.status : 1;
+  await _recordLaneOutcome("corleone", { ok: exitCode === 0, stdout, stderr });
+  await _logLaneUsage({ lane: "corleone", promptLength: prompt.length, ok: exitCode === 0, exitCode, durationMs, stdout, stderr });
+  return { ok: exitCode === 0, stdout, stderr, timedOut: false, exitCode };
+}
+
 async function main() {
   const prompt = process.argv[2];
   if (typeof prompt !== "string" || prompt.length === 0) {
@@ -78,64 +151,12 @@ async function main() {
     process.exit(2);
   }
 
-  // `-s workspace-write` allows Codex to write files within the repo without
-  // interactive approval (confirmed via `codex exec --help`). Deliberately NOT
-  // using --dangerously-bypass-approvals-and-sandbox (documented as extremely
-  // dangerous, out of scope here).
-  const guard = await guardLaneStart("corleone");
-  if (guard.skip) {
-    const reason = guard.reason || "unknown";
-    const retryMinutes = Math.ceil(guard.remainingMs / 60000);
-    process.stderr.write(`corleone-dispatch: lane skipped (${reason}), retry in ${retryMinutes}m — no spawn attempted\n`);
-    await logLaneUsage({ lane: "corleone", promptLength: prompt.length, ok: false, exitCode: 3, durationMs: 0, extra: { skipped: true, reason } });
-    process.exit(3);
-  }
-
-  const codexJs = resolveCodexEntry();
-  let file;
-  let args;
-  if (codexJs) {
-    // Windows npm-global: spawn node directly on codex.js, shell:false, so the
-    // free-form prompt is passed VERBATIM (no cmd.exe word-split / %-expansion).
-    file = process.execPath;
-    args = [codexJs, "exec", "-s", "workspace-write", prompt];
-  } else {
-    // Non-Windows, or Windows resolution failed: spawn `codex` directly.
-    // (shell:false is the safe default; on Windows this would ENOENT if the
-    // shim wasn't resolved above — same as the pre-fix behavior, never worse.)
-    file = "codex";
-    args = ["exec", "-s", "workspace-write", prompt];
-  }
-  const t0 = Date.now();
-  const r = spawnSync(file, args, {
-    cwd: REPO_ROOT,
-    windowsHide: true,
-    timeout: TIMEOUT_MS,
-    encoding: "utf8",
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  const durationMs = Date.now() - t0;
-
-  if (r.stdout) process.stdout.write(r.stdout);
-  if (r.stderr) process.stderr.write(r.stderr);
-
-  if (r.signal === "SIGTERM" && r.status === null) {
-    // spawnSync sets status=null + signal="SIGTERM" on timeout kill.
-    process.stderr.write(`corleone-dispatch: codex timed out after ${TIMEOUT_MS}ms\n`);
-    await recordLaneOutcome("corleone", { ok: false, stdout: r.stdout, stderr: r.stderr, timedOut: true });
-    await logLaneUsage({ lane: "corleone", promptLength: prompt.length, ok: false, timedOut: true, exitCode: 1, durationMs });
-    process.exit(1);
-  }
-  if (r.error) {
-    process.stderr.write(`corleone-dispatch: failed to spawn codex: ${r.error && r.error.message ? r.error.message : r.error}\n`);
-    await recordLaneOutcome("corleone", { ok: false, stdout: r.stdout, stderr: r.stderr });
-    await logLaneUsage({ lane: "corleone", promptLength: prompt.length, ok: false, exitCode: 1, durationMs });
-    process.exit(1);
-  }
-  const exitCode = typeof r.status === "number" ? r.status : 1;
-  await recordLaneOutcome("corleone", { ok: exitCode === 0, stdout: r.stdout, stderr: r.stderr });
-  await logLaneUsage({ lane: "corleone", promptLength: prompt.length, ok: exitCode === 0, exitCode, durationMs });
-  process.exit(exitCode);
+  const result = await dispatchCorleone(prompt);
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  if (result.diagnostic) process.stderr.write(result.diagnostic);
+  const resultExitCode = typeof result.exitCode === "number" ? result.exitCode : result.ok ? 0 : 1;
+  process.exit(resultExitCode);
 }
 
 const isEntry = (() => {
