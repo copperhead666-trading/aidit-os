@@ -87,17 +87,34 @@ const TEST_HEAD_COMMIT = (() => {
 })();
 
 // Writes a real graph beside a stamp naming a DIFFERENT commit — the stale case.
+//
+// RESTORES whatever was there before. An earlier version of this helper deleted
+// unconditionally and DESTROYED the machine's real 8,906-node graph, which then
+// had to be rebuilt (48s). A test fixture that can delete production state is a
+// worse bug than the one it is testing for.
 async function withStaleActiveGraph(graph, fn) {
+  const stampFile = `${TEST_ACTIVE_GRAPH_FILE}.commit.stamp`;
+  let prevGraph = null;
+  let prevStamp = null;
+  try { prevGraph = await fs.readFile(TEST_ACTIVE_GRAPH_FILE, "utf8"); } catch { prevGraph = null; }
+  try { prevStamp = await fs.readFile(stampFile, "utf8"); } catch { prevStamp = null; }
+
   await fs.mkdir(path.dirname(TEST_ACTIVE_GRAPH_FILE), { recursive: true });
   await fs.writeFile(TEST_ACTIVE_GRAPH_FILE, JSON.stringify(graph), "utf8");
-  await fs.writeFile(`${TEST_ACTIVE_GRAPH_FILE}.commit.stamp`, "0000000000000000000000000000000000000000", "utf8");
+  await fs.writeFile(stampFile, "0000000000000000000000000000000000000000", "utf8");
   try {
     return await fn();
   } finally {
-    await fs.unlink(TEST_ACTIVE_GRAPH_FILE).catch(() => {});
-    await fs.unlink(`${TEST_ACTIVE_GRAPH_FILE}.commit.stamp`).catch(() => {});
-    await fs.rmdir(path.dirname(TEST_ACTIVE_GRAPH_FILE)).catch(() => {});
-    await fs.rmdir(path.dirname(path.dirname(TEST_ACTIVE_GRAPH_FILE))).catch(() => {});
+    if (prevGraph !== null) await fs.writeFile(TEST_ACTIVE_GRAPH_FILE, prevGraph, "utf8");
+    else await fs.unlink(TEST_ACTIVE_GRAPH_FILE).catch(() => {});
+    if (prevStamp !== null) await fs.writeFile(stampFile, prevStamp, "utf8");
+    else await fs.unlink(stampFile).catch(() => {});
+    // Only try to remove the directories when we created them, i.e. nothing was
+    // there before. rmdir on a non-empty directory fails harmlessly anyway.
+    if (prevGraph === null && prevStamp === null) {
+      await fs.rmdir(path.dirname(TEST_ACTIVE_GRAPH_FILE)).catch(() => {});
+      await fs.rmdir(path.dirname(path.dirname(TEST_ACTIVE_GRAPH_FILE))).catch(() => {});
+    }
   }
 }
 
