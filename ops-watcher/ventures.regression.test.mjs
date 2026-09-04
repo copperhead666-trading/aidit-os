@@ -66,7 +66,24 @@ function registry(ventures) {
   return JSON.stringify({ schema_version: "test", ventures });
 }
 
-async function t1_realRegistryHasTwoActiveVenturesWithUnstatedMetrics() {
+// The owner stated both metrics on 2026-09-04 (KOL-78), so this case was
+// UPDATED, not deleted: it still guards the same rule, which was never "metrik
+// must be null" but "metrik must never hold a number an agent invented". Now
+// that the owner has spoken, the honest assertion is that each venture carries
+// the metric HE stated, with the source he pointed at. Deleting the case would
+// have removed the only check that a future agent cannot quietly rewrite these.
+const OWNER_STATED_METRICS = {
+  "sjs-superapps": {
+    metrik: "Checked items in control/tasks/feature-backlog.md, out of 136",
+    sumber: "control/tasks/feature-backlog.md",
+  },
+  "caveman-trading-os": {
+    metrik: "Phase-1 workstreams meeting their Definition of Done, out of 9",
+    sumber: "docs/planning/phase-1-workstreams.md",
+  },
+};
+
+async function t1_realRegistryHasTwoActiveVenturesWithOwnerStatedMetrics() {
   const deps = await realDeps();
   const ventures = await readVentures(deps);
   const active = await activeVentures(deps);
@@ -74,10 +91,25 @@ async function t1_realRegistryHasTwoActiveVenturesWithUnstatedMetrics() {
   assert.equal(ventures.length, 2, "T1: real registry has exactly two ventures");
   assert.equal(active.length, 2, "T1: both real ventures are active");
   for (const venture of ventures) {
-    assert.equal(venture.metrik, null, `T1: ${venture.id} keeps metrik null until the owner states one`);
-    assert.equal(hasStatedMetric(venture), false, `T1: ${venture.id} null metrik is not a stated metric`);
+    const expected = OWNER_STATED_METRICS[venture.id];
+    assert.ok(expected, `T1: ${venture.id} is a venture this case knows the owner-stated metric for`);
+    assert.equal(venture.metrik, expected.metrik, `T1: ${venture.id} carries the metric the owner stated, word for word`);
+    assert.equal(hasStatedMetric(venture), true, `T1: ${venture.id} now counts as having a stated metric`);
+    // The marker the registry carried while the metric was unstated must be gone.
+    // Leaving it behind would let the cockpit and the planner disagree about
+    // whether the owner has answered.
+    assert.ok(
+      !String(venture.metrik_status || "").includes("BELUM DINYATAKAN PEMILIK"),
+      `T1: ${venture.id} no longer carries the BELUM DINYATAKAN PEMILIK marker`,
+    );
+    // A metric without the file it is counted from is a number with no way to
+    // check it — the same failure mode tujuan_sumber exists to prevent.
+    assert.ok(
+      String(venture.metrik_sumber || "").includes(expected.sumber),
+      `T1: ${venture.id} metric names the file it is counted from`,
+    );
   }
-  ok("T1: real registry has two active ventures and both keep metrics unstated");
+  ok("T1: real registry has two active ventures, both carrying the owner-stated metric and its source");
 }
 
 async function t2_realRegistryGoalsAlwaysCarrySources() {
@@ -146,7 +178,7 @@ async function t7_hasStatedMetricOnlyTrustsNonBlankMetrik() {
 
 async function main() {
   const tests = [
-    t1_realRegistryHasTwoActiveVenturesWithUnstatedMetrics,
+    t1_realRegistryHasTwoActiveVenturesWithOwnerStatedMetrics,
     t2_realRegistryGoalsAlwaysCarrySources,
     t3_badRegistryInputsDegradeToEmptyArrays,
     t4_inactiveVenturesAreExcludedButStillAddressable,
