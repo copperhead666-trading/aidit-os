@@ -119,3 +119,10 @@ hatta/.harness-evidence.json
 # Cockpit screenshots and detector cache — regenerable output
 .shots/
 .impeccable/hook.cache.json
+
+# More zero-byte artifacts from malformed shell commands (2026-09-04, Lenovo).
+# Same class as the block above; listed so they cannot be committed by accident.
+Date.now()
+JSON.stringify*
+a.name+*
+skip*)
