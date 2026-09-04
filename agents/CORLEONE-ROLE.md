@@ -100,3 +100,17 @@ delegated to the lane that wrote the code.
 Codex/OpenAI quota, entirely separate from HATTA's Ollama Cloud pool, SJAHRIR's
 Kimi pool, and the Anthropic quota AHMAD and SOEKARNO draw on. Orchestration must
 never bottleneck on this lane's capacity, or vice versa.
+
+## A packet-authoring trap, measured 2026-09-04
+
+**Never put a double quote in a dispatch packet.** PowerShell hands the prompt to
+node as one argv element only while the quoting stays balanced. A 4,565-character
+packet containing four " characters arrived SPLIT: argv[1] was truncated to
+2,353 characters, cut exactly at an embedded quote, and the remainder became
+separate arguments. The dispatcher then rejected it with
+`unknown argument execution` — a word from the middle of the prompt.
+
+The lane never sees the packet you wrote, and the failure names a token rather
+than the cause. Use single quotes throughout. Two earlier dispatches were lost to
+this before it was diagnosed: one truncated silently mid-sentence and the lane
+acted on the half it received.
