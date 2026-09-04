@@ -24,7 +24,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { logLaneUsage, readLaneHealth } from "./lane-usage.mjs";
+import { logLaneUsage, readLaneHealth, stdioBytes, normalizeCliDetail, CLI_FIELD_MAX } from "./lane-usage.mjs";
 
 let passed = 0;
 let failed = 0;
@@ -314,6 +314,137 @@ async function testHealthSkipsCorruptLines() {
 }
 
 
+// =====================================================================
+// D1-D6: the per-run detail fields added 2026-09-04.
+//
+// These exist because seven scalars could say a lane failed and never why.
+// HATTA's defect was only ever found from its own evidence file; SJAHRIR has
+// the same disease and no such file. Each case below guards one property that,
+// if it silently regressed, would put us back to guessing.
+// =====================================================================
+
+async function testPerRunDetailRecorded() {
+  const name = "D1 turns, stdout/stderr byte counts and cli detail are recorded";
+  const file = await makeTempFile();
+  try {
+    await logLaneUsage({
+      lane: "corleone",
+      promptLength: 10,
+      ok: true,
+      exitCode: 0,
+      durationMs: 1234,
+      turns: 6,
+      stdout: "hello",
+      stderr: "warn!",
+      cli: { model: "gpt-5.5", reasoningEffort: "low", tokensUsed: 4210 },
+      file,
+    });
+    const obj = JSON.parse((await fs.readFile(file, "utf8")).trim());
+    assert.equal(obj.turns, 6, "turns recorded");
+    assert.equal(obj.stdoutBytes, 5, "stdout byte count recorded");
+    assert.equal(obj.stderrBytes, 5, "stderr byte count recorded");
+    assert.deepEqual(obj.cli, { model: "gpt-5.5", reasoningEffort: "low", tokensUsed: 4210 }, "cli detail recorded");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function testTheOriginalSevenFieldsAreUnchanged() {
+  const name = "D2 the original seven fields keep their exact names and shapes";
+  const file = await makeTempFile();
+  try {
+    await logLaneUsage({ lane: "sjahrir", promptLength: 7, ok: false, timedOut: true, exitCode: 1, durationMs: 480000, turns: 2, file });
+    const obj = JSON.parse((await fs.readFile(file, "utf8")).trim());
+    // lane-usage-report.mjs and lane-guard.mjs read exactly these. If any name
+    // or type moves, historical records stop being comparable with new ones and
+    // every "is this lane worth waiting for" judgement silently changes.
+    assert.equal(typeof obj.ts, "string");
+    assert.equal(obj.lane, "sjahrir");
+    assert.equal(obj.promptLength, 7);
+    assert.equal(obj.ok, false);
+    assert.equal(obj.timedOut, true);
+    assert.equal(obj.exitCode, 1);
+    assert.equal(obj.durationMs, 480000);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function testDetailDefaultsToNullNotMissing() {
+  const name = "D3 a lane that cannot report detail writes null, never a missing key";
+  const file = await makeTempFile();
+  try {
+    await logLaneUsage({ lane: "hatta", ok: true, file });
+    const obj = JSON.parse((await fs.readFile(file, "utf8")).trim());
+    // Present-as-null, not absent: an old record and a new one must differ by
+    // PRESENCE, never by meaning, or a reader cannot tell "not reported" from
+    // "reported as zero".
+    for (const key of ["turns", "stdoutBytes", "stderrBytes", "cli"]) {
+      assert.ok(key in obj, `${key} is present`);
+      assert.equal(obj[key], null, `${key} is null`);
+    }
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function testStdioBytesCountsBytesNotCharacters() {
+  const name = "D4 stdio sizes are BYTES, not characters";
+  try {
+    // The thing being measured is what crossed the wire. For a multi-byte file
+    // these two numbers differ by exactly the amount that matters.
+    const multi = "héllo→";
+    assert.notEqual(multi.length, Buffer.byteLength(multi, "utf8"), "fixture really is multi-byte");
+    assert.equal(stdioBytes(multi), Buffer.byteLength(multi, "utf8"));
+    assert.equal(stdioBytes(Buffer.from("abc")), 3, "a Buffer is measured too");
+    assert.equal(stdioBytes(null), null);
+    assert.equal(stdioBytes(undefined), null);
+    assert.equal(stdioBytes(12345), null, "a non-stream value is null, not coerced");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function testCliDetailIsCappedAndFlat() {
+  const name = "D5 cli detail is capped and drops nested blobs";
+  try {
+    const long = "x".repeat(CLI_FIELD_MAX + 200);
+    const out = normalizeCliDetail({
+      model: "kimi",
+      turns: 3,
+      done: true,
+      transcript: long,
+      nested: { a: 1 },
+      list: [1, 2, 3],
+      nothing: null,
+    });
+    assert.equal(out.model, "kimi");
+    assert.equal(out.turns, 3);
+    assert.equal(out.done, true);
+    assert.ok(out.transcript.length < long.length, "an oversized string is truncated");
+    assert.ok(out.transcript.endsWith("…[truncated]"), "truncation is marked, not silent");
+    // A nested blob here is how an append-only log quietly becomes unreadable.
+    assert.equal("nested" in out, false, "objects are dropped");
+    assert.equal("list" in out, false, "arrays are dropped");
+    assert.equal("nothing" in out, false, "nulls are dropped");
+    assert.equal(normalizeCliDetail(null), null);
+    assert.equal(normalizeCliDetail([1, 2]), null, "an array is not cli detail");
+    assert.equal(normalizeCliDetail({}), null, "an empty object is null, not {}");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function testExplicitByteCountsWinOverStreams() {
+  const name = "D6 explicit byte counts are used when the caller has no text";
+  const file = await makeTempFile();
+  try {
+    // A dispatcher that streamed its child's output may know the size without
+    // holding the text. It must not be forced to keep megabytes in memory just
+    // to report a number.
+    await logLaneUsage({ lane: "corleone", ok: true, stdoutBytes: 900, stderrBytes: 0, file });
+    const obj = JSON.parse((await fs.readFile(file, "utf8")).trim());
+    assert.equal(obj.stdoutBytes, 900);
+    assert.equal(obj.stderrBytes, 0, "zero is a real measurement, not a missing one");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
 async function main() {
   console.log("# ops-watcher lane-usage regression tests");
   await testAppendsValidJsonLine();
@@ -329,6 +460,12 @@ async function main() {
   await testHealthLimit();
   await testHealthMissingFile();
   await testHealthSkipsCorruptLines();
+  await testPerRunDetailRecorded();
+  await testTheOriginalSevenFieldsAreUnchanged();
+  await testDetailDefaultsToNullNotMissing();
+  await testStdioBytesCountsBytesNotCharacters();
+  await testCliDetailIsCappedAndFlat();
+  await testExplicitByteCountsWinOverStreams();
   console.log("");
   console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
   if (failed > 0) { for (const f of failures) console.log(`  FAILED: ${f}`); process.exit(1); }

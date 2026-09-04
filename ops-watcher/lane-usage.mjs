@@ -30,6 +30,86 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // __dirname, not process.cwd()).
 const DEFAULT_FILE = path.join(__dirname, "lane-usage.jsonl");
 
+// ---- Per-run detail (added 2026-09-04) ----
+//
+// WHY THIS EXISTS. Until now this log held seven scalars per run: ts, lane,
+// promptLength, ok, timedOut, exitCode, durationMs. That is enough to say a lane
+// failed and nothing about WHY.
+//
+// The proof is on the record. HATTA's real defect — re-uploading whole file
+// bodies on every iteration until it timed itself out — was found from
+// hatta/.harness-evidence.json, which says "read_file heartbeat.mjs -> 32,071
+// chars". No other lane writes such a file. The same disease then showed up in
+// SJAHRIR (three 480s timeouts, all on ~450-line file pairs) and was caught only
+// because a human noticed the pattern across three separate reports.
+//
+// Invisible is not the same as absent. These fields make the next one findable
+// from the log instead of from a hunch.
+//
+// The seven original fields are UNCHANGED, in shape and in name.
+// ops-watcher/lane-usage-report.mjs and ops-watcher/lane-guard.mjs read them,
+// and every historical record must stay comparable with every new one — the
+// decision about whether a lane is worth waiting for rests on that history.
+// Everything below is additive and defaults to null, so an old record and a new
+// record differ by presence, never by meaning.
+
+/** Coerce to a finite non-negative integer, or null. Never throws. */
+function nonNegativeInt(value) {
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : null;
+}
+
+/**
+ * Byte length of a stdio stream. Bytes, NOT characters: the thing being
+ * measured is what crossed the wire, and a multi-byte file makes those two
+ * numbers differ by exactly the amount that matters. Never throws.
+ *
+ * @param {*} value - a string, Buffer, or anything else.
+ * @returns {number|null}
+ */
+export function stdioBytes(value) {
+  try {
+    if (value == null) return null;
+    if (Buffer.isBuffer(value)) return value.length;
+    if (typeof value === "string") return Buffer.byteLength(value, "utf8");
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Normalise whatever structured detail a vendor CLI reported into a flat,
+ * JSON-safe object. Each CLI reports something different — codex, kimi and
+ * claude do not agree on a schema — so this stores what was given rather than
+ * forcing a shape none of them emit.
+ *
+ * Values are capped: this log is append-only plumbing, and a CLI that returns
+ * its entire transcript in a field must not turn the usage log into a second
+ * copy of the conversation.
+ *
+ * Never throws.
+ */
+export const CLI_FIELD_MAX = 500;
+export function normalizeCliDetail(detail) {
+  try {
+    if (!detail || typeof detail !== "object" || Array.isArray(detail)) return null;
+    const out = {};
+    for (const [key, raw] of Object.entries(detail)) {
+      if (raw == null) continue;
+      if (typeof raw === "number" || typeof raw === "boolean") {
+        out[key] = raw;
+      } else if (typeof raw === "string") {
+        out[key] = raw.length > CLI_FIELD_MAX ? `${raw.slice(0, CLI_FIELD_MAX)}…[truncated]` : raw;
+      }
+      // Objects and arrays are deliberately dropped rather than serialised: a
+      // nested blob here is how a log file quietly becomes unreadable.
+    }
+    return Object.keys(out).length ? out : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Append ONE JSON line (NDJSON) to the lane-usage log. Best-effort, never throws.
  *
@@ -40,11 +120,41 @@ const DEFAULT_FILE = path.join(__dirname, "lane-usage.jsonl");
  * @param {boolean} [opts.timedOut]   - true if the wrapper timeout fired.
  * @param {number|null} [opts.exitCode] - numeric exit code, or null.
  * @param {number|null} [opts.durationMs] - wall-clock duration in ms, or null.
+ * @param {number|null} [opts.turns]  - iterations/turns the run took, when the
+ *                                      CLI or harness reports them. This is the
+ *                                      field that separates "the lane is slow"
+ *                                      from "the lane spent four turns hunting
+ *                                      for a file it was never given".
+ * @param {*} [opts.stdout]           - raw stdout; stored as a BYTE COUNT only.
+ * @param {*} [opts.stderr]           - raw stderr; stored as a BYTE COUNT only.
+ * @param {number|null} [opts.stdoutBytes] - explicit override when the caller
+ *                                      already knows the size and does not hold
+ *                                      the text.
+ * @param {number|null} [opts.stderrBytes] - as above.
+ * @param {object|null} [opts.cli]    - structured fields the vendor CLI reported
+ *                                      (model, reasoning effort, token counts,
+ *                                      session id…). Scalars only; see
+ *                                      normalizeCliDetail.
  * @param {*} [opts.extra]            - any optional extra metadata.
  * @param {string} [opts.file]        - override target file path (for tests).
  * @returns {Promise<void>}
  */
-export async function logLaneUsage({ lane, promptLength, ok, timedOut, exitCode, durationMs, extra, file } = {}) {
+export async function logLaneUsage({
+  lane,
+  promptLength,
+  ok,
+  timedOut,
+  exitCode,
+  durationMs,
+  turns,
+  stdout,
+  stderr,
+  stdoutBytes,
+  stderrBytes,
+  cli,
+  extra,
+  file,
+} = {}) {
   const target = file || DEFAULT_FILE;
   const record = {
     ts: new Date().toISOString(),
@@ -57,6 +167,11 @@ export async function logLaneUsage({ lane, promptLength, ok, timedOut, exitCode,
     timedOut: timedOut === true,
     exitCode: typeof exitCode === "number" ? exitCode : null,
     durationMs: typeof durationMs === "number" ? durationMs : null,
+    // ---- per-run detail; null when the lane cannot report it ----
+    turns: nonNegativeInt(turns),
+    stdoutBytes: nonNegativeInt(stdoutBytes) ?? stdioBytes(stdout),
+    stderrBytes: nonNegativeInt(stderrBytes) ?? stdioBytes(stderr),
+    cli: normalizeCliDetail(cli),
   };
   if (extra !== undefined) record.extra = extra;
   try {
