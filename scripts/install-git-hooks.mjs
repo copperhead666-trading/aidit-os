@@ -40,9 +40,19 @@ const guard = path.join(REPO_ROOT, "scripts", "guard-staged-artifacts.mjs");
 
 // A POSIX sh wrapper: git runs hooks through sh on Windows too (Git for Windows
 // ships one), so this is portable without a .cmd variant.
+// The guard is skipped when the script is not present. Hooks live in the SHARED
+// .git, so this one file also runs for every worktree — including worktrees
+// sitting on a commit from before the guard existed, where `node <missing file>`
+// would abort the commit with MODULE_NOT_FOUND. A hygiene guard must never be
+// the reason an unrelated commit cannot be made; the regression test still holds
+// the line wherever the script does exist.
+const rel = path.relative(REPO_ROOT, guard).split(path.sep).join("/");
 const body = `#!/bin/sh
 # Installed by scripts/install-git-hooks.mjs — edit that, not this.
-exec node ${JSON.stringify(path.relative(REPO_ROOT, guard).split(path.sep).join("/"))} "$@"
+if [ -f ${JSON.stringify(rel)} ]; then
+  exec node ${JSON.stringify(rel)} "$@"
+fi
+exit 0
 `;
 
 fs.writeFileSync(target, body, "utf8");
