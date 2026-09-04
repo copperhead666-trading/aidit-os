@@ -27,7 +27,19 @@ import {
   CANONICAL_COMPANY_ID,
 } from "./paperclip-write-client.mjs";
 
-export const LEDGER_WRITER_SOURCE = "ledger-writer";
+// MUST be a member of ledger-schema.mjs's SOURCES allowlist:
+//   cockpit, telegram, runner, heartbeat, migration, manual
+// It was "ledger-writer", which is not in that set, so ledger.mjs rejected every
+// single event with `unknown source "ledger-writer"` — and because appendMany
+// REPORTS that as { ok:false } rather than throwing, this module counted the
+// rejected batch as appended. A live run claimed 53 events written while
+// state/ledger.jsonl stayed at 329 lines.
+//
+// "heartbeat" is the honest value: this sweep runs as a heartbeat step, and the
+// distinction the SOURCES set actually cares about is live observation versus
+// "migration", meaning reconstructed from the pre-cutover export. These facts
+// are read from the live board, so they are not migration.
+export const LEDGER_WRITER_SOURCE = "heartbeat";
 export const TELEGRAM_SENT_MARKER = "[TELEGRAM SENT]";
 
 const DECISION_MARKERS = Object.freeze([
@@ -443,7 +455,22 @@ export async function runLedgerWriterOnce(deps = {}) {
 
   let ledgerEvents = [];
   try {
-    ledgerEvents = await readAll(ledgerDeps);
+    // ledger.mjs's readAll returns a RESULT OBJECT — { ok, events, corrupt,
+    // corruptLines, reason } — not a bare array. Everything downstream here
+    // iterates events, and the tests stubbed readAll with a plain array, so the
+    // suite was green while the real call threw
+    // "(events || []) is not iterable" on the first live run. Accept both
+    // shapes: the object from the real module, and a bare array from a stub.
+    const read = await readAll(ledgerDeps);
+    ledgerEvents = Array.isArray(read) ? read : (read?.events ?? []);
+    // A ledger that could not be read is NOT an empty ledger. Treating a failed
+    // read as "no events" would make every derived event look missing and
+    // append the entire board's history a second time.
+    if (!Array.isArray(read) && read && read.ok === false) {
+      summary.errors.push(`ledger read not ok: ${read.reason || "unknown reason"}`);
+      summary.ok = false;
+      return summary;
+    }
   } catch (err) {
     summary.errors.push(`ledger read failed: ${err && err.message ? err.message : String(err)}`);
     summary.ok = false;
@@ -514,7 +541,32 @@ export async function runLedgerWriterOnce(deps = {}) {
 
   try {
     const appended = await appendMany(missing, ledgerDeps);
-    summary.appended = Array.isArray(appended) ? appended.length : missing.length;
+    // appendMany does NOT throw on a rejected batch. It returns
+    // { ok, seq, seqs, written, reason, index, broke } and reports validation
+    // failures as ok:false. Counting missing.length as "appended" whenever the
+    // return was not an array made this module claim 53 writes while the file
+    // stayed at 329 lines — a green summary over a log that never changed,
+    // which is worse than an error because nobody goes looking.
+    //
+    // Trust `written`/`seqs` when they are there, and treat ok:false as a
+    // FAILURE that is reported with the writer's own reason.
+    if (Array.isArray(appended)) {
+      summary.appended = appended.length;
+    } else if (appended && typeof appended === "object") {
+      summary.appended = Number.isFinite(appended.written)
+        ? appended.written
+        : (Array.isArray(appended.seqs) ? appended.seqs.length : 0);
+      if (appended.ok === false) {
+        summary.errors.push(
+          `ledger append rejected: ${appended.reason || "unknown reason"}` +
+            (Number.isFinite(appended.index) ? ` (at event index ${appended.index})` : ""),
+        );
+        summary.ok = false;
+        return summary;
+      }
+    } else {
+      summary.appended = 0;
+    }
   } catch (err) {
     summary.errors.push(`ledger append failed: ${err && err.message ? err.message : String(err)}`);
     summary.ok = false;
