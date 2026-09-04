@@ -6,6 +6,10 @@
 // bare CLI works fine; a CJS shim that dynamically import()s the real daemon
 // sidesteps this). Runs the REAL heartbeat-daemon.mjs unchanged via a dynamic
 // import — no logic duplicated or reimplemented here.
+const loadEnvLocal = require("./load-env-local.cjs");
+const envLoad = loadEnvLocal();
+console.log(`pm2-launch-heartbeat: loaded ${envLoad.loaded.length} .env.local keys: ${envLoad.loaded.length ? envLoad.loaded.join(", ") : "(none)"}`);
+
 import("./heartbeat-daemon.mjs").catch((err) => {
   console.error("pm2-launch-heartbeat: failed to import real daemon:", err && err.stack || err);
   process.exit(1);

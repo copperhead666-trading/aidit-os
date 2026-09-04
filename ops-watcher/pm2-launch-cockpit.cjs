@@ -22,29 +22,16 @@
 // the PM2 app `env` block or the machine — wins over the file).
 const fs = require("node:fs");
 const path = require("node:path");
+const loadEnvLocal = require("./load-env-local.cjs");
 
 const ROOT = path.resolve(__dirname, "..");
 const COCKPIT_DIR = path.join(ROOT, "cockpit");
 const NEXT_BIN = path.join(COCKPIT_DIR, "node_modules", "next", "dist", "bin", "next");
-const ENV_FILE = path.join(ROOT, ".env.local");
+const envLoad = loadEnvLocal();
+console.log(`pm2-launch-cockpit: loaded ${envLoad.loaded.length} .env.local keys: ${envLoad.loaded.length ? envLoad.loaded.join(", ") : "(none)"}`);
 
 // Missing on machines where the owner never created it / in fresh checkouts —
 // that is not this shim's problem to fix, so load only if present.
-if (fs.existsSync(ENV_FILE)) {
-  const lines = fs.readFileSync(ENV_FILE, "utf8").split(/\r?\n/);
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const eq = trimmed.indexOf("=");
-    if (eq === -1) continue;
-    const key = trimmed.slice(0, eq).trim();
-    let value = trimmed.slice(eq + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-    if (key && !(key in process.env)) process.env[key] = value;
-  }
-}
 
 // Fail loudly by name rather than letting PM2 report a generic spawn failure
 // or the cockpit silently come up without its build output.

@@ -19,8 +19,12 @@
 //   node ops-watcher/ahmad-notify.mjs "<message text>"
 
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { sendMessage } from "./telegram-client.mjs";
+
+const require = createRequire(import.meta.url);
+const loadEnvLocal = require("./load-env-local.cjs");
 
 // Dependency-injected for offline testing (ahmad-notify.regression.test.mjs).
 export async function runNotify(text, { sendMessageFn = sendMessage } = {}) {
@@ -39,6 +43,7 @@ async function main() {
     console.error('usage: node ops-watcher/ahmad-notify.mjs "<message text>"');
     process.exit(2);
   }
+  loadEnvLocal();
   const r = await runNotify(text);
   if (r.sent) {
     console.log(`ahmad-notify: sent message_id=${r.result && r.result.message_id}`);
