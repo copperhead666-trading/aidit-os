@@ -1554,10 +1554,93 @@ function compactGraphAnchorText(value, max = 96) {
   return v.length > max ? `${v.slice(0, max - 1)}...` : v;
 }
 
-function graphNodeLocation(node) {
-  return compactGraphAnchorText(
-    node?.source_location || node?.location || node?.span || node?.source_file || node?.file || "",
-  );
+// A LOCATION, OR NOTHING. The fallback chain used to end in node.source_file and
+// node.file, so a node carrying no location at all emitted
+// `someLabel @ ops-watcher/foo.mjs` — a file path wearing a location's clothes.
+// The lane reads that as "here is where to look" and it says nothing of the
+// kind. No location is honest; a fake one is not.
+export function graphNodeLocation(node) {
+  return compactGraphAnchorText(node?.source_location || node?.location || node?.span || "");
+}
+
+// First line number in a location string, or null. Handles both shapes the graph
+// actually produces: a bare "L46" and a "path/to/file.mjs:17". Untrusted input —
+// anything unparseable is null, never a guess.
+export function graphAnchorStartLine(location) {
+  const text = String(location || "");
+  const bare = text.match(/(?:^|[^0-9])L(\d+)/i);
+  if (bare) return Number.parseInt(bare[1], 10);
+  const colon = text.match(/:(\d+)/);
+  if (colon) return Number.parseInt(colon[1], 10);
+  return null;
+}
+
+// AN ANCHOR NEEDS AN END, NOT JUST A POINT.
+//
+// A lane handed `L1641` still has to guess how far the symbol runs, so it reads
+// a window it picks itself — which is the hunting this feature exists to remove.
+// The end is derivable from the graph alone, with no file read: within one file,
+// a symbol ends where the next one begins.
+//
+// Given the sorted distinct start lines of a file, returns "L46-L57" for a
+// symbol at 46 whose successor starts at 58. The LAST symbol in a file has no
+// successor and keeps its bare start — inventing an end for it would be the
+// same dishonesty as the file-path fallback above.
+export function graphAnchorRange(location, sortedStarts) {
+  const start = graphAnchorStartLine(location);
+  if (start === null) return compactGraphAnchorText(location);
+  const starts = Array.isArray(sortedStarts) ? sortedStarts : [];
+  const next = starts.find((n) => n > start);
+  if (!Number.isFinite(next)) return `L${start}`;
+  const end = next - 1;
+  return end > start ? `L${start}-L${end}` : `L${start}`;
+}
+
+// HOW RELEVANT IS THIS ANCHOR TO THE WORK ACTUALLY BEING ASKED FOR?
+//
+// Selection used to be `a.priority - b.priority || localeCompare`, and nearly
+// every node shares a priority, so localeCompare decided. A plan whose title,
+// objective and steps ALL named buildExecutionPrompt got __dirname,
+// ACTIVE_GRAPH_FILE, addIssueLabelReal, APPROVED_MARKER and asMs — five of six
+// clustered at the head of a 2,700-line file, purely for beginning with an
+// underscore or the letter A.
+//
+// Anchors that are merely CORRECT still leave the lane near the work rather than
+// on it. Scoring is deterministic, case-insensitive, and deliberately weighted
+// so a real name match cannot be outranked by an incidental word.
+export const ANCHOR_RELEVANCE_EXACT = 100;
+export const ANCHOR_RELEVANCE_SUBSTRING = 60;
+export const ANCHOR_RELEVANCE_ALL_PARTS = 40;
+export const ANCHOR_RELEVANCE_PER_PART = 8;
+
+/** camelCase / snake_case / kebab-case -> lowercase parts. */
+function anchorLabelParts(label) {
+  return String(label || "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .split(/[^A-Za-z0-9]+/)
+    .map((p) => p.toLowerCase())
+    .filter((p) => p.length > 2);
+}
+
+export function scoreAnchorRelevance(label, planText) {
+  const name = String(label || "").trim();
+  const hay = String(planText || "").toLowerCase();
+  if (!name || !hay) return 0;
+  const lower = name.toLowerCase();
+
+  // An exact mention wins outright. `buildExecutionPrompt()` in the plan still
+  // counts: the trailing parens are stripped by the word-boundary check below.
+  const exact = new RegExp(`(^|[^a-z0-9_])${lower.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([^a-z0-9_]|$)`);
+  if (exact.test(hay)) return ANCHOR_RELEVANCE_EXACT;
+  if (hay.includes(lower)) return ANCHOR_RELEVANCE_SUBSTRING;
+
+  // "build execution prompt" should still find buildExecutionPrompt.
+  const parts = anchorLabelParts(name);
+  if (!parts.length) return 0;
+  const hits = parts.filter((p) => hay.includes(p)).length;
+  if (hits === 0) return 0;
+  if (hits === parts.length) return ANCHOR_RELEVANCE_ALL_PARTS;
+  return hits * ANCHOR_RELEVANCE_PER_PART;
 }
 
 function graphNodeMatchesFile(node, file) {
@@ -1683,19 +1766,78 @@ function activeGraphAnchorsForFiles(files, deps = {}) {
     }
   }
 
-  const result = new Map();
+  const planText = String(deps.planText || "");
+
+  // Every distinct start line per file, ascending. This is what lets an anchor
+  // carry an END: within one file a symbol runs until the next one begins, and
+  // that is derivable from the graph alone with no file read.
+  const startsByFile = new Map();
+  for (const file of targets) {
+    const set = new Set();
+    for (const { node } of anchors.get(file)) {
+      const n = graphAnchorStartLine(graphNodeLocation(node));
+      if (Number.isFinite(n)) set.add(n);
+    }
+    startsByFile.set(file, [...set].sort((a, b) => a - b));
+  }
+
+  const formatWithRange = (node, file) => {
+    const label = compactGraphAnchorText(node?.label || node?.name || node?.title || node?.id);
+    if (!label) return "";
+    const kind = compactGraphAnchorText(node?.type || node?.kind || node?.category, 32);
+    const loc = graphAnchorRange(graphNodeLocation(node), startsByFile.get(file) || []);
+    return [label, kind ? ` [${kind}]` : "", loc ? ` @ ${loc}` : ""].join("");
+  };
+
+  // Per-file selection, ranked by RELEVANCE first.
+  //
+  // Precedence: relevance desc, then the existing priority, then localeCompare
+  // LAST. That final tiebreak is not optional — an existing test asserts the
+  // same inputs produce a byte-identical string, and localeCompare is what keeps
+  // equally-scored candidates in a stable order.
+  const perFile = new Map();
   for (const file of targets) {
     const seen = new Set();
-    const formatted = anchors.get(file)
-      .sort((a, b) => a.priority - b.priority || formatGraphAnchor(a.node).localeCompare(formatGraphAnchor(b.node)))
-      .map(({ node }) => formatGraphAnchor(node))
-      .filter((a) => {
-        if (!a || seen.has(a)) return false;
-        seen.add(a);
+    const ranked = anchors.get(file)
+      .map((entry) => ({
+        ...entry,
+        text: formatWithRange(entry.node, file),
+        score: scoreAnchorRelevance(entry.node?.label || entry.node?.name || entry.node?.title || entry.node?.id, planText),
+      }))
+      .filter((e) => {
+        if (!e.text || seen.has(e.text)) return false;
+        seen.add(e.text);
         return true;
-      });
-    const nonBare = formatted.filter((a) => normalizeGraphRepoPath(a.split(" @ ")[0].replace(/\s+\[[^\]]+\]$/, "")) !== file);
-    result.set(file, (nonBare.length ? nonBare : formatted).slice(0, GRAPH_ANCHOR_LIMIT_PER_FILE));
+      })
+      .sort((a, b) => b.score - a.score || a.priority - b.priority || a.text.localeCompare(b.text));
+
+    const nonBare = ranked.filter((e) => normalizeGraphRepoPath(e.text.split(" @ ")[0].replace(/\s+\[[^\]]+\]$/, "")) !== file);
+    perFile.set(file, (nonBare.length ? nonBare : ranked).slice(0, GRAPH_ANCHOR_LIMIT_PER_FILE));
+  }
+
+  // OVERALL CAP, ENFORCED. GRAPH_ANCHOR_LIMIT_TOTAL was declared with a comment
+  // explaining why it matters and referenced NOWHERE, so 20 files produced 120
+  // anchors — five times the stated cap. The whole point of anchors is a SMALLER
+  // packet; a version that makes it bigger has failed even with perfect anchors.
+  //
+  // When the budget bites it is spent on the HIGHEST-RANKED anchors across all
+  // files, not on whichever files happen to sort first — otherwise the cap
+  // silently becomes "the first few files get everything".
+  const everything = [];
+  for (const file of targets) {
+    for (const entry of perFile.get(file)) everything.push({ file, ...entry });
+  }
+  const keep = new Set(
+    everything
+      .slice()
+      .sort((a, b) => b.score - a.score || a.priority - b.priority || a.text.localeCompare(b.text))
+      .slice(0, GRAPH_ANCHOR_LIMIT_TOTAL)
+      .map((e) => `${e.file} ${e.text}`),
+  );
+
+  const result = new Map();
+  for (const file of targets) {
+    result.set(file, perFile.get(file).filter((e) => keep.has(`${file} ${e.text}`)).map((e) => e.text));
   }
   return result;
 }
@@ -1720,7 +1862,12 @@ export function buildExecutionPrompt(issue, plan, specialists = null) {
   const files = Array.isArray(plan?.files) ? plan.files : [];
   const steps = Array.isArray(plan?.steps) ? plan.steps : [];
   const verify = String(plan?.verify || "");
-  const graphAnchors = activeGraphAnchorsForFiles(files);
+  // The plan text is what makes an anchor RELEVANT rather than merely correct.
+  // Passed in, never read from disk and never taken from global state, so
+  // buildExecutionPrompt stays pure and deterministic.
+  const graphAnchors = activeGraphAnchorsForFiles(files, {
+    planText: [title, objective, ...steps].join("\n"),
+  });
   const fileLines = files.length
     ? files.map((f) => formatExecutionFileLine(f, graphAnchors)).join("\n")
     : "- (no files declared)";

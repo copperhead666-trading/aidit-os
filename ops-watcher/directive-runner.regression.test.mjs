@@ -24,6 +24,10 @@ import {
   UNEXECUTABLE_MARKER,
   buildExecutionPrompt,
   graphFreshnessForAnchors,
+  graphNodeLocation,
+  graphAnchorStartLine,
+  graphAnchorRange,
+  scoreAnchorRelevance,
   executeApprovedDirective,
   PLAN_MARKER,
   APPROVED_MARKER,
@@ -1770,11 +1774,11 @@ await t("buildExecutionPrompt annotates files with anchors read from graphify-ou
     const p = buildExecutionPrompt(issue({ description: "Issue Text Bait Anchor" }), plan);
     assert.match(
       p,
-      /- ops-watcher\/foo\.mjs \(KG anchors from graphify-out\/active\/graph\.json: runFooCheck \[function\] @ ops-watcher\/foo\.mjs:17\)/,
+      /- ops-watcher\/foo\.mjs \(KG anchors from graphify-out\/active\/graph\.json: runFooCheck \[function\] @ L17\)/,
     );
     assert.match(
       p,
-      /- docs\/bar\.md \(KG anchors from graphify-out\/active\/graph\.json: Bar Scope \[section\] @ docs\/bar\.md:4\)/,
+      /- docs\/bar\.md \(KG anchors from graphify-out\/active\/graph\.json: Bar Scope \[section\] @ L4\)/,
     );
     assert.equal(p.includes("Issue Text Bait Anchor"), false);
   });
@@ -1845,6 +1849,147 @@ await t("a stale graph leaves the prompt on the plain file list, byte-identical 
     assert.equal(withStale, withoutGraph, "a stale graph contributes nothing at all");
     assert.equal(withStale.includes("KG anchors"), false, "and no anchor block is emitted");
   });
+});
+
+
+// =====================================================================
+// ANCHOR SELECTION MUST BE RELEVANT, CAPPED, AND HONEST.
+//
+// Three defects, all measured on the real graph before the fix:
+//   1. Selection was alphabetical. A plan naming buildExecutionPrompt in its
+//      title, objective AND steps got __dirname @ L63, ACTIVE_GRAPH_FILE @ L66,
+//      addIssueLabelReal() @ L78, APPROVED_MARKER @ L108, asMs() @ L158 —
+//      five of six clustered at the head of a 2,700-line file, purely for
+//      beginning with an underscore or the letter A.
+//   2. GRAPH_ANCHOR_LIMIT_TOTAL was declared and referenced NOWHERE. 20 files
+//      produced 120 anchors, five times the stated cap.
+//   3. An anchor had a start and no end, and its fallback chain ended in
+//      source_file — so a node with no location emitted a FILE PATH where a
+//      location belongs.
+// =====================================================================
+
+await t("anchor relevance: an exact mention of the label outranks alphabetical order", () => {
+  // The scoring itself, before it is wired into anything.
+  const plan = "Ubah buildExecutionPrompt supaya anchor relevan.";
+  assert.equal(scoreAnchorRelevance("buildExecutionPrompt", plan), 100, "an exact mention wins outright");
+  assert.ok(
+    scoreAnchorRelevance("buildExecutionPrompt", plan) > scoreAnchorRelevance("__dirname", plan),
+    "and beats a node the plan never mentions",
+  );
+  assert.equal(scoreAnchorRelevance("__dirname", plan), 0, "an unmentioned label scores nothing");
+});
+
+await t("anchor relevance: case-insensitive, survives a () suffix, and matches split words", () => {
+  assert.equal(scoreAnchorRelevance("buildExecutionPrompt", "call BUILDEXECUTIONPROMPT now"), 100, "case-insensitive");
+  assert.equal(scoreAnchorRelevance("buildExecutionPrompt", "call buildExecutionPrompt() now"), 100, "a () suffix does not break the match");
+  // 'build execution prompt' must still find buildExecutionPrompt.
+  assert.ok(scoreAnchorRelevance("buildExecutionPrompt", "rework the build execution prompt") >= 40, "camelCase is split for matching");
+  assert.equal(scoreAnchorRelevance("", "anything"), 0);
+  assert.equal(scoreAnchorRelevance("label", ""), 0);
+});
+
+await t("anchor relevance: a named symbol comes FIRST in the emitted prompt", async () => {
+  const graph = {
+    nodes: [
+      { id: "a", label: "__dirname", type: "const", source_file: "ops-watcher/foo.mjs", source_location: "L3" },
+      { id: "b", label: "ACTIVE_GRAPH_FILE", type: "const", source_file: "ops-watcher/foo.mjs", source_location: "L6" },
+      { id: "c", label: "runFooCheck", type: "function", source_file: "ops-watcher/foo.mjs", source_location: "L200" },
+    ],
+    edges: [],
+  };
+  await withActiveGraph(graph, () => {
+    const plan = parsePlan(goodPlan);
+    // Alphabetically runFooCheck is LAST. Named in the title it must come first.
+    const p = buildExecutionPrompt(issue({ title: "Perbaiki runFooCheck" }), plan);
+    const line = p.split("\n").find((l) => l.includes("ops-watcher/foo.mjs (KG anchors"));
+    assert.ok(line, "the file line carries anchors");
+    const anchors = line.split(": ").slice(1).join(": ");
+    assert.ok(anchors.startsWith("runFooCheck"), `runFooCheck must lead, got: ${anchors}`);
+  });
+});
+
+await t("anchor relevance: OBJECTIVE and a STEP each rank a symbol on their own", async () => {
+  const graph = {
+    nodes: [
+      { id: "a", label: "__dirname", type: "const", source_file: "ops-watcher/foo.mjs", source_location: "L3" },
+      { id: "c", label: "runFooCheck", type: "function", source_file: "ops-watcher/foo.mjs", source_location: "L200" },
+    ],
+    edges: [],
+  };
+  const leads = async (planObj) => {
+    let out = "";
+    await withActiveGraph(graph, () => {
+      const p = buildExecutionPrompt(issue(), planObj);
+      const line = p.split("\n").find((l) => l.includes("ops-watcher/foo.mjs (KG anchors")) || "";
+      out = line.split(": ").slice(1).join(": ");
+    });
+    return out;
+  };
+  const base = parsePlan(goodPlan);
+  const byObjective = await leads({ ...base, objective: "Perbaiki runFooCheck di modul ini" });
+  assert.ok(byObjective.startsWith("runFooCheck"), `objective alone must rank it, got: ${byObjective}`);
+  const byStep = await leads({ ...base, steps: ["Panggil runFooCheck lalu verifikasi"] });
+  assert.ok(byStep.startsWith("runFooCheck"), `a step alone must rank it, got: ${byStep}`);
+});
+
+await t("anchor relevance never REMOVES anchors, only reorders them", async () => {
+  const graph = {
+    nodes: [
+      { id: "a", label: "alpha", type: "function", source_file: "ops-watcher/foo.mjs", source_location: "L10" },
+      { id: "b", label: "beta", type: "function", source_file: "ops-watcher/foo.mjs", source_location: "L20" },
+    ],
+    edges: [],
+  };
+  await withActiveGraph(graph, () => {
+    // A plan naming nothing in the graph still gets its anchors.
+    const p = buildExecutionPrompt(issue({ title: "sesuatu yang lain" }), parsePlan(goodPlan));
+    const line = p.split("\n").find((l) => l.includes("ops-watcher/foo.mjs (KG anchors")) || "";
+    assert.ok(line.includes("alpha"), "alpha survives");
+    assert.ok(line.includes("beta"), "beta survives");
+  });
+});
+
+await t("GRAPH_ANCHOR_LIMIT_TOTAL is ENFORCED across all files, not just per file", async () => {
+  // 20 files x 6 per-file anchors = 120 without an overall cap. The measured
+  // before-number was exactly that: five times the stated cap of 24.
+  const nodes = [];
+  const files = [];
+  for (let f = 0; f < 20; f += 1) {
+    const file = `ops-watcher/gen${f}.mjs`;
+    files.push(file);
+    for (let n = 0; n < 8; n += 1) {
+      nodes.push({ id: `n${f}_${n}`, label: `sym${f}_${n}`, type: "function", source_file: file, source_location: `L${(n + 1) * 10}` });
+    }
+  }
+  await withActiveGraph({ nodes, edges: [] }, () => {
+    const plan = { ...parsePlan(goodPlan), files };
+    const p = buildExecutionPrompt(issue(), plan);
+    const emitted = (p.match(/@ L\d+/g) || []).length;
+    assert.ok(emitted > 0, "anchors are still emitted");
+    assert.ok(emitted <= 24, `overall cap must hold; emitted ${emitted}`);
+  });
+});
+
+await t("an anchor carries an END line derived from the next symbol in the same file", () => {
+  const starts = [10, 20, 55];
+  assert.equal(graphAnchorRange("L10", starts), "L10-L19", "ends where the next symbol begins");
+  assert.equal(graphAnchorRange("L20", starts), "L20-L54");
+  // The LAST symbol has no successor. Inventing an end for it would be the same
+  // dishonesty as the file-path fallback.
+  assert.equal(graphAnchorRange("L55", starts), "L55", "the last symbol keeps a bare start");
+  assert.equal(graphAnchorRange("ops-watcher/foo.mjs:17", [17, 30]), "L17-L29", "the path:line shape parses too");
+  assert.equal(graphAnchorStartLine("L46"), 46);
+  assert.equal(graphAnchorStartLine("path/to/x.mjs:17"), 17);
+  assert.equal(graphAnchorStartLine("nonsense"), null, "unparseable is null, never a guess");
+});
+
+await t("a node with no location emits NO location, never a file path", () => {
+  // The old fallback chain ended in source_file, so this node used to emit
+  // `orphan @ ops-watcher/foo.mjs` — a path wearing a location's clothes, which
+  // a lane reads as 'here is where to look'.
+  assert.equal(graphNodeLocation({ label: "orphan", source_file: "ops-watcher/foo.mjs" }), "");
+  assert.equal(graphNodeLocation({ label: "orphan", file: "ops-watcher/foo.mjs" }), "");
+  assert.equal(graphNodeLocation({ source_location: "L42" }), "L42", "a real location still comes through");
 });
 
 await t("buildExecutionPrompt without specialists is byte-for-byte unchanged", () => {
