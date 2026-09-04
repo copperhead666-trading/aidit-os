@@ -22,6 +22,7 @@ import {
   Scale,
   Map,
   Layers,
+  Moon,
 } from 'lucide-react';
 
 export type NavItem = { href: string; label: string; icon: typeof Home };
@@ -36,6 +37,7 @@ export const NAV_PRIMARY: NavItem[] = [
 
 /** Everything else, behind one disclosure. */
 export const NAV_MORE: NavItem[] = [
+  { href: '/night', label: 'Overnight', icon: Moon },
   { href: '/inbox', label: 'Attention', icon: Inbox },
   { href: '/agents', label: 'Agents', icon: Users },
   { href: '/skills', label: 'Skills', icon: Sparkles },
