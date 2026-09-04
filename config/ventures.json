@@ -1,0 +1,68 @@
+{
+  "schema_version": "1.0.0",
+  "purpose": "The ventures Aidit OS works on. Read by the ops side, not only displayed — config/skill-matrix.json spent weeks being read by nothing but the cockpit, and a registry nobody reads is documentation wearing a config's clothes. A venture absent from this file is not worked on; `status` is what decides, never the presence of a directory under ventures/.",
+  "rules": [
+    "tujuan is QUOTED from a source, never summarised into an agent's own words. An invented goal would steer every piece of work that follows it.",
+    "metrik stays null until the owner states one. A number an agent chose for him would make his system optimise for something he never asked for.",
+    "hardStops are boundaries somebody already wrote down, each with the line it came from. They are limits, not advice.",
+    "owner_decision_required lists what is ALWAYS his in this venture, regardless of how reversible it looks."
+  ],
+  "surveyed_at": "2026-09-04",
+  "ventures": [
+    {
+      "id": "caveman-trading-os",
+      "status": "active",
+      "repoPath": "ventures/caveman-trading-os",
+      "tujuan": "Safety-first operating system for a future automated trading platform.",
+      "tujuan_sumber": "ventures/caveman-trading-os/README.md, first line under the title",
+      "metrik": null,
+      "metrik_status": "BELUM DINYATAKAN PEMILIK — the README states a phase, not a measure. Left empty on purpose; see the decision raised on 2026-09-04.",
+      "hardStops": [
+        "No production trading code, broker credentials, order-submission logic, or live endpoints — the repository's own Phase 1 statement (README.md).",
+        "The broker is authoritative for live orders, fills and positions; nothing here may present itself as that authority (README.md, 'Source of truth').",
+        "Supabase holds operational metadata only and is never a hot-path execution dependency (README.md, 'Source of truth')."
+      ],
+      "taskClasses": ["trading-safety", "repo-analysis", "backend-api"],
+      "owner_decision_required": [
+        "Anything that touches real money, position sizing, or risk limits.",
+        "Moving out of Phase 1 — that is, adding any live endpoint, broker credential, or order submission.",
+        "The five uncommitted local files, which have been waiting on him since KOL-66."
+      ],
+      "observed": {
+        "branch": "main",
+        "commits": 142,
+        "last_commit": "4 days before 2026-09-04",
+        "uncommitted_files": 5,
+        "has_git_remote": true,
+        "note": "It has an off-machine remote. Aidit OS itself does not — see the decision raised on 2026-09-04."
+      }
+    },
+    {
+      "id": "sjs-superapps",
+      "status": "active",
+      "repoPath": "ventures/sjs-superapps",
+      "tujuan": "SJS SuperApps is the operational ERP for SJS. This repository is the source of truth for the frontend, Supabase schema, Edge Functions, and system documentation.",
+      "tujuan_sumber": "ventures/sjs-superapps/README.md, first paragraph",
+      "metrik": null,
+      "metrik_status": "BELUM DINYATAKAN PEMILIK — the README describes scope, not a measure of progress. Left empty on purpose; see the decision raised on 2026-09-04.",
+      "hardStops": [
+        "This repository is the source of truth for schema and Edge Functions; changes made anywhere else are drift, not work (README.md).",
+        "Buku Toko's current operational behaviour is owner-accepted reality and is NOT automatically the target architecture — 'imperfect' is never sufficient grounds to call something obsolete (decision-ledger D20).",
+        "Low-friction for the worker, but the system must still know WHO performed each activity (decision-ledger D28)."
+      ],
+      "taskClasses": ["frontend-design", "backend-api", "database-storage", "repo-analysis"],
+      "owner_decision_required": [
+        "Anything that changes what a worker in the family business has to do differently.",
+        "Schema or auth changes that touch attribution of who performed an action.",
+        "Commission and KPI rules — the subject of KOL-67, still waiting on him."
+      ],
+      "observed": {
+        "branch": "feature/agentic-v1",
+        "commits": 292,
+        "last_commit": "4 days before 2026-09-04",
+        "uncommitted_files": 0,
+        "has_git_remote": true
+      }
+    }
+  ]
+}

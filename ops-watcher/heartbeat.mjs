@@ -213,6 +213,11 @@ const STEPS = [
   // so a drift shows up as a failed step instead of as a number nobody checked.
   // Sits before directive-runner on purpose: it reports on the state every other
   // step just finished writing, and the runner stays last.
+  // Rebuilds the code graph only when enough time has passed AND the repo
+  // actually moved — see graphify-refresh.mjs. Cheap when there is nothing to
+  // do, and it runs before reconcile so the graph is current when anything
+  // downstream asks it a structural question.
+  { name: "graphify-refresh",  argv: ["ops-watcher/graphify-refresh.mjs", "--once"] },
   { name: "reconcile",         argv: ["ops-watcher/reconcile.mjs", "--once"] },
   { name: "directive-runner",  argv: ["ops-watcher/directive-runner.mjs", "--once"] },
 ];
