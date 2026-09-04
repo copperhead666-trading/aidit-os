@@ -17,6 +17,7 @@ import {
   markerForProposal,
   proposalKeyFor,
   runVenturePlannerOnce,
+  venturePlannerSignature,
 } from "./venture-planner.mjs";
 
 let passed = 0;
@@ -66,6 +67,18 @@ function specialist(over = {}) {
   };
 }
 
+function openDirective(identifier, over = {}) {
+  return {
+    id: `iss-${identifier}`,
+    identifier,
+    status: "todo",
+    title: `DIRECTIVE: existing ${identifier}`,
+    description: "",
+    labels: [{ name: "DIRECTIVE" }],
+    ...over,
+  };
+}
+
 function deps(over = {}) {
   const calls = {
     readAll: 0,
@@ -79,6 +92,9 @@ function deps(over = {}) {
     ensureLabel: [],
     httpPost: [],
     append: [],
+    lastSeq: [],
+    readPlannerState: [],
+    writePlannerState: [],
     readGraphCommit: [],
     repoCommit: [],
     execute: 0,
@@ -104,6 +120,9 @@ function deps(over = {}) {
       return { status: 201, networkError: false, body: { id: "iss-1", identifier: "KOL-101" } };
     },
     append: async (...args) => { calls.append.push(args); return { seq: 1 }; },
+    lastSeq: async () => { calls.lastSeq.push(1); return 7; },
+    readPlannerState: async () => { calls.readPlannerState.push(1); return { signature: "" }; },
+    writePlannerState: async (...args) => { calls.writePlannerState.push(args); },
     readGraphCommit: async () => { calls.readGraphCommit.push(1); return "graphcommit-fresh"; },
     repoCommit: async () => { calls.repoCommit.push(1); return "graphcommit-fresh"; },
     execute: async () => { calls.execute++; throw new Error("planner must not execute"); },
@@ -470,6 +489,154 @@ await t("T18: unstamped graph - no stamp at all is stale by definition and refus
   assert.equal(result.ok, false);
   assert.equal(result.reason, `${STALE_GRAPH_REASON}: graph built at unstamped, repo at reposha222`);
   assert.equal(d.calls.httpPost.length, 0);
+});
+
+await t("T19: unchanged planner signature returns early without prompt or Paperclip write", async () => {
+  const signature = venturePlannerSignature({
+    repoCommit: "head:abc clean",
+    ledgerHeadSeq: 7,
+    openDirectiveIssueIdentifiers: ["KOL-200"],
+  });
+  const d = deps({
+    listIssues: async (...args) => {
+      d.calls.listIssues.push(args);
+      return { issues: [openDirective("KOL-200")] };
+    },
+    readPlannerState: async () => {
+      d.calls.readPlannerState.push(1);
+      return { signature };
+    },
+  });
+
+  const result = await runVenturePlannerOnce(d);
+
+  assert.equal(result.created, false);
+  assert.equal(result.reason, "unchanged-venture-planner-signature");
+  assert.equal(d.calls.resolveSpecialistsForPacket.length, 0, "unchanged state does not build specialist prompt input");
+  assert.equal(d.calls.ensureLabel.length, 0);
+  assert.equal(d.calls.httpPost.length, 0);
+  assert.equal(d.calls.writePlannerState.length, 0, "unchanged state is not rewritten");
+});
+
+await t("T20: planner signature guard - a changed ledger head seq alone busts it", async () => {
+  const previous = venturePlannerSignature({
+    repoCommit: "head:abc clean",
+    ledgerHeadSeq: 6,
+    openDirectiveIssueIdentifiers: ["KOL-200"],
+  });
+  const current = venturePlannerSignature({
+    repoCommit: "head:abc clean",
+    ledgerHeadSeq: 7,
+    openDirectiveIssueIdentifiers: ["KOL-200"],
+  });
+  const d = deps({
+    listIssues: async (...args) => {
+      d.calls.listIssues.push(args);
+      return { issues: [openDirective("KOL-200")] };
+    },
+    readPlannerState: async () => {
+      d.calls.readPlannerState.push(1);
+      return { signature: previous };
+    },
+  });
+
+  const result = await runVenturePlannerOnce(d);
+
+  assert.equal(result.created, true);
+  assert.equal(d.calls.httpPost.length, 1);
+  assert.equal(d.calls.writePlannerState[0][0].signature, current);
+});
+
+await t("T21: planner signature guard - a changed open DIRECTIVE set alone busts it", async () => {
+  const previous = venturePlannerSignature({
+    repoCommit: "head:abc clean",
+    ledgerHeadSeq: 7,
+    openDirectiveIssueIdentifiers: [],
+  });
+  const current = venturePlannerSignature({
+    repoCommit: "head:abc clean",
+    ledgerHeadSeq: 7,
+    openDirectiveIssueIdentifiers: ["KOL-200"],
+  });
+  const d = deps({
+    listIssues: async (...args) => {
+      d.calls.listIssues.push(args);
+      return { issues: [openDirective("KOL-200")] };
+    },
+    readPlannerState: async () => {
+      d.calls.readPlannerState.push(1);
+      return { signature: previous };
+    },
+  });
+
+  const result = await runVenturePlannerOnce(d);
+
+  assert.equal(result.created, true);
+  assert.equal(d.calls.httpPost.length, 1);
+  assert.equal(d.calls.writePlannerState[0][0].signature, current);
+});
+
+await t("T22: planner signature guard - a changed repo commit alone busts it", async () => {
+  const previous = venturePlannerSignature({
+    repoCommit: "head:old clean",
+    ledgerHeadSeq: 7,
+    openDirectiveIssueIdentifiers: ["KOL-200"],
+  });
+  const current = venturePlannerSignature({
+    repoCommit: "head:abc clean",
+    ledgerHeadSeq: 7,
+    openDirectiveIssueIdentifiers: ["KOL-200"],
+  });
+  const d = deps({
+    listIssues: async (...args) => {
+      d.calls.listIssues.push(args);
+      return { issues: [openDirective("KOL-200")] };
+    },
+    readPlannerState: async () => {
+      d.calls.readPlannerState.push(1);
+      return { signature: previous };
+    },
+  });
+
+  const result = await runVenturePlannerOnce(d);
+
+  assert.equal(result.created, true);
+  assert.equal(d.calls.httpPost.length, 1);
+  assert.equal(d.calls.writePlannerState[0][0].signature, current);
+});
+
+await t("T23: planner signature guard - a missing state file counts as changed and does not crash", async () => {
+  const d = deps({
+    readPlannerState: async () => {
+      d.calls.readPlannerState.push(1);
+      const error = new Error("missing");
+      error.code = "ENOENT";
+      throw error;
+    },
+  });
+
+  const result = await runVenturePlannerOnce(d);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.created, true);
+  assert.equal(d.calls.httpPost.length, 1);
+  assert.equal(d.calls.writePlannerState.length, 1);
+});
+
+await t("T24: planner signature guard - a corrupt state file counts as changed and does not crash", async () => {
+  const d = deps({
+    readPlannerState: async () => {
+      d.calls.readPlannerState.push(1);
+      return "{ this is not json";
+    },
+  });
+
+  const result = await runVenturePlannerOnce(d);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.created, true);
+  assert.equal(d.calls.httpPost.length, 1);
+  assert.equal(d.calls.writePlannerState.length, 1);
 });
 
 console.log("");
