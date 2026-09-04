@@ -218,6 +218,18 @@ const STEPS = [
   // do, and it runs before reconcile so the graph is current when anything
   // downstream asks it a structural question.
   { name: "graphify-refresh",  argv: ["ops-watcher/graphify-refresh.mjs", "--once"] },
+  // Appends the events the board proves happened and the ledger never recorded,
+  // through ops-watcher/ledger.mjs (the single writer). Until this step existed,
+  // NOTHING had appended to state/ledger.jsonl since 2026-08-28 — the only
+  // writer had ever been the one-shot scripts/migrate-to-ledger.mjs — so the
+  // system's source of truth was a frozen snapshot and every card sent and
+  // decision approved since then lived on the board and nowhere else.
+  //
+  // Sits BEFORE reconcile on purpose: reconcile compares the ledger's
+  // projection against the live board, so it must run after the ledger has
+  // caught up, or it reports a difference that the previous step was already
+  // fixing.
+  { name: "ledger-writer",     argv: ["ops-watcher/ledger-writer.mjs", "--once"] },
   { name: "reconcile",         argv: ["ops-watcher/reconcile.mjs", "--once"] },
   { name: "directive-runner",  argv: ["ops-watcher/directive-runner.mjs", "--once"] },
 ];
