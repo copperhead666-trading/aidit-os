@@ -12,6 +12,7 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { logLaneUsage } from "./lane-usage.mjs";
+import { ensureLaneWorktree } from "./lane-worktree.mjs";
 import { guardLaneStart, recordLaneOutcome } from "./lane-guard.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -137,8 +138,26 @@ export async function dispatchSjahrir(prompt, deps = {}) {
       return { ok: false, skipped: true, reason, stdout: "", stderr: msg, exitCode: 3 };
     }
 
+    // WORKTREE ISOLATION. Each writing lane runs in its OWN git worktree, never in
+    // the shared repository root.
+    //
+    // CLAUDE.md has required this since it was written and it was never built: on
+    // 2026-09-04 `grep -rn worktree` across ops-watcher/ and scripts/ returned one
+    // line, and it was a comment. All three dispatchers used cwd: REPO_ROOT, so
+    // every lane wrote into the same tree at the same time. Two deliberately
+    // broken commits shipped that day because a commit landed in the middle of
+    // another lane's mutation-check: the file changed under the check, the check
+    // passed, and the wrong thing was committed.
+    //
+    // ensureLaneWorktree never throws. If a worktree cannot be created it returns
+    // the shared root with isolated:false and a reason, which is logged rather
+    // than swallowed — a silent fallback would rebuild the exact bug this
+    // prevents, behind a module everyone assumes is protecting them.
+    const workspace = (deps.ensureLaneWorktree || ensureLaneWorktree)("sjahrir");
+    if (!workspace.isolated) process.stderr.write(`sjahrir-dispatch: ${workspace.reason}
+`);
     const r = _spawn("kimi", buildKimiArgs(prompt), {
-      cwd: REPO_ROOT,
+      cwd: workspace.path,
       windowsHide: true,
       timeout: TIMEOUT_MS,
       encoding: "utf8",
