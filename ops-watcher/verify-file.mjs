@@ -3,10 +3,27 @@
 // content. This duplicates validatePlanScope's path deny-list because importing
 // directive-runner.mjs would pull in operational dependencies and side effects
 // that this tiny verifier should not need.
+//
+// THE FOURTH FENCE. Three ventures fences were made conditional on the registry
+// on 2026-09-04; this one was not, and it is the one a venture directive hits
+// LAST. The effect was a directive that passed the scope gate, dispatched, and
+// then failed its own VERIFY:
+//
+//   node ops-watcher/verify-file.mjs --path ventures/caveman-trading-os/... --contains Workstreams
+//   VERIFY FAILED denied directory refused
+//
+// A fence that stops the work after it has been done is the most expensive
+// place to stop it. The registry answers here too, with the same wording, so a
+// refusal reads the same wherever it comes from.
+//
+// ventures.mjs is imported, directive-runner.mjs still is not: the reason this
+// file duplicates the deny-list is directive-runner's operational dependencies,
+// and ventures.mjs has none — it reads one JSON file.
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { ventureForPath } from "./ventures.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -20,7 +37,15 @@ const HARD_DENY = new Set([
   "ops-watcher/directive-runner.mjs",
 ]);
 
-function normalizeRepoPath(raw) {
+// Denied ANYWHERE in a path, not only at its head. The head-only test let
+// ventures/x/.git/config through — and directive-runner was fixed for exactly
+// this on 2026-09-04 while this copy of the same list was not. Opening ventures/
+// means reaching into a second repository that has its own .git and its own
+// node_modules, so the depth matters here for the same reason it did there.
+const DENIED_PATH_SEGMENTS = new Set([".git", ".paperclip", "node_modules", "graphify-out"]);
+
+export async function normalizeRepoPath(raw, deps = {}) {
+  const _ventureForPath = deps.ventureForPath || ventureForPath;
   const p = String(raw || "").trim();
   const norm = p.replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\.\/+/, "");
   const low = norm.toLowerCase();
@@ -28,8 +53,15 @@ function normalizeRepoPath(raw) {
   if (!p) return { ok: false, reason: "path is empty" };
   if (/^[A-Za-z]:[\\/]/.test(p) || p.startsWith("/") || p.startsWith("\\")) return { ok: false, reason: "absolute path refused" };
   if (parts.includes("..") || low.startsWith("../")) return { ok: false, reason: "path escapes repository" };
-  if (["ventures", ".git", ".paperclip", "node_modules", "graphify-out"].some((x) => low === x || low.startsWith(`${x}/`))) {
+  if (parts.some((seg) => DENIED_PATH_SEGMENTS.has(seg.toLowerCase()))) {
     return { ok: false, reason: "denied directory refused" };
+  }
+  if (low === "ventures" || low.startsWith("ventures/")) {
+    const venture = await _ventureForPath(norm, deps);
+    if (!venture) return { ok: false, reason: "unknown venture — no venture in config/ventures.json owns this path" };
+    if (venture.status !== "active") {
+      return { ok: false, reason: `venture ${venture.id} is not active (status: ${venture.status || "none"})` };
+    }
   }
   if (parts.some((seg) => /^\.env/i.test(seg))) return { ok: false, reason: "env file refused" };
   if (HARD_DENY.has(low)) return { ok: false, reason: "hard-deny operational file refused" };
@@ -56,7 +88,7 @@ export function parseArgs(argv) {
 export async function verifyFile(options, deps = {}) {
   const parsed = options && options.ok === true ? options : { ok: true, ...options };
   if (!parsed.ok) return { ok: false, reason: parsed.reason || "invalid arguments" };
-  const checked = normalizeRepoPath(parsed.path);
+  const checked = await normalizeRepoPath(parsed.path, deps);
   if (!checked.ok) return { ok: false, reason: checked.reason };
 
   const root = deps.repoRoot || REPO_ROOT;

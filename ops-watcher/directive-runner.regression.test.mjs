@@ -2398,8 +2398,14 @@ await t("verifyFile with injected fs reports match, no match, missing file, and 
   const beforeDenied = reads.length;
   const denied = await verifyFile({ path: "ventures/x.txt", contains: "x" }, { repoRoot: __dirname, readFile });
   assert.equal(denied.ok, false);
-  assert.match(denied.reason, /denied directory/);
-  assert.equal(reads.length, beforeDenied);
+  // This used to assert /denied directory/ — the generic message from the
+  // unconditional fourth fence, i.e. the assertion pinned the bug in place.
+  // "ventures/x.txt" belongs to no venture in the registry, so it is still
+  // refused, now by the specific reason. Full coverage of that gate lives in
+  // ops-watcher/verify-file.regression.test.mjs; this stays as the integration
+  // check that no file is read when the path is refused.
+  assert.match(denied.reason, /unknown venture/);
+  assert.equal(reads.length, beforeDenied, "a refused path is never read from disk");
 });
 
 
