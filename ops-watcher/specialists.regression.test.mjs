@@ -13,6 +13,7 @@ import {
   buildSpecialistSection,
   classifyTaskClass,
   loadSpecialist,
+  laneForTaskClass,
   readSkillMatrix,
   resolveSpecialistsForPacket,
   scoreTaskClasses,
@@ -232,6 +233,45 @@ async function t13_unrelatedOwnerTextStillClassifiesToNothing() {
   ok("T13: unrelated text still classifies to nothing");
 }
 
+async function t14_kol88_laneForTaskClassUsesSkillMatrix() {
+  const r = await laneForTaskClass("repo-analysis");
+  assert.equal(r.maker, "SJAHRIR", "T14: maker comes from skill-matrix preferredMaker");
+  assert.equal(r.reviewer, "GIBRAN", "T14: reviewer comes from skill-matrix preferredReviewer");
+  assert.equal(r.source, "skill-matrix", "T14: source records matrix decision");
+  ok("T14 KOL-88: laneForTaskClass uses skill-matrix preferred lanes");
+}
+
+async function t15_kol88_laneForTaskClassFallsBackToMeasuredDefault() {
+  const r = await laneForTaskClass("test-regression", { matrix: [] });
+  assert.equal(r.maker, "HATTA", "T15: small anchored edits default to HATTA");
+  assert.equal(r.reviewer, "GIBRAN", "T15: review default is GIBRAN");
+  assert.equal(r.source, "measured-default", "T15: source records measured fallback");
+  ok("T15 KOL-88: missing matrix entry falls back to measured defaults");
+}
+
+async function t16_kol88_laneForTaskClassUnknownDoesNotGuess() {
+  const r = await laneForTaskClass("not-a-real-class", { matrix: [] });
+  assert.deepEqual(r, { maker: null, reviewer: null, source: "measured-default" });
+  ok("T16 KOL-88: unknown task classes return null lanes");
+}
+
+async function t17_kol88_laneForTaskClassLanesExistInRegistry() {
+  const matrix = JSON.parse(await fs.readFile(MATRIX_FILE, "utf8"));
+  const registry = JSON.parse(await fs.readFile(path.join(ROOT, "config", "agent-registry.json"), "utf8"));
+  const agentIds = new Set(Object.keys(registry.agents || {}));
+  const taskClasses = new Set([
+    ...matrix.map((e) => e.taskClass),
+    ...Object.keys(TASK_CLASS_SPECIALISTS),
+  ]);
+  for (const taskClass of taskClasses) {
+    const r = await laneForTaskClass(taskClass);
+    for (const lane of [r.maker, r.reviewer].filter(Boolean)) {
+      assert.ok(agentIds.has(lane), `T17: ${taskClass} references unknown lane ${lane}`);
+    }
+  }
+  ok("T17 KOL-88: every selected lane exists in agent-registry");
+}
+
 function escapeRegExp(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -251,6 +291,10 @@ async function main() {
     t11_measuredAiditWorkClassifiesToSpecialists,
     t12_newSpecialistSectionsStayUnderPacketBudget,
     t13_unrelatedOwnerTextStillClassifiesToNothing,
+    t14_kol88_laneForTaskClassUsesSkillMatrix,
+    t15_kol88_laneForTaskClassFallsBackToMeasuredDefault,
+    t16_kol88_laneForTaskClassUnknownDoesNotGuess,
+    t17_kol88_laneForTaskClassLanesExistInRegistry,
   ];
   for (const t of tests) {
     try {

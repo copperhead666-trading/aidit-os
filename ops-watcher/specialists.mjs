@@ -35,6 +35,17 @@ const SPECIALIST_DIR = path.join(REPO_ROOT, "agents", "specialists");
 export const DEFAULT_PERSONA_BUDGET = 900;
 export const DEFAULT_MAX_SPECIALISTS = 2;
 
+// Measured defaults from real runs on 2026-09-05: CORLEONE is the default
+// implementation lane (96 percent exit-0 from 26 runs), SJAHRIR handles small
+// analysis (14 seconds for light tasks; dies on large tasks), HATTA handles
+// small anchored edits, and GIBRAN is the measured review lane.
+const MEASURED_DEFAULT_REVIEWER = "GIBRAN";
+const MEASURED_DEFAULT_MAKERS = Object.freeze({
+  "repo-analysis": "SJAHRIR",
+  "test-regression": "HATTA",
+  "cleanup-archive": "HATTA",
+});
+
 // Keyword -> taskClass. Deliberately explicit rather than clever: a wrong guess
 // here silently hands a database job to a designer, and a table a human can read
 // is a table a human can correct. Indonesian terms are included because the owner
@@ -131,6 +142,29 @@ export async function matrixEntryFor(taskClass, deps = {}) {
   if (!taskClass) return null;
   const matrix = await readSkillMatrix(deps);
   return matrix.find((e) => e && e.taskClass === taskClass) || null;
+}
+
+export async function laneForTaskClass(taskClass, deps = {}) {
+  const cls = String(taskClass || "").trim();
+  if (!cls) return { maker: null, reviewer: null, source: "measured-default" };
+
+  const matrix = Array.isArray(deps.matrix) ? deps.matrix : await readSkillMatrix(deps);
+  const entry = matrix.find((e) => e && e.taskClass === cls) || null;
+  if (entry && (entry.preferredMaker || entry.preferredReviewer)) {
+    return {
+      maker: entry.preferredMaker || null,
+      reviewer: entry.preferredReviewer || null,
+      source: "skill-matrix",
+    };
+  }
+
+  const known = TASK_CLASS_KEYWORDS.some(([knownClass]) => knownClass === cls);
+  if (!known) return { maker: null, reviewer: null, source: "measured-default" };
+  return {
+    maker: MEASURED_DEFAULT_MAKERS[cls] || "CORLEONE",
+    reviewer: MEASURED_DEFAULT_REVIEWER,
+    source: "measured-default",
+  };
 }
 
 // Cut on a sentence or line boundary so an excerpt never ends mid-word. A

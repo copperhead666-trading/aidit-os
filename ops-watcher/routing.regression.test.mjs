@@ -25,6 +25,8 @@ import {
   QUOTA_COOLDOWN_MS,
   quotaReasonExcerpt,
   laneFitness,
+  compareLaneModels,
+  laneModelReport,
 } from "./routing.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -158,7 +160,54 @@ async function testProbeClaudeRemoteHostKeepsSshProbe() {
     assert.deepEqual(calls, [
       {
         cmd: ["ssh", "-o", "ConnectTimeout=8", "-o", "BatchMode=yes", "WIN10@100.87.42.3", "claude --version"],
-        opts: undefined,
+        opts: { windowsHide: true },
+      },
+    ]);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function kol88_compareLaneModelsVerdicts() {
+  const name = "KOL-88 compareLaneModels: drift, unrecorded, unprobeable, and loose match";
+  try {
+    const registry = {
+      agents: {
+        HATTA: { model_if_known: "glm-5.3:cloud" },
+        GIBRAN: {},
+        SJAHRIR: { model_if_known: "k3" },
+        CORLEONE: { model_if_known: "gpt-5.5" },
+      },
+    };
+    const result = compareLaneModels([
+      { lane: "HATTA", reported: "ollama version is 0.x, model glm-5.3:cloud" },
+      { lane: "GIBRAN", reported: "upstage/solar-pro4:free" },
+      { lane: "SJAHRIR", reported: null },
+      { lane: "CORLEONE", reported: "gpt-5.4" },
+    ], registry);
+    assert.deepEqual(result, [
+      { lane: "HATTA", registry: "glm-5.3:cloud", reported: "ollama version is 0.x, model glm-5.3:cloud", verdict: "match" },
+      { lane: "GIBRAN", registry: null, reported: "upstage/solar-pro4:free", verdict: "unrecorded" },
+      { lane: "SJAHRIR", registry: "k3", reported: null, verdict: "unprobeable" },
+      { lane: "CORLEONE", registry: "gpt-5.5", reported: "gpt-5.4", verdict: "drift" },
+    ]);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function kol88_laneModelReportNeverThrowsWhenProbeFails() {
+  const name = "KOL-88 laneModelReport: probe failures become null reports instead of throws";
+  try {
+    const report = await laneModelReport({
+      lanes: ["nous"],
+      now: 1_700_000_000_000,
+      runSpawn: async () => { throw new Error("probe exploded"); },
+    });
+    assert.deepEqual(report, [
+      {
+        lane: "nous",
+        reported: null,
+        source: "hermes --version",
+        at: "2023-11-14T22:13:20.000Z",
       },
     ]);
     ok(name);
@@ -979,6 +1028,8 @@ async function main() {
   await testProbeClaudeRemoteHostKeepsSshProbe();
   await testProbeClaudeLocalUnresolvableDoesNotFallbackToSsh();
   await testProbeUnprobeable();
+  await kol88_compareLaneModelsVerdicts();
+  await kol88_laneModelReportNeverThrowsWhenProbeFails();
   await testCooldownBackoff();
   await testCooldownNeverTrustsProviderClock();
   await resolveLaneDefaultOk();
