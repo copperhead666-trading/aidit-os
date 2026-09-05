@@ -119,6 +119,73 @@ async function testProbeSpawnLanes() {
   } catch (err) { bad(name, err); }
 }
 
+async function testProbeClaudeLocalHostUsesLocalClaude() {
+  const name = "probeLaneAvailability claude: matching host probes local claude, never ssh";
+  try {
+    const calls = [];
+    const r = await probeLaneAvailability("claude", {
+      hostIsThisMachine: () => true,
+      resolveLocalClaude: () => "C:\\Tools\\claude.cmd",
+      runSpawn: async (cmd, opts) => {
+        calls.push({ cmd, opts });
+        return { ok: true, code: 0, signal: "binary-responsive", version: "Claude Code 2.1.258" };
+      },
+    });
+    assert.equal(r.available, true);
+    assert.equal(r.probe, "spawn");
+    assert.equal(r.version, "Claude Code 2.1.258");
+    assert.deepEqual(calls, [
+      { cmd: ["C:\\Tools\\claude.cmd", "--version"], opts: { shell: false, windowsHide: true } },
+    ]);
+    assert.notEqual(calls[0].cmd[0], "ssh", "matching host must not invoke ssh");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function testProbeClaudeRemoteHostKeepsSshProbe() {
+  const name = "probeLaneAvailability claude: non-matching host uses the ssh probe unchanged";
+  try {
+    const calls = [];
+    const r = await probeLaneAvailability("claude", {
+      hostIsThisMachine: () => false,
+      resolveLocalClaude: () => { throw new Error("must not resolve local claude for a remote host"); },
+      runSpawn: async (cmd, opts) => {
+        calls.push({ cmd, opts });
+        return { ok: true, code: 0, signal: "binary-responsive", version: "Claude Code 2.1.258" };
+      },
+    });
+    assert.equal(r.available, true);
+    assert.deepEqual(calls, [
+      {
+        cmd: ["ssh", "-o", "ConnectTimeout=8", "-o", "BatchMode=yes", "WIN10@100.87.42.3", "claude --version"],
+        opts: undefined,
+      },
+    ]);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function testProbeClaudeLocalUnresolvableDoesNotFallbackToSsh() {
+  const name = "probeLaneAvailability claude: unresolved local claude is unavailable and never falls back to ssh";
+  try {
+    let spawnCalled = false;
+    const r = await probeLaneAvailability("claude", {
+      hostIsThisMachine: () => true,
+      resolveLocalClaude: () => null,
+      runSpawn: async () => {
+        spawnCalled = true;
+        return { ok: true, code: 0, signal: "binary-responsive", version: "should not happen" };
+      },
+    });
+    assert.equal(r.available, false);
+    assert.equal(r.probe, "spawn");
+    assert.equal(r.signal, "unresolved-local-claude");
+    assert.match(r.reason, /local claude executable could not be resolved/);
+    assert.equal(spawnCalled, false, "must not spawn ssh or anything else when local claude is unresolved");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
 async function testProbeUnprobeable() {
   const name = "probeLaneAvailability: unprobeable lane -> available=false, probe=none (never fabricates)";
   try {
@@ -908,6 +975,9 @@ async function main() {
   await testLaneMapping();
   await testProbeOllama();
   await testProbeSpawnLanes();
+  await testProbeClaudeLocalHostUsesLocalClaude();
+  await testProbeClaudeRemoteHostKeepsSshProbe();
+  await testProbeClaudeLocalUnresolvableDoesNotFallbackToSsh();
   await testProbeUnprobeable();
   await testCooldownBackoff();
   await testCooldownNeverTrustsProviderClock();
