@@ -93,7 +93,17 @@ export const QUOTA_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6 hours
 const QUOTA_RETRY_GRACE_MS = 2 * 60 * 1000;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
-const SOEKARNO_SSH_PROBE_CMD = ["ssh", "-o", "ConnectTimeout=8", "-o", "BatchMode=yes", SOEKARNO_HOST, "claude --version"];
+// Built on CALL, never at module load.
+//
+// soekarno-dispatch -> lane-guard -> routing -> soekarno-dispatch is a real
+// import cycle. Node tolerates the cycle itself, but reading SOEKARNO_HOST at
+// this module's top level runs while soekarno-dispatch is still initialising,
+// so entering from that side threw
+//   ReferenceError: Cannot access 'SOEKARNO_HOST' before initialization
+// and took its whole test file with it. Deferring the read to probe time keeps
+// the constant honest and the cycle harmless.
+const soekarnoSshProbeCmd = () =>
+  ["ssh", "-o", "ConnectTimeout=8", "-o", "BatchMode=yes", SOEKARNO_HOST, "claude --version"];
 
 // Probe-key -> how to probe. `kind` selects the probe mechanism.
 export const LANE_PROBES = {
@@ -116,7 +126,7 @@ export const LANE_PROBES = {
         if (!localClaude) return null;
         return [localClaude, "--version"];
       }
-      return SOEKARNO_SSH_PROBE_CMD;
+      return soekarnoSshProbeCmd();
     },
     label: "Claude Code on the Lenovo (L5, SOEKARNO)",
   },
