@@ -23,41 +23,22 @@ const DEFAULT_ENDPOINT = "http://localhost:11434/api/chat";
 const ENDPOINT_CONFIG = resolveEndpoint(process.env.OLLAMA_HOST);
 const ENDPOINT = ENDPOINT_CONFIG.endpoint;
 const MODEL = process.env.OLLAMA_MODEL_HATTA || "glm-5.3:cloud";
-// The two numbers that bound a run must agree. The outer wrapper kills the run
-// after OUTER_RUN_BUDGET_MS (480000), and each model call may take up to
-// HATTA_REQUEST_TIMEOUT_MS (120000): 480000 / 120000 = 4 slow calls. A default
-// of 40 was never reachable, so a run that hit the real ceiling was killed from
-// outside and surfaced as an opaque outer timeout instead of the harness's own
-// "Reached MAX_ITERATIONS" evidence. Default to the number of slow calls the
-// budget actually affords.
 const OUTER_RUN_BUDGET_MS = Number.parseInt(process.env.HATTA_OUTER_RUN_BUDGET_MS || "480000", 10);
 const REQUEST_TIMEOUT_MS = Number.parseInt(process.env.HATTA_REQUEST_TIMEOUT_MS || "120000", 10);
-const DEFAULT_MAX_ITERATIONS = Math.max(1, Math.floor(OUTER_RUN_BUDGET_MS / REQUEST_TIMEOUT_MS));
+export const HARD_ITERATION_CEILING = 40;
 
 // HATTA_MAX_ITER can only lower the ceiling, never raise it. Letting an explicit
-// value win outright would reintroduce the exact bug being fixed: someone sets
-// 40, the outer wrapper still kills the run at OUTER_RUN_BUDGET_MS, and the
-// failure surfaces as an opaque outer timeout again. The budget is a physical
-// bound; the override is a preference, and a preference does not beat physics.
-// Exported so the test exercises this arithmetic rather than a copy of it.
+// value win outright would let a fast-looping model spin forever. The clock is
+// the physical bound; the override is a preference below the hard ceiling.
 export function effectiveMaxIterations({
-  budgetMs = OUTER_RUN_BUDGET_MS,
-  perCallMs = REQUEST_TIMEOUT_MS,
+  hardCeiling = HARD_ITERATION_CEILING,
   override = process.env.HATTA_MAX_ITER,
 } = {}) {
-  const derived = Math.max(1, Math.floor(budgetMs / perCallMs));
   const asked = Number.parseInt(override ?? "", 10);
-  if (!Number.isFinite(asked) || asked < 1) return derived;
-  return Math.min(asked, derived);
+  if (!Number.isFinite(asked) || asked < 1) return hardCeiling;
+  return Math.min(asked, hardCeiling);
 }
 
-const MAX_ITERATIONS = effectiveMaxIterations();
-// Names the ceiling AND the bound that produced it. "Reached 4" on its own reads
-// as a bug; the arithmetic reads as a fact somebody can act on.
-const ITERATION_BOUND_NOTE =
-  MAX_ITERATIONS < DEFAULT_MAX_ITERATIONS
-    ? `HATTA_MAX_ITER=${process.env.HATTA_MAX_ITER}`
-    : `the ${OUTER_RUN_BUDGET_MS}ms outer budget over a ${REQUEST_TIMEOUT_MS}ms per-call timeout`;
 const STDIO_LIMIT = 4000;
 const SUMMARY_LIMIT = 700;
 const READ_FILE_CONTENT_ELIDED_NOTE =
@@ -236,6 +217,37 @@ function makeEvidence(startedAt) {
     startedAt,
     finishedAt: null,
   };
+}
+
+function timeMs(value) {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === "number") return value;
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function iterationStopReason(index, startedAtMs, nowMs, {
+  maxIterations = effectiveMaxIterations(),
+  outerRunBudgetMs = OUTER_RUN_BUDGET_MS,
+  requestTimeoutMs = REQUEST_TIMEOUT_MS,
+} = {}) {
+  if (index >= maxIterations) {
+    return {
+      bound: "ceiling",
+      message: `Reached iteration ceiling (${maxIterations}; hard=${HARD_ITERATION_CEILING}; HATTA_MAX_ITER=${process.env.HATTA_MAX_ITER || "unset"}) before a final answer.`,
+    };
+  }
+
+  const elapsedMs = Math.max(0, nowMs - startedAtMs);
+  const runnableBudgetMs = Math.max(0, outerRunBudgetMs - requestTimeoutMs);
+  if (elapsedMs >= runnableBudgetMs) {
+    return {
+      bound: "clock",
+      message: `Reached clock budget before a final answer (elapsed=${elapsedMs}ms; outer=${outerRunBudgetMs}ms; reserve=${requestTimeoutMs}ms; remaining=${Math.max(0, outerRunBudgetMs - elapsedMs)}ms).`,
+    };
+  }
+
+  return null;
 }
 
 export async function persistHarnessEvidence(evidence, io = fs) {
@@ -974,14 +986,22 @@ export async function runTask(prompt, {
   chat = postChat,
   persist = persistHarnessEvidence,
   now = () => new Date().toISOString(),
+  maxIterations = effectiveMaxIterations(),
 } = {}) {
   const startedAt = now();
+  const startedAtMs = timeMs(startedAt);
   const evidence = makeEvidence(startedAt);
   currentEvidence = evidence;
   const messages = [{ role: "user", content: prompt }];
 
   try {
-    for (let index = 0; index < MAX_ITERATIONS; index += 1) {
+    for (let index = 0; ; index += 1) {
+      const stop = iterationStopReason(index, startedAtMs, timeMs(now()), { maxIterations });
+      if (stop) {
+        evidence.error = stop.message;
+        return evidence;
+      }
+
       evidence.iterations = index + 1;
       const response = await chat(messages);
       const assistantMessage = response?.message || { role: "assistant", content: "" };
@@ -1000,9 +1020,6 @@ export async function runTask(prompt, {
       }
       await persistRunEvidence(evidence, persist);
     }
-
-    evidence.error = `Reached MAX_ITERATIONS (${MAX_ITERATIONS}, set by ${ITERATION_BOUND_NOTE}) before a final answer.`;
-    return evidence;
   } catch (error) {
     if (error instanceof OllamaChatTimeoutError) evidence.timedOut = true;
     evidence.error = error?.message || String(error);

@@ -17,6 +17,8 @@ import {
   handleTerminationSignal,
   persistHarnessEvidence,
   runTask,
+  effectiveMaxIterations,
+  HARD_ITERATION_CEILING,
 } from "./harness.mjs";
 
 // THE SANDBOX BOUNDARY THIS WHOLE FILE EXISTS TO TEST. It must be derived the
@@ -84,6 +86,36 @@ function fixedClock() {
   return () => timestamps[Math.min(index++, timestamps.length - 1)];
 }
 
+function advancingClock(stepMs) {
+  let current = Date.parse("2026-01-01T00:00:00.000Z") - stepMs;
+  return () => {
+    current += stepMs;
+    return current;
+  };
+}
+
+function loopingChat() {
+  let calls = 0;
+  const chat = async () => {
+    calls += 1;
+    return { message: { role: "assistant", content: "", tool_calls: [{ function: { name: "unknown_probe_tool", arguments: "{}" } }] } };
+  };
+  chat.calls = () => calls;
+  return chat;
+}
+
+async function withEnv(key, value, fn) {
+  const original = process.env[key];
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+  try {
+    return await fn();
+  } finally {
+    if (original === undefined) delete process.env[key];
+    else process.env[key] = original;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Harness evidence persistence and termination bookkeeping.
 // ---------------------------------------------------------------------------
@@ -141,6 +173,74 @@ add("termination handler prints terminated evidence JSON", async () => {
   assert.equal(parsed.terminatedBy, "SIGTERM");
   assert.equal(parsed.finishedAt, "2026-01-01T00:00:02.000Z");
   assert.equal(parsed.iterations, 1);
+});
+
+// ---------------------------------------------------------------------------
+// HATTA iteration budget: time-bounded loop with a hard ceiling.
+// ---------------------------------------------------------------------------
+add("fast clock runs far more than four iterations before hard ceiling", async () => {
+  await withEnv("HATTA_MAX_ITER", undefined, async () => {
+    const chat = loopingChat();
+    const evidence = await runTask("fast loop", {
+      chat,
+      persist: async () => {},
+      now: advancingClock(1),
+    });
+
+    assert.equal(evidence.ok, false);
+    assert.equal(evidence.iterations, HARD_ITERATION_CEILING);
+    assert.equal(chat.calls(), HARD_ITERATION_CEILING);
+    assert.ok(evidence.iterations > 4, "fast loop should not stop at the old four-call count");
+    assert.match(evidence.error, /Reached iteration ceiling \(40; hard=40; HATTA_MAX_ITER=unset\)/);
+  });
+});
+
+add("slow clock stops before overrunning outer budget reserve", async () => {
+  await withEnv("HATTA_MAX_ITER", undefined, async () => {
+    const evidence = await runTask("slow loop", {
+      chat: loopingChat(),
+      persist: async () => {},
+      now: advancingClock(120000),
+    });
+
+    assert.equal(evidence.ok, false);
+    assert.equal(evidence.iterations, 2);
+    assert.match(evidence.error, /Reached clock budget before a final answer/);
+    assert.match(evidence.error, /elapsed=360000ms; outer=480000ms; reserve=120000ms; remaining=120000ms/);
+  });
+});
+
+add("HATTA_MAX_ITER=2 still caps the loop at 2", async () => {
+  await withEnv("HATTA_MAX_ITER", "2", async () => {
+    const chat = loopingChat();
+    const evidence = await runTask("lowered loop", {
+      chat,
+      persist: async () => {},
+      now: advancingClock(1),
+    });
+
+    assert.equal(effectiveMaxIterations(), 2);
+    assert.equal(evidence.iterations, 2);
+    assert.equal(chat.calls(), 2);
+    assert.match(evidence.error, /Reached iteration ceiling \(2; hard=40; HATTA_MAX_ITER=2\)/);
+  });
+});
+
+add("exhaustion messages name the bound and quote the numbers", async () => {
+  const ceiling = await withEnv("HATTA_MAX_ITER", "3", () => runTask("ceiling message", {
+    chat: loopingChat(),
+    persist: async () => {},
+    now: advancingClock(1),
+  }));
+  const clock = await withEnv("HATTA_MAX_ITER", undefined, () => runTask("clock message", {
+    chat: loopingChat(),
+    persist: async () => {},
+    now: advancingClock(120000),
+  }));
+
+  assert.match(ceiling.error, /iteration ceiling \(3; hard=40; HATTA_MAX_ITER=3\)/);
+  assert.match(clock.error, /clock budget/);
+  assert.match(clock.error, /outer=480000ms; reserve=120000ms/);
 });
 
 // ---------------------------------------------------------------------------
