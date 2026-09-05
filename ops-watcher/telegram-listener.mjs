@@ -166,7 +166,13 @@ import {
 import { parseDecisionOptionsFromComments } from "./telegram-decision-options.mjs";
 import { COMMANDS, handleCommand, parseCommand } from "./telegram-commands.mjs";
 import { pauseBanner, readPause } from "./pause-gate.mjs";
-import { capturePlanForExecution, commentsOldestFirst } from "./directive-runner.mjs";
+import { capturePlanForExecution, commentsOldestFirst, parsePlan, PLAN_MARKER } from "./directive-runner.mjs";
+import { parseDecisionBriefFromComments } from "./decision-brief.mjs";
+import {
+  buildEditRequestedCommentBody,
+  buildOwnerRevisionCommentBody,
+  pendingEditRequest,
+} from "./escalation-actions.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -184,7 +190,12 @@ const SENT_MARKER = "[TELEGRAM SENT]";
 // queryable in Paperclip so no human has to assign it by hand.
 export const AHMAD_AGENT_ID = "cdea95bd-b9db-4035-854b-8ea677c1326e";
 
-const ACTION_LETTERS = { a: "APPROVE", r: "REJECT", d: "DETAILS", z: "DEFER", k: "ASK AHMAD", o: "OPTION" };
+// E2's four actions map onto letters the same way the existing ones do:
+//   accept  -> a (APPROVE, already here)      edit    -> e (EDIT, new)
+//   ignore  -> r (REJECT, already here)       response-> b (RESPOND, new)
+// d (DETAILS) and z (DEFER) are not among the four: one only reads, the other
+// only says "not now".
+const ACTION_LETTERS = { a: "APPROVE", r: "REJECT", d: "DETAILS", z: "DEFER", k: "ASK AHMAD", o: "OPTION", e: "EDIT", b: "RESPOND" };
 const LABEL_SPECS = {
   OWNER_REQUIRED: "#b91c1c",
   OWNER_REJECTED: "#7f1d1d",
@@ -417,6 +428,158 @@ function renderDirectivePlanDetail(plan) {
     `*Verify:* ${escMd(plan?.verify || "(kosong)")}`,
     `*Risk:* ${escMd(plan?.risk || "(kosong)")}`,
   ].join("\n");
+}
+
+// === E4: DETAIL answers the question the card raised ===
+// What DETAIL used to send: the title, the status, the label IDs as raw UUIDs,
+// a directive plan that a decision issue does not have, and the FIRST LINE of
+// four comments cut at 120 characters. The description — the slot that on
+// KOL-66 held the actual options — was dropped here too.
+
+// How much of each free-text field DETAIL carries. DETAIL is chunked across
+// several Telegram messages, so these are generous; the point of a limit here
+// is a readable message, not a byte budget.
+export const DETAIL_DESCRIPTION_BUDGET = 1500;
+export const DETAIL_COMMENT_BUDGET = 700;
+export const DETAIL_COMMENT_COUNT = 4;
+
+/**
+ * Cut long text and SAY SO — how much was cut, and where the whole thing is.
+ * A silent "…" tells the owner nothing about whether the rest mattered.
+ */
+export function trimWithNotice(value, budget, where) {
+  const s = String(value == null ? "" : value).trim();
+  if (s.length <= budget) return { text: s, truncated: false, notice: null };
+  const cut = s.slice(0, budget);
+  const stop = Math.max(cut.lastIndexOf("\n"), cut.lastIndexOf(". "), cut.lastIndexOf(" "));
+  const kept = (stop > budget * 0.5 ? cut.slice(0, stop) : cut).trim();
+  return {
+    text: kept,
+    truncated: true,
+    notice: `✂️ dipotong ${s.length - kept.length} dari ${s.length} karakter — teks penuh ada di ${where}.`,
+  };
+}
+
+/**
+ * Label NAMES. `labelMap` is name -> id (the labels this listener ensures);
+ * `labels` is the company's full label list, which covers the ones it does not.
+ * An id that neither knows is shown as an id, marked as such, rather than
+ * silently dropped — a label the owner cannot see is a label he cannot weigh.
+ */
+export function renderLabelNames(labelIds, labelMap = {}, labels = []) {
+  const ids = Array.isArray(labelIds) ? labelIds : [];
+  if (!ids.length) return "(tidak ada label)";
+  const byId = new Map();
+  for (const [name, id] of Object.entries(labelMap || {})) if (id) byId.set(String(id), name);
+  for (const l of Array.isArray(labels) ? labels : []) if (l && l.id) byId.set(String(l.id), String(l.name || ""));
+  return ids
+    .map((id) => byId.get(String(id)) || `(id tidak dikenal: ${String(id).slice(0, 8)})`)
+    .join(", ");
+}
+
+/** The five slots, rendered for reading rather than for parsing. */
+export function renderDecisionBriefDetail(brief) {
+  const lines = ["*Ringkasan keputusan:*", `*Pertanyaan:* ${escMd(brief.pertanyaan || "(kosong)")}`];
+  const sudah = Array.isArray(brief.yang_sudah_ada) ? brief.yang_sudah_ada : [];
+  lines.push("", "*Keadaan sekarang:*");
+  lines.push(...(sudah.length
+    ? sudah.map((r) => `• ${escMd(r.kutipan || "(kosong)")} — sumber: ${escMd(r.sumber || "(tidak disebut)")}`)
+    : ["(tidak ada)"]));
+  const pilihan = Array.isArray(brief.pilihan) ? brief.pilihan : [];
+  lines.push("", `*Pilihan (${pilihan.length}):*`);
+  lines.push(...(pilihan.length
+    ? pilihan.map((o, i) => `${i + 1}. *${escMd(o.label || o.key || "(tanpa label)")}* — ${escMd(o.konsekuensi || "(akibat tidak disebut)")}`)
+    : ["(tidak ada)"]));
+  const rek = brief.rekomendasi || {};
+  const chosen = pilihan.find((o) => o && o.key === rek.pilihan);
+  lines.push("", `*Saran:* ${escMd(chosen ? chosen.label : (rek.pilihan || "(tidak ada)"))}`);
+  if (rek.alasan) lines.push(`*Alasan:* ${escMd(rek.alasan)}`);
+  lines.push("", `*Kalau didiamkan:* ${escMd(brief.kalau_didiamkan || "(tidak disebut)")}`);
+  return lines.join("\n");
+}
+
+/** Comment BODIES, not first lines. Each cut states its own cut. */
+export function renderCommentBodies(comments, shortId, {
+  count = DETAIL_COMMENT_COUNT,
+  budget = DETAIL_COMMENT_BUDGET,
+} = {}) {
+  const all = commentsOldestFirst(comments);
+  const shown = all.slice(-count);
+  if (!shown.length) return { text: "(tidak ada komentar)", shown: 0, total: all.length };
+  const blocks = shown.map((c) => {
+    const who = `${escMd(c.authorType || "?")}${c.authorAgentId ? "(agent)" : ""}`;
+    const t = trimWithNotice(c.body, budget, `issue ${shortId} di Paperclip`);
+    const body = t.text ? escMd(t.text) : "(kosong)";
+    return `• *${who}:*\n${body}${t.notice ? `\n${t.notice}` : ""}`;
+  });
+  return { text: blocks.join("\n\n"), shown: shown.length, total: all.length };
+}
+
+/**
+ * E2 `edit`, the half that runs when the owner's revision arrives.
+ *
+ * Returns null when this card did not ask for a revision (the caller then
+ * treats the reply as an ordinary OWNER NOTE, unchanged). Otherwise records:
+ *
+ *   1. the revision verbatim, under [OWNER PLAN REVISION] — always, so his
+ *      words survive even when they are not written in plan shape; and
+ *   2. a NEW `DIRECTIVE PLAN` comment when the revision IS a valid plan, which
+ *      is what puts the issue back to awaiting-approval and guarantees the
+ *      original plan is not the one that runs.
+ *
+ * A revision that is not in plan shape is NOT posted as a plan: an unparseable
+ * plan comment would burn the runner's plan attempts and reach the attempt cap,
+ * which is a worse answer than saying plainly that a plan is still needed.
+ */
+export async function applyOwnerRevisionIfRequested({
+  base, issueId, targetLabel, msgText, cardMessageId, _get, _postComment, log = () => {}, uid = "",
+}) {
+  let comments = [];
+  try {
+    const cRes = await _get(`${base}/api/issues/${issueId}/comments`);
+    comments = Array.isArray(cRes && cRes.body) ? cRes.body : [];
+  } catch (e) {
+    log(`telegram-listener: update ${uid} edit-request scan threw (suppressed): ${e && e.message}`);
+    return null;
+  }
+  const pending = pendingEditRequest(comments, cardMessageId);
+  if (!pending) return null;
+
+  const revision = await _postComment(base, issueId,
+    buildOwnerRevisionCommentBody({ shortId: targetLabel, revision: msgText, at: iso() }),
+    { authorType: "user" });
+  if (!revision || revision.networkError) {
+    log(`telegram-listener: update ${uid} OWNER revision for ${targetLabel} FAILED to post — nothing recorded, owner may retry`);
+    return { ok: false, outcome: "owner-revision-failed" };
+  }
+
+  const parsed = parsePlan(msgText);
+  if (!parsed.ok) {
+    log(`telegram-listener: update ${uid} OWNER revision for ${targetLabel} recorded, but it is not in plan shape (${parsed.error}) — no new plan comment posted`);
+    return {
+      ok: true,
+      outcome: "owner-revision-recorded",
+      ack: `Revisi Anda dicatat di ${escMd(targetLabel)}. Belum berbentuk rencana (${escMd(parsed.error)}), jadi rencana lama tetap tidak dijalankan dan rencana baru akan disusun dari revisi Anda.`,
+    };
+  }
+
+  const planComment = await _postComment(base, issueId,
+    `${PLAN_MARKER} (${iso()}) — rencana revisi OWNER via Telegram. Rencana sebelumnya TIDAK dijalankan.\n${msgText.trim()}`,
+    { authorType: "user" });
+  if (!planComment || planComment.networkError) {
+    log(`telegram-listener: update ${uid} OWNER revision for ${targetLabel} recorded but the NEW PLAN comment failed to post — the old plan still will not run (a revision comment postdates its approval), but the new plan must be re-sent`);
+    return {
+      ok: true,
+      outcome: "owner-revision-plan-post-failed",
+      ack: `Revisi Anda tercatat di ${escMd(targetLabel)}, tetapi rencana baru gagal diposting. Rencana lama tetap tidak dijalankan; silakan kirim ulang revisinya.`,
+    };
+  }
+  log(`telegram-listener: update ${uid} OWNER revision for ${targetLabel} posted as a NEW plan — awaiting his approval, original plan not executed`);
+  return {
+    ok: true,
+    outcome: "owner-revision-planned",
+    ack: `Rencana revisi Anda dicatat sebagai rencana BARU di ${escMd(targetLabel)} dan menunggu persetujuan Anda. Rencana lama tidak dijalankan.`,
+  };
 }
 
 function splitTelegramDetailText(text) {
@@ -742,6 +905,34 @@ export async function processUpdateForCallback(upd, ctx) {
       }
       if (targetIssue) {
         const targetLabel = targetIssue.identifier || targetIssue.id;
+
+        // E2 `edit`: when this card asked for a revision, the reply is not a
+        // note — it is the owner's revised plan. It is recorded verbatim, and
+        // as a NEW plan comment when it is written in plan shape, so the
+        // original plan is never the one that runs.
+        const editOutcome = await applyOwnerRevisionIfRequested({
+          base, issueId: targetIssue.id, targetLabel, msgText,
+          cardMessageId: replyTo.message_id, _get, _postComment, log, uid,
+        });
+        if (editOutcome) {
+          if (editOutcome.ok) {
+            await sendOwnerAcknowledgement(_sendMessage, editOutcome.ack, upOpts, log, uid, "owner-revision");
+          } else {
+            await sendOwnerAcknowledgement(
+              _sendMessage,
+              `Could not record your revision for ${escMd(targetLabel)} — please retry.`,
+              upOpts, log, uid, "owner-revision failure",
+            );
+          }
+          return {
+            update_id: uid,
+            outcome: editOutcome.outcome,
+            issueId: targetIssue.id,
+            identifier: targetIssue.identifier,
+            ...(editOutcome.ok ? {} : { networkError: true }),
+          };
+        }
+
         const noteBody =
           `OWNER NOTE via Telegram reply (${iso()}) — @ahmadsuperbot reply by owner to decision card for ${targetLabel}:\n${msgText}`;
         let nc = null;
@@ -1140,38 +1331,68 @@ export async function applyAction(ctx) {
 
   if (action === "DETAILS") {
     // No state change; send a follow-up message with more detail.
+    //
+    // E4: DETAIL must answer the question the card raised. It carries the
+    // description, the full brief when there is one, label NAMES rather than
+    // UUIDs, and comment BODIES rather than first lines — and every cut says
+    // what it cut and where the rest is.
     const cRes = await _get(`${base}/api/issues/${issueId}/comments`);
     const comments = Array.isArray(cRes.body) ? cRes.body : [];
-    const recent = commentsOldestFirst(comments).slice(-4).map((c) =>
-      `• ${escMd(c.authorType || "?")}${c.authorAgentId ? "(agent)" : ""}: ${escMd(String(c.body || "").split("\n")[0].slice(0, 120))}`)
-      .join("\n") || "(tidak ada komentar)";
+    const commentBlock = renderCommentBodies(comments, shortId);
     const fresh = await freshIssue(base, issueId, _get);
     const status = fresh ? fresh.status : issue.status;
     const title = fresh ? fresh.title : issue.title;
     const labelIds = (fresh ? fresh.labelIds : issue.labelIds) || [];
+    const description = (fresh ? fresh.description : issue.description) || "";
     const capture = capturePlanForExecution(comments);
+
+    // Label names. A listing failure degrades to whatever labelMap knows rather
+    // than failing DETAIL, which is the owner's only way to read the issue.
+    let labelList = [];
+    try {
+      const lr = await _listLabels(base, companyId);
+      labelList = Array.isArray(lr && lr.labels) ? lr.labels : [];
+      if (lr && lr.networkError) log(`telegram-listener: ${shortId} DETAILS label list network error (${lr.networkErrorMessage || "?"}) — falling back to known label names`);
+    } catch (err) {
+      log(`telegram-listener: ${shortId} DETAILS label list threw (${err && err.message}) — falling back to known label names`);
+    }
+
+    // parseDecisionBriefFromComments scans in the order given and takes the
+    // first match, so it must be handed NEWEST first.
+    const brief = parseDecisionBriefFromComments(commentsOldestFirst(comments).slice().reverse());
+
     const detailParts = [
       `*Detail* \`${shortId}\``,
       "",
       `*Judul:* ${escMd(title || "(tanpa judul)")}`,
       `*Status:* ${escMd(status)}`,
-      `*Label:* ${escMd(labelIds.join(", "))}`,
+      `*Label:* ${escMd(renderLabelNames(labelIds, labelMap, labelList))}`,
     ];
+
+    // The description: the slot that held KOL-66's actual options while the
+    // card and DETAIL both dropped it.
+    const desc = trimWithNotice(description, DETAIL_DESCRIPTION_BUDGET, `issue ${shortId} di Paperclip`);
+    detailParts.push("", "*Keterangan:*", desc.text ? escMd(desc.text) : "(tidak ada keterangan pada issue ini)");
+    if (desc.notice) detailParts.push(desc.notice);
+
+    if (brief) detailParts.push("", renderDecisionBriefDetail(brief));
+
     if (capture.ok) {
       detailParts.push("", renderDirectivePlanDetail(capture.plan));
-      detailParts.push(
-        "",
-        `*Komentar terbaru (${comments.length}):*`,
-        recent,
-      );
-    } else {
-      detailParts.push(
-        "",
-        `Rencana directive tidak terbaca (${escMd(capture.reason || "unknown")}).`,
-        "",
-        `*Komentar terbaru (${comments.length}):*`,
-        recent,
-      );
+    } else if (!brief) {
+      // Only worth saying on an issue that could have had a plan. On a decision
+      // issue there was never a directive plan to read, and saying so every
+      // time trained the owner to ignore the line.
+      detailParts.push("", `Rencana directive tidak terbaca (${escMd(capture.reason || "unknown")}).`);
+    }
+
+    detailParts.push(
+      "",
+      `*Komentar (${commentBlock.shown} terbaru dari ${commentBlock.total}):*`,
+      commentBlock.text,
+    );
+    if (commentBlock.total > commentBlock.shown) {
+      detailParts.push(`✂️ ${commentBlock.total - commentBlock.shown} komentar lebih lama tidak ditampilkan — semuanya ada di issue ${escMd(shortId)} di Paperclip.`);
     }
     const detail = detailParts.join("\n");
     const sent = await sendDetailMessages(_sendMessage, detail, upOpts, log, shortId);
@@ -1180,6 +1401,63 @@ export async function applyAction(ctx) {
     // Intentionally do NOT edit or change Paperclip state.
     return { outcome: "details-sent" };
   }
+  if (action === "EDIT") {
+    // E2 `edit`: revise the arguments, then approve. The owner's revision comes
+    // back as a REPLY to this card (the listener already captures replies), and
+    // the reply is recorded on the issue as a NEW plan. The original is never
+    // executed — directive-runner takes the LAST plan comment and looks for a
+    // decision AFTER it, so a newer plan puts the issue back to awaiting.
+    const fresh = await freshIssue(base, issueId, _get);
+    if (!fresh) { await toast("gagal memuat issue"); return { outcome: "load-failed" }; }
+    const cardMessageId = cq && cq.message && cq.message.message_id;
+    const rc = await _postComment(base, issueId,
+      buildEditRequestedCommentBody({ shortId, messageId: cardMessageId, at: iso() }),
+      { authorType: "user" });
+    if (!rc || rc.networkError) {
+      log(`telegram-listener: ${shortId} EDIT request comment FAILED to post (network error) — nothing recorded, owner may retry`);
+      await toast("⚠️ gagal meminta revisi");
+      return { outcome: "comment-failed", networkError: true };
+    }
+    log(`telegram-listener: ${shortId} EDIT -> recorded edit request (message_id=${cardMessageId})`);
+    await toast("✏️ kirim revisi Anda");
+    // SETUJUI is removed until the revision arrives: approving here would
+    // approve the plan he just said he wants changed.
+    await edit(
+      `✏️ MENUNGGU REVISI ANDA\n${escMd(fresh.title || "(tanpa judul)")}\n` +
+      `Balas pesan ini dengan rencana revisi Anda. Revisi itu dicatat sebagai rencana BARU di issue, dan rencana lama tidak akan dijalankan.`,
+      {
+        buttons: [
+          [{ text: "TOLAK", callback_data: `r:${shortId}` }],
+          [{ text: "DETAIL", callback_data: `d:${shortId}` }],
+          [{ text: "TUNDA", callback_data: `z:${shortId}` }],
+        ],
+      },
+    );
+    return { outcome: "edit-requested" };
+  }
+
+  if (action === "RESPOND") {
+    // E2 `response`: disagree in his own words. No state change and no invented
+    // reason — the reply-capture path already attaches his words to the issue
+    // as an OWNER NOTE, so this only asks for them.
+    const fresh = await freshIssue(base, issueId, _get);
+    const title = fresh ? fresh.title : issue.title;
+    await toast("💬 tulis balasan Anda");
+    await edit(
+      `💬 MENUNGGU BALASAN ANDA\n${escMd(title || "(tanpa judul)")}\n` +
+      `Balas pesan ini dengan kata-kata Anda sendiri; balasan dilampirkan ke issue sebagai OWNER NOTE. Keputusan belum berubah.`,
+      {
+        buttons: [
+          [{ text: "SETUJUI", callback_data: `a:${shortId}` }],
+          [{ text: "TOLAK", callback_data: `r:${shortId}` }],
+          [{ text: "DETAIL", callback_data: `d:${shortId}` }],
+          [{ text: "TUNDA", callback_data: `z:${shortId}` }],
+        ],
+      },
+    );
+    return { outcome: "response-invited" };
+  }
+
   if (action === "DEFER") {
     // Deliberately non-durable: only a comment. Label + buttons stay.
     const dup = hasRecentInProcessDecision(decisionDedupe, decisionKey, now(), dedupeWindowMs) ||

@@ -72,6 +72,11 @@ import {
 } from "./telegram-decision-options.mjs";
 import { cardWorthy, buildDigest, renderDigest } from "./owner-surface.mjs";
 import { parseDecisionBriefFromComments } from "./decision-brief.mjs";
+import {
+  ACTION_FLAGS,
+  buttonsForActions,
+  parseEscalationActionsFromComments,
+} from "./escalation-actions.mjs";
 
 export { buildDecisionOptionsCommentBody };
 
@@ -124,8 +129,23 @@ export function buildButtons(shortId, comments = [], { log = () => {} } = {}) {
     log(`telegram-notify: ${shortId} invalid decision-options comment (${validated.reason}) — falling back to default APPROVE/REJECT/DETAILS/DEFER buttons`);
   }
 
+  // E2: the SENDER declares which actions this escalation supports, and the
+  // card renders only those. An escalation that declares nothing keeps the card
+  // it has today — a producer that has not been taught to declare must not
+  // silently lose the owner's buttons.
+  const actions = parseEscalationActionsFromComments(comments);
+  if (actions) {
+    log(`telegram-notify: ${shortId} escalation declares actions (${ACTION_FLAGS.filter((f) => actions[f]).join(", ") || "none"})`);
+    return buttonsForActions(shortId, actions);
+  }
+
   return buildDefaultButtons(shortId);
 }
+
+// How much of an issue's description the card carries when there is no brief.
+// Long enough for the options to survive (KOL-66's ran to three short lines),
+// short enough that the card is still a card and not the issue body.
+export const DESCRIPTION_BUDGET = 700;
 
 // Cut on a sentence boundary. A card that ends mid-word reads as broken and the
 // owner cannot tell whether the rest mattered.
@@ -158,10 +178,23 @@ function trimTo(text, budget) {
 export function buildMessageText(it, shortId, brief = null) {
   const title = escMd(it.title || "(tanpa judul)");
   if (!brief) {
+    // E1: the card carries the content. The no-brief branch used to send the
+    // title and "tap a button", dropping issue.description entirely \u2014 and for
+    // KOL-66 that description WAS the answer ("Reply with one: commit them,
+    // discard them, or leave as-is for now"). The options were written down and
+    // the card threw them away.
+    //
+    // A missing description still yields the old card byte-for-byte: there is
+    // nothing to add, and inventing a line would say less than silence.
+    const description = String(it.description || "").trim();
+    const body = description ? trimTo(description, DESCRIPTION_BUDGET) : "";
+    const truncated = Boolean(description) && description.length > DESCRIPTION_BUDGET;
     return [
       `\u26A0\uFE0F Perlu keputusan Anda`,
       ``,
       `${title}`,
+      ...(body ? [``, escMd(body)] : []),
+      ...(truncated ? [``, `\u2702\uFE0F Keterangan dipotong (${description.length} karakter). Teks penuh ada di DETAIL.`] : []),
       ``,
       `Ketuk salah satu tombol di bawah untuk memutuskan.`,
     ].join("\n");

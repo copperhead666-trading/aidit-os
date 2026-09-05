@@ -304,7 +304,10 @@ function commandCtx(overrides = {}) {
 async function runOneAction(actionLetter, opts = {}) {
   const id = "iss-X";
   const shortId = "KOL-95";
-  const seed = ownerRequiredIssue({ id, identifier: shortId, title: "decision target" });
+  const seed = ownerRequiredIssue({
+    id, identifier: shortId, title: "decision target",
+    ...(opts.description !== undefined ? { description: opts.description } : {}),
+  });
   const seedComments = opts.comments ? { ...seed.comments, [id]: opts.comments.slice() } : seed.comments;
   const update = cbqUpdate(5001, actionLetter, shortId, 4242);
   const tg = mockTelegram({ updatesByOffset: (off) => (off <= 5001 ? [update] : []) });
@@ -378,8 +381,10 @@ function assertNoUndefinedOrEmptySaran(text) {
 }
 
 async function testDecisionCardNoBriefKeepsLegacyBytes() {
-  const name = "(0d) buildMessageText without brief keeps the legacy title-only card byte-for-byte";
+  const name = "(0d) buildMessageText without brief or description keeps the legacy title-only card byte-for-byte";
   try {
+    // E1 adds the description to this branch. With NO description there is
+    // nothing to add, so the old card must survive unchanged.
     const issue = { title: "Komisi *SJS_ [legacy] \\ path" };
     const expected = [
       "⚠️ Perlu keputusan Anda",
@@ -390,6 +395,51 @@ async function testDecisionCardNoBriefKeepsLegacyBytes() {
     ].join("\n");
     const actual = buildMessageText(issue, "KOL-LEGACY");
     assert.equal(Buffer.compare(Buffer.from(actual, "utf8"), Buffer.from(expected, "utf8")), 0);
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+// === E1: the card carries the content ===
+// The no-brief branch used to send the title and "tap a button" and DROP
+// issue.description. For KOL-66 the description WAS the answer: "Reply with
+// one: commit them, discard them, or leave as-is for now."
+async function testDecisionCardNoBriefCarriesDescription() {
+  const name = "(0d1) buildMessageText without brief includes the issue description";
+  try {
+    const issue = {
+      title: "KOL-66 lima berkas belum di-commit",
+      description: "Balas dengan salah satu: commit semuanya, buang semuanya, atau biarkan dulu.",
+    };
+    const text = buildMessageText(issue, "KOL-66");
+    assert.match(text, /commit semuanya/);
+    assert.match(text, /buang semuanya/);
+    assert.match(text, /biarkan dulu/);
+    assert.match(text, /KOL-66 lima berkas belum di-commit/);
+    assert.doesNotMatch(text, /dipotong/, "a short description is not truncated");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testDecisionCardDescriptionTruncationIsMarked() {
+  const name = "(0d2) a long description is cut and the cut is stated, with where to read the rest";
+  try {
+    const long = "Kalimat panjang yang harus dipotong. ".repeat(60);
+    const text = buildMessageText({ title: "Judul", description: long }, "KOL-LONG");
+    assert.ok(text.length < long.length, "the card must not carry the whole description");
+    assert.match(text, /dipotong/, "the truncation must be stated, not silent");
+    assert.match(text, new RegExp(String(long.trim().length)), "the card states how long the full text is");
+    assert.match(text, /DETAIL/, "the card says where the full text lives");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testDecisionCardDescriptionEscapesMarkdown() {
+  const name = "(0d3) a description with markdown specials is escaped, not rendered";
+  try {
+    const text = buildMessageText({ title: "T", description: "pilih *a_b* atau [c]" }, "KOL-MD");
+    // escMd puts a backslash before \ * _ ` [ so Telegram renders the owner's
+    // text, not a broken markdown entity that makes the send fail.
+    assert.ok(text.includes("pilih \\*a\\_b\\* atau \\[c]"), text);
     ok(name);
   } catch (e) { bad(name, e); }
 }
@@ -674,6 +724,89 @@ async function testDetails() {
   } catch (e) { bad(name, e); }
 }
 
+// === E4: DETAIL answers the question the card raised ===
+// It used to send the title, the status, label UUIDs, a directive plan a
+// decision issue does not have, and the FIRST LINE of four comments cut at 120
+// characters — dropping the description that, on KOL-66, WAS the answer.
+async function testDetailsCarriesTheDescription() {
+  const name = "(5j) DETAILS includes the issue description";
+  try {
+    const description = "Lima berkas belum di-commit di ventures/sjs-superapps. Balas dengan salah satu: commit semuanya, buang semuanya, atau biarkan dulu.";
+    const { result, tgCalls } = await runOneAction("d", { description });
+    assert.equal(result.results[0].outcome, "details-sent");
+    const text = tgCalls.sendMessage.map((m) => m.text).join("\n");
+    assert.ok(text.includes("Keterangan"), "DETAIL names the description slot");
+    assert.ok(text.includes("commit semuanya"), "the options in the description must reach the owner");
+    assert.ok(text.includes("biarkan dulu"), "every option must reach him, not just the first");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testDetailsRendersLabelNamesNotUuids() {
+  const name = "(5f) DETAILS renders label NAMES, not raw UUIDs";
+  try {
+    const { tgCalls } = await runOneAction("d");
+    const text = tgCalls.sendMessage.map((m) => m.text).join("\n");
+    // escMd escapes the underscores; the point is that a NAME is rendered.
+    assert.ok(text.includes("OWNER\\_REQUIRED"), text.slice(0, 400));
+    assert.ok(!text.includes(OWNER_REQUIRED_LABEL_ID), "a UUID tells him nothing");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testDetailsShowsCommentBodiesNotFirstLines() {
+  const name = "(5g) DETAILS shows comment BODIES, not first lines";
+  try {
+    const body = ["baris pertama komentar", "baris kedua yang dulu hilang", "baris ketiga yang juga hilang"].join("\n");
+    const { tgCalls } = await runOneAction("d", {
+      comments: [{ id: "c-1", body, authorType: "user", createdAt: "2026-09-01T00:01:00.000Z" }],
+    });
+    const text = tgCalls.sendMessage.map((m) => m.text).join("\n");
+    assert.ok(text.includes("baris pertama komentar"), "first line still shown");
+    assert.ok(text.includes("baris kedua yang dulu hilang"), "the second line was dropped before E4");
+    assert.ok(text.includes("baris ketiga yang juga hilang"), "and the third");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testDetailsStatesWhatWasTruncated() {
+  const name = "(5h) DETAILS states what it cut and where the rest is";
+  try {
+    const longComment = "Kalimat yang sangat panjang sekali. ".repeat(80);
+    const longDescription = "Keterangan panjang yang harus dipotong. ".repeat(80);
+    const { tgCalls } = await runOneAction("d", {
+      description: longDescription,
+      comments: [{ id: "c-1", body: longComment, authorType: "agent", createdAt: "2026-09-01T00:01:00.000Z" }],
+    });
+    const text = tgCalls.sendMessage.map((m) => m.text).join("\n");
+    assert.ok(text.includes("dipotong"), "a cut must be stated");
+    assert.ok(/dipotong \d+ dari \d+ karakter/.test(text), "the cut states how much was cut of how much");
+    assert.ok(text.includes("Paperclip"), "and where to read the rest");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testDetailsShowsTheFullBriefWhenPresent() {
+  const name = "(5i) DETAILS shows the full five-slot brief when the issue carries one";
+  try {
+    const briefComment = {
+      id: "c-brief",
+      body: `[DECISION BRIEF] ${JSON.stringify({ decision_brief: decisionBrief() })}`,
+      authorType: "user",
+      createdAt: "2026-09-01T00:02:00.000Z",
+    };
+    const { tgCalls } = await runOneAction("d", { comments: [briefComment] });
+    const text = tgCalls.sendMessage.map((m) => m.text).join("\n");
+    const brief = decisionBrief();
+    assert.ok(text.includes("Pertanyaan"), "the question slot is rendered");
+    assert.ok(text.includes(brief.pertanyaan.slice(0, 40)), "the question itself reaches him");
+    assert.ok(text.includes(brief.yang_sudah_ada[0].sumber.slice(0, 20)), "the current state names its source");
+    assert.ok(text.includes(brief.pilihan[0].konsekuensi.slice(0, 25)), "each option carries its consequence");
+    assert.ok(text.includes("Kalau didiamkan"), "the cost of waiting is stated");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
 async function testDetailsShowsNewestFromNewestFirstApiOrder() {
   const name = "(5a) DETAILS shows the four newest comments from newest-first API order";
   const newestFirstComments = [
@@ -774,6 +907,41 @@ async function testRejectEditInvitesReasonReply() {
     assert.equal(result.results[0].outcome, "rejected");
     assert.equal(tgCalls.editMessageText.length, 1, "message edited");
     assert.match(tgCalls.editMessageText[0].text, /Silakan balas pesan ini dengan alasan penolakan; balasan akan dilampirkan ke issue sebagai OWNER NOTE\./);
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+// === E2: the two actions the owner did not have ===
+async function testEditRequestsARevisionAndDropsApprove() {
+  const name = "(6a) EDIT records an edit request, removes SETUJUI, and changes no Paperclip state";
+  try {
+    const { result, tgCalls, pc } = await runOneAction("e");
+    assert.equal(result.results[0].outcome, "edit-requested");
+    assert.equal(pc.patchLog.length, 0, "asking for a revision decides nothing");
+    assert.deepEqual(pc.issues["iss-X"].labelIds, [OWNER_REQUIRED_LABEL_ID], "still his");
+    const posted = pc.comments["iss-X"].map((c) => c.body).join("\n");
+    assert.ok(posted.includes("[ESCALATION EDIT REQUESTED]"), "the request is recorded in the house shape");
+    assert.equal(tgCalls.editMessageText.length, 1, "the card is rewritten to ask for the revision");
+    const edited = tgCalls.editMessageText[0];
+    assert.ok(String(edited.text).includes("REVISI"), edited.text);
+    const buttons = JSON.stringify(edited.reply_markup || {});
+    assert.equal(buttons.includes("SETUJUI"), false, "approving here would approve the plan he asked to change");
+    assert.ok(buttons.includes("TOLAK") && buttons.includes("DETAIL"), "declining and reading stay available");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testRespondInvitesHisOwnWords() {
+  const name = "(6b) RESPOND invites a reply, changes nothing, and keeps every button";
+  try {
+    const { result, tgCalls, pc } = await runOneAction("b");
+    assert.equal(result.results[0].outcome, "response-invited");
+    assert.equal(pc.patchLog.length, 0, "disagreeing is not a state change");
+    assert.equal(pc.comments["iss-X"].length, 0, "nothing is written until he actually replies");
+    assert.equal(tgCalls.editMessageText.length, 1);
+    const edited = tgCalls.editMessageText[0];
+    assert.ok(String(edited.text).includes("BALASAN"), edited.text);
+    assert.ok(JSON.stringify(edited.reply_markup || {}).includes("SETUJUI"), "he can still decide after replying");
     ok(name);
   } catch (e) { bad(name, e); }
 }
@@ -1488,6 +1656,9 @@ async function main() {
     await testSendMessageNonParse400NoFallback();
     await testSendMessageSuccessNoFallback();
     await testDecisionCardNoBriefKeepsLegacyBytes();
+    await testDecisionCardNoBriefCarriesDescription();
+    await testDecisionCardDescriptionTruncationIsMarked();
+    await testDecisionCardDescriptionEscapesMarkdown();
     await testDecisionCardWithBriefLeadsWithQuestion();
     await testDecisionCardRecommendationUsesOptionLabel();
     await testDecisionCardUnmatchedRecommendationStillRendersKey();
@@ -1505,7 +1676,14 @@ async function main() {
     await testDetailsShowsFullDirectivePlan();
     await testDetailsSplitsLongDirectivePlan();
     await testDetailsNoPlanStatesCaptureReason();
+    await testDetailsCarriesTheDescription();
+    await testDetailsRendersLabelNamesNotUuids();
+    await testDetailsShowsCommentBodiesNotFirstLines();
+    await testDetailsStatesWhatWasTruncated();
+    await testDetailsShowsTheFullBriefWhenPresent();
     await testRejectEditInvitesReasonReply();
+    await testEditRequestsARevisionAndDropsApprove();
+    await testRespondInvitesHisOwnWords();
     await testDefer();
     await testAskAhmad();
     await testOffsetDedupe();

@@ -18,6 +18,9 @@ import {
   postComment,
 } from "./paperclip-write-client.mjs";
 import { isUnusableModelOutput } from "./lane-guard.mjs";
+import { postGatedBrief, unknownSlot } from "./owner-gate.mjs";
+import { parseDecisionBriefFromComments } from "./decision-brief.mjs";
+import { buildEscalationActionsCommentBody } from "./escalation-actions.mjs";
 
 export const COMPANY_ID = "a7011f31-8891-4581-b8fb-bbda8ac6a890";
 
@@ -116,6 +119,68 @@ function fallbackExplanation(it) {
   return `Issue ini terblokir: ${JSON.stringify(it.unblockDescriptor || null)}. Perlu tindakan Anda untuk melanjutkan.`;
 }
 
+// E2. A blocked issue has no proposal attached, so there is nothing to accept.
+// What helps is his instruction in his own words, or a decision to close it.
+export const BLOCKED_ISSUE_ACTIONS = Object.freeze({
+  allow_accept: false,
+  allow_edit: false,
+  allow_respond: true,
+  allow_ignore: true,
+});
+
+/**
+ * E3. The five slots for a blocked issue, filled from what this sweep actually
+ * knows — and saying so, in the slot, where it does not.
+ *
+ * This sweep detects that an issue is BLOCKED. It does not diagnose why, and it
+ * must not pretend to: the recommendation's reasoning states plainly that the
+ * cause has not been analysed, which is a fact the owner can act on ("someone
+ * look at this") rather than a confident guess he cannot check.
+ */
+export function blockedIssueBrief(issue, explanation) {
+  const ident = issue?.identifier || issue?.id || "issue ini";
+  const status = String(issue?.status || "tidak diketahui");
+  const said = String(explanation || "").trim();
+  return {
+    pertanyaan: `Issue ${ident} terhenti dan tidak dapat dilanjutkan otomatis. Apa yang Anda ingin dilakukan terhadapnya?`,
+    yang_sudah_ada: [
+      {
+        kutipan: said || `Issue ${ident} berstatus ${status} dan ditandai terblokir, tanpa keterangan lain.`,
+        sumber: `Paperclip issue ${ident} (status ${status}), dibaca oleh escalation-sec`,
+      },
+      {
+        kutipan: `Belum ada satu pun lane yang mengerjakan ${ident} selama issue ini masih terblokir.`,
+        sumber: "ops-watcher/escalation-sec.mjs — sapuan blocked-unnotified",
+      },
+    ],
+    pilihan: [
+      {
+        key: "buka_blokir",
+        label: "Hapus hambatannya, lanjutkan pekerjaan",
+        konsekuensi: "Pekerjaan berjalan lagi, tetapi hambatan yang sama dapat muncul kembali jika penyebabnya tidak diperbaiki.",
+      },
+      {
+        key: "tutup",
+        label: "Tutup issue ini",
+        konsekuensi: "Pekerjaan berhenti secara permanen dan tidak ada lane yang akan mengambilnya lagi.",
+      },
+      {
+        key: "biarkan",
+        label: "Biarkan dulu, putuskan nanti",
+        konsekuensi: "Issue tetap terhenti dan akan muncul lagi di ringkasan harian Anda.",
+      },
+    ],
+    rekomendasi: {
+      pilihan: "buka_blokir",
+      alasan: unknownSlot(
+        "escalation-sec",
+        "sapuan ini hanya mendeteksi bahwa issue terblokir dan tidak menganalisis penyebabnya, sehingga saran ini adalah default dan bukan hasil pemeriksaan",
+      ),
+    },
+    kalau_didiamkan: `Tidak ada yang berubah: ${ident} tetap terhenti, tidak ada lane yang mengerjakannya, dan kartu ini akan muncul lagi.`,
+  };
+}
+
 function toIsoTimestamp(now) {
   const v = typeof now === "function" ? now() : now;
   if (v instanceof Date) return v.toISOString();
@@ -212,6 +277,46 @@ export async function runEscalationSecOnce(deps = {}) {
       } catch (err) {
         explanation = fallbackExplanation(it);
         log(`escalation-sec: ${ident} fallback owner explanation (hermes threw: ${err && err.message || err})`);
+      }
+
+      // E3. THE BRIEF GATE, BEFORE THE LABEL.
+      //
+      // This sweep used to add OWNER_REQUIRED and post a one-paragraph
+      // explanation, so the card the owner received carried a title and four
+      // buttons. Now it goes through the SAME validator ahmad-escalate uses,
+      // and the brief lands on the issue before the label does. A brief that
+      // does not validate is a defect in the template below, and it refuses
+      // rather than putting another bare card in front of him.
+      // A valid brief already on the issue is not re-posted: a sweep that fails
+      // at the label step runs again five minutes later, and a second identical
+      // brief would be litter on the owner's own issue.
+      // E2: what he can do about a blocked issue. There is no proposal to
+      // accept — the useful answers are "here is what to do about it" and
+      // "close it", so those are the actions this escalation declares.
+      const existingBrief = parseDecisionBriefFromComments(comments);
+      if (!existingBrief) {
+        const decl = await _postComment(base, id, buildEscalationActionsCommentBody(BLOCKED_ISSUE_ACTIONS), { authorType: "user" });
+        if (!okResponse(decl)) log(`escalation-sec: ${ident} action declaration did not land — the card falls back to the default buttons`);
+      }
+      const gated = existingBrief
+        ? { ok: true, posted: true, brief: existingBrief, reused: true }
+        : await postGatedBrief({
+          base,
+          issueId: id,
+          brief: blockedIssueBrief(it, explanation),
+          producer: "escalation-sec",
+          postComment: _postComment,
+          log,
+        });
+      if (!gated.ok) {
+        log(`escalation-sec: ${ident} REFUSED by the brief gate — missing: ${gated.missing.join(", ") || "(shape)"}; no label added, no card sent`);
+        results.push({ id, identifier: ident, outcome: "brief-refused", missing: gated.missing, reasons: gated.reasons });
+        continue;
+      }
+      if (!gated.posted) {
+        log(`escalation-sec: ${ident} brief comment did not land — refusing to label, because the card would carry nothing`);
+        results.push({ id, identifier: ident, outcome: "failed", step: "post-brief", reason: "brief comment did not land" });
+        continue;
       }
 
       const labelRes = await _ensureLabel(base, companyId, "OWNER_REQUIRED", OWNER_REQUIRED_COLOR);

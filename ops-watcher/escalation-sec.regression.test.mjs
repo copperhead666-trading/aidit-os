@@ -14,6 +14,11 @@ const BASE = "http://127.0.0.1:9999";
 const TS = "2026-09-01T01:02:03.000Z";
 const OWNER_LABEL_ID = "lbl-owner-required";
 
+// E2 and E3 each add one bookkeeping comment in the house marker shape
+// ([ESCALATION ACTIONS], [DECISION BRIEF]). The owner-facing comment is the one
+// these tests are about.
+const contentComments = (comments) => comments.filter((c) => !/^\[[A-Z ]+\]/.test(String(c.body || "")));
+
 function blockedIssue(overrides = {}) {
   return {
     id: "iss-1",
@@ -87,9 +92,20 @@ async function t1_notifiesBlockedUnnotifiedIssue() {
   assert.equal(calls.patch.length, 2, "T1: label patch + notified-at patch");
   assert.deepEqual(calls.patch[0].patch.labelIds, ["lbl-existing", OWNER_LABEL_ID], "T1: OWNER_REQUIRED merged without clobbering existing label");
   assert.deepEqual(calls.patch[1].patch, { blockedOwnerNotifiedAt: TS }, "T1: blockedOwnerNotifiedAt patched to timestamp");
-  assert.equal(calls.comment.length, 1, "T1: one comment posted");
-  assert.ok(calls.comment[0].body.startsWith("ESCALATION-SEC NOTIFIED"), "T1: comment starts with marker");
-  assert.equal(calls.comment[0].opts.authorType, "user", "T1: comment authorType=user");
+  // E3: the brief goes on the issue BEFORE the label, so no card of his can
+  // arrive without the five slots behind it.
+  // E2 declares the actions, E3 posts the brief, and only then does the
+  // owner-facing notification go out.
+  assert.equal(calls.comment.length, 3, "T1: declaration, brief, then the marker comment");
+  assert.ok(calls.comment[0].body.startsWith("[ESCALATION ACTIONS]"), "T1: the escalation declares what he can do");
+  assert.ok(calls.comment[1].body.startsWith("[DECISION BRIEF]"), "T1: the brief is posted before the label");
+  const notified = contentComments(calls.comment)[0];
+  assert.ok(notified.body.startsWith("ESCALATION-SEC NOTIFIED"), "T1: the marker comment still follows");
+  assert.equal(notified.opts.authorType, "user", "T1: comment authorType=user");
+  // Declaring "no accept, no edit" is what makes the card's buttons change.
+  const declared = JSON.parse(calls.comment[0].body.slice("[ESCALATION ACTIONS]".length)).escalation_actions;
+  assert.equal(declared.allow_accept, false, "there is no proposal to accept on a blocked issue");
+  assert.equal(declared.allow_respond, true, "he can say what to do about it");
   ok("T1: blocked+unnotified issue gets Hermes explanation, OWNER_REQUIRED label, marker comment, and notified timestamp");
 }
 
@@ -105,9 +121,9 @@ async function t2_hermesFailureFallsBackAndCompletes() {
   assert.equal(r.results[0].outcome, "notified", "T2: fallback path still completes");
   assert.equal(calls.hermes.length, 1, "T2: Hermes attempted once");
   assert.equal(calls.patch.length, 2, "T2: both patches still happen");
-  assert.equal(calls.comment.length, 1, "T2: comment still posted");
+  assert.equal(calls.comment.length, 3, "T2: declaration + brief + comment still posted");
   assert.equal(
-    calls.comment[0].body,
+    contentComments(calls.comment)[0].body,
     `ESCALATION-SEC NOTIFIED: Issue ini terblokir: ${JSON.stringify(issue.unblockDescriptor)}. Perlu tindakan Anda untuk melanjutkan.`,
     "T2: deterministic Indonesian fallback text used",
   );
@@ -125,9 +141,10 @@ async function t2b_hermesTruncatedMetaFallsBackAndCompletes() {
 
   const fallback = `Issue ini terblokir: ${JSON.stringify(issue.unblockDescriptor)}. Perlu tindakan Anda untuk melanjutkan.`;
   assert.equal(r.results[0].outcome, "notified", "T2b: unusable meta output still completes");
-  assert.equal(calls.comment.length, 1, "T2b: comment still posted");
-  assert.equal(calls.comment[0].body, `ESCALATION-SEC NOTIFIED: ${fallback}`, "T2b: deterministic fallback text used");
-  assert.ok(!calls.comment[0].body.includes("Response truncated due to output length limit"), "T2b: meta string is not pasted to owner");
+  assert.equal(calls.comment.length, 3, "T2b: declaration + brief + comment still posted");
+  const notifiedB = contentComments(calls.comment)[0];
+  assert.equal(notifiedB.body, `ESCALATION-SEC NOTIFIED: ${fallback}`, "T2b: deterministic fallback text used");
+  assert.ok(!notifiedB.body.includes("Response truncated due to output length limit"), "T2b: meta string is not pasted to owner");
   ok("T2b: Hermes truncation meta string -> deterministic fallback text");
 }
 
@@ -142,7 +159,7 @@ async function t2c_hermesNormalParagraphIsUsed() {
   const r = await runEscalationSecOnce(deps);
 
   assert.equal(r.results[0].outcome, "notified", "T2c: composed output completes");
-  assert.equal(calls.comment[0].body, `ESCALATION-SEC NOTIFIED: ${paragraph}`, "T2c: normal paragraph is used verbatim after marker");
+  assert.equal(contentComments(calls.comment)[0].body, `ESCALATION-SEC NOTIFIED: ${paragraph}`, "T2c: normal paragraph is used verbatim after marker");
   ok("T2c: Hermes normal Indonesian paragraph -> owner explanation is used");
 }
 
@@ -255,7 +272,14 @@ async function t8_patchIssueNetworkErrorContinues() {
   assert.equal(r.results.length, 2, "T8: one failure + one success result");
   assert.equal(r.results[0].step, "patch-labels", "T8: label patch failure recorded");
   assert.equal(r.results[1].outcome, "notified", "T8: second issue still notified");
-  assert.equal(calls.comment.some((c) => c.issueId === first.id), false, "T8: no comment posted when label patch failed");
+  // E3 posts the brief BEFORE the label, so a label failure leaves the brief on
+  // the issue — that is the right way round: the content is there when the next
+  // sweep retries, and no CARD went out, which is what "no comment" was for.
+  assert.equal(
+    calls.comment.some((c) => c.issueId === first.id && String(c.body).startsWith("ESCALATION-SEC NOTIFIED")),
+    false,
+    "T8: no notification comment when the label patch failed",
+  );
   ok("T8: patchIssue network error is recorded and later issues still run");
 }
 
@@ -266,18 +290,61 @@ async function t9_postCommentNetworkErrorContinues() {
   let commentCalls = 0;
   const { deps } = makeDeps({
     issues: [first, second],
-    postComment: async (base, issueId, body, opts) => {
+    // Comment order per issue: 1 the action declaration, 2 the gated brief,
+    // 3 the notification. Failing #2 fails the BRIEF, which is the write that
+    // must stop the escalation — a card with no brief behind it is the defect
+    // the gate exists to stop.
+    postComment: async () => {
       commentCalls += 1;
-      if (commentCalls === 1) return { networkError: true, networkErrorMessage: "comment post failed" };
+      if (commentCalls === 2) return { networkError: true, networkErrorMessage: "comment post failed" };
       return { networkError: false, status: 201, comment: { id: "cmt-ok" } };
     },
   });
   const r = await runEscalationSecOnce(deps);
 
   assert.equal(r.results.length, 2, "T9: one failure + one success result");
-  assert.equal(r.results[0].step, "post-comment", "T9: comment failure recorded");
+  assert.equal(r.results[0].step, "post-brief", "T9: the brief post failure is recorded");
   assert.equal(r.results[1].outcome, "notified", "T9: second issue still notified");
   ok("T9: postComment network error records failure and does not kill the sweep");
+}
+
+// ---- T9c: a failed ACTION DECLARATION is not fatal ----
+async function t9c_declarationFailureIsNotFatal() {
+  const issue = blockedIssue({ id: "iss-decl-fail", identifier: "KOL-114" });
+  let commentCalls = 0;
+  const { deps } = makeDeps({
+    issues: [issue],
+    postComment: async () => {
+      commentCalls += 1;
+      // Only the declaration fails. Losing it costs him the tailored buttons,
+      // not the escalation — the card falls back to the default four.
+      if (commentCalls === 1) return { networkError: true, networkErrorMessage: "declaration post failed" };
+      return { networkError: false, status: 201, comment: { id: "cmt-ok" } };
+    },
+  });
+  const r = await runEscalationSecOnce(deps);
+  assert.equal(r.results[0].outcome, "notified", "T9c: the escalation still reaches him");
+  ok("T9c: a failed action declaration degrades the buttons, it does not drop the escalation");
+}
+
+// ---- T9b: the brief lands, the marker comment does not ----
+async function t9b_markerCommentFailureAfterBrief() {
+  const issue = blockedIssue({ id: "iss-marker-fail", identifier: "KOL-113" });
+  let commentCalls = 0;
+  const { deps } = makeDeps({
+    issues: [issue],
+    postComment: async () => {
+      commentCalls += 1;
+      // 1 = the declaration, 2 = the brief (both land), 3 = the NOTIFIED
+      // marker, which fails.
+      if (commentCalls === 3) return { networkError: true, networkErrorMessage: "marker post failed" };
+      return { networkError: false, status: 201, comment: { id: `cmt-${commentCalls}` } };
+    },
+  });
+  const r = await runEscalationSecOnce(deps);
+  assert.equal(r.results[0].outcome, "failed", "T9b: the sweep reports the failure");
+  assert.equal(r.results[0].step, "post-comment", "T9b: and names the marker comment as the step");
+  ok("T9b: a brief that lands and a marker comment that does not is reported as post-comment");
 }
 
 async function main() {
@@ -293,6 +360,8 @@ async function main() {
     t7_ensureLabelNetworkErrorContinues,
     t8_patchIssueNetworkErrorContinues,
     t9_postCommentNetworkErrorContinues,
+    t9b_markerCommentFailureAfterBrief,
+    t9c_declarationFailureIsNotFatal,
   ];
   for (const t of tests) await t();
   console.log(`\nescalation-sec.regression.test.mjs: ${pass}/${tests.length} passed`);
