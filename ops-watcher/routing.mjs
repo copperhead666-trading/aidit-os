@@ -132,6 +132,14 @@ export const LANE_PROBES = {
   },
 };
 
+const PROBE_KEY_TO_REGISTRY_AGENT = {
+  ollama: "HATTA",
+  nous: "GIBRAN",
+  kimi: "SJAHRIR",
+  codex: "CORLEONE",
+  claude: "SOEKARNO",
+};
+
 // Map a canonical role-map lane STRING (e.g. "L2 glm-5.3:cloud", "L4 Nous free",
 // "L3 Kimi K3 (256k ctx)") to a probe key. Returns null when no cheap probe
 // exists for that lane (Claude CLI lanes, human-gated, "none", etc.) — the
@@ -199,7 +207,7 @@ export async function probeLaneAvailability(lane, deps = {}) {
         version: null,
       };
     }
-    const spawnOpts = probeKey === "claude" && cmd[0] !== "ssh" ? { shell: false, windowsHide: true } : undefined;
+    const spawnOpts = probeKey === "claude" && cmd[0] !== "ssh" ? { shell: false, windowsHide: true } : { windowsHide: true };
     const r = await _runSpawn(cmd, spawnOpts);
     return {
       lane: probeKey,
@@ -211,6 +219,82 @@ export async function probeLaneAvailability(lane, deps = {}) {
     };
   }
   return { lane: probeKey, available: false, probe: spec.kind, signal: "unknown-kind", reason: "unhandled probe kind" };
+}
+
+function probeSource(lane, deps = {}) {
+  try {
+    const probeKey = LANE_PROBES[lane] ? lane : laneStringToProbeKey(lane);
+    const spec = probeKey && LANE_PROBES[probeKey] ? LANE_PROBES[probeKey] : null;
+    if (!spec) return "none";
+    if (spec.kind === "http") return spec.url;
+    if (spec.kind === "spawn") {
+      const cmd = typeof spec.cmd === "function" ? spec.cmd(deps) : spec.cmd;
+      return Array.isArray(cmd) ? cmd.join(" ") : "unresolved";
+    }
+    return spec.kind;
+  } catch {
+    return "unknown";
+  }
+}
+
+function normalizeModelText(value) {
+  return String(value == null ? "" : value).toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function registryModelForLane(lane, registry = {}) {
+  const agents = registry.agents && typeof registry.agents === "object" ? registry.agents : registry;
+  const direct = agents && agents[lane] ? agents[lane] : null;
+  const mappedAgent = PROBE_KEY_TO_REGISTRY_AGENT[lane];
+  const mapped = mappedAgent && agents ? agents[mappedAgent] : null;
+  const entry = direct || mapped || {};
+  const raw = entry && typeof entry === "object" ? entry.model_if_known : null;
+  if (!raw) return null;
+  if (/not recorded|belum|unknown/i.test(String(raw))) return null;
+  return String(raw);
+}
+
+export function compareLaneModels(report, registry) {
+  try {
+    return (Array.isArray(report) ? report : []).map((r) => {
+      const lane = r && r.lane != null ? String(r.lane) : "";
+      const registryModel = registryModelForLane(lane, registry);
+      const reported = r && r.reported ? String(r.reported) : null;
+      let verdict = "drift";
+      if (!reported) verdict = "unprobeable";
+      else if (!registryModel) verdict = "unrecorded";
+      else {
+        const a = normalizeModelText(registryModel);
+        const b = normalizeModelText(reported);
+        verdict = a && b && (a.includes(b) || b.includes(a)) ? "match" : "drift";
+      }
+      return { lane, registry: registryModel, reported, verdict };
+    });
+  } catch {
+    return [];
+  }
+}
+
+export async function laneModelReport(deps = {}) {
+  const lanes = Array.isArray(deps.lanes) ? deps.lanes : Object.keys(LANE_PROBES);
+  const now = deps.now == null ? Date.now() : deps.now;
+  const at = Number.isFinite(Number(now)) ? new Date(Number(now)).toISOString() : new Date().toISOString();
+  const probe = deps.probeLaneAvailability || probeLaneAvailability;
+  const out = [];
+  for (const lane of lanes) {
+    const source = probeSource(lane, deps);
+    try {
+      const r = await probe(lane, deps);
+      const reported = r && r.version
+        ? String(r.version)
+        : r && Array.isArray(r.models) && r.models.length
+          ? r.models.join(", ")
+          : null;
+      out.push({ lane, reported, source, at });
+    } catch {
+      out.push({ lane, reported: null, source, at });
+    }
+  }
+  return out;
 }
 
 // ---- state (cooldown) ----
