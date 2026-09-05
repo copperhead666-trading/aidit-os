@@ -284,9 +284,27 @@ async function t15_timeoutPathLogsParsedTurnsAndCliDetail() {
   ok("T15: timeout usage records still include parsed turns and cli detail");
 }
 
+// The shape codex-cli 0.153 actually emits. Every task whose deliverable is
+// TEXT came back empty, because item.type is agent_message carrying a plain
+// string and no branch matched it. File-writing packets never noticed; directive
+// planning did, and failed as "plan is too short" attempt after attempt.
+function t16_agentMessageItemIsTheAnswer() {
+  const jsonl = [
+    JSON.stringify({ type: "thread.started", thread_id: "t1" }),
+    JSON.stringify({ type: "turn.started" }),
+    JSON.stringify({ type: "item.completed", item: { id: "item_0", type: "agent_message", text: "OBJECTIVE: build the thing" } }),
+    JSON.stringify({ type: "turn.completed", usage: { input_tokens: 10, output_tokens: 4 } }),
+  ].join("\n");
+  const parsed = parseCodexExecJsonl(jsonl, { effort: "low" });
+  assert.match(parsed.stdout, /OBJECTIVE: build the thing/);
+  assert.equal(parsed.turns, 1);
+  ok("T16: an agent_message item is the lane ANSWER, not dropped");
+}
+
 async function main() {
   console.log("# corleone-dispatch regression tests");
   const tests = [
+    t16_agentMessageItemIsTheAnswer,
     t1_buildsNodeBackedInvocationForWindowsShim,
     t2_buildsDirectCodexInvocationWithoutShim,
     t3_successLogsChildOutputForLaneUsageDetail,

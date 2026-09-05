@@ -113,6 +113,22 @@ function collectReadableText(event, out) {
   if (event.item && typeof event.item === "object" && event.item.type === "message") {
     collectContentText(event.item.content, out);
   }
+  // codex-cli 0.153 emits the model's answer as
+  //   {"type":"item.completed","item":{"type":"agent_message","text":"..."}}
+  // and NOTHING above matches that shape: the item type is agent_message, not
+  // message, and the text is a plain string, not a content array. So every
+  // answer came back empty.
+  //
+  // Measured 2026-09-05: `dispatchCorleone("Reply with exactly: OBJECTIVE: test")`
+  // returned { ok: true, stdoutLen: 0 } while the raw JSONL carried
+  // "OBJECTIVE: test". File-writing packets never noticed — the files landed —
+  // but every task whose DELIVERABLE IS TEXT silently returned nothing. That is
+  // why directive planning failed as "plan is too short" on attempt after
+  // attempt: the lane answered, and the wrapper dropped the answer.
+  if (event.item && typeof event.item === "object" && event.item.type === "agent_message") {
+    if (typeof event.item.text === "string" && event.item.text.trim()) out.push(event.item.text);
+    else collectContentText(event.item.content, out);
+  }
 }
 
 function nullCliDetail(effort = null) {
