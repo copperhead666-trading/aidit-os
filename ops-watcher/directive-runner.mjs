@@ -81,7 +81,7 @@ import {
 import { parseArgs as parseVerifyFileArgs, verifyFile as verifyFileReal } from "./verify-file.mjs";
 // V1: anchor emission asks the SAME question the content check asks. One
 // definition, so the two answers cannot drift apart again.
-import { isIdentifierShapedLabel } from "./graphify-refresh.mjs";
+import { isIdentifierShapedLabel, verifyGraphContentSync } from "./graphify-refresh.mjs";
 // E3: the same brief gate ahmad-escalate.mjs uses, on this file's own two
 // OWNER_REQUIRED paths.
 import { postGatedBrief } from "./owner-gate.mjs";
@@ -2163,6 +2163,84 @@ export function graphFreshnessForAnchors(deps = {}) {
   return { fresh: true, graphCommit, repoCommit, reason: "graph commit matches the repo commit" };
 }
 
+// W8. THE READER MUST NOT TRUST THE STAMP ALONE.
+//
+// verifyGraphContent has existed in graphify-refresh.mjs and runs at refresh
+// time, so it protects the WRITER. This file — the reader — compared the stamp
+// against HEAD and nothing else: `grep verifyGraphContent directive-runner.mjs`
+// returned nothing.
+//
+// Reproduced on the ASUS at dbbec88: with the stamp forced to HEAD over stale
+// content, buildExecutionPrompt emitted SIX anchors, every one of them at a
+// line number that had moved. Both known bad writers were fixed; the bug was
+// found because an unanticipated writer existed, and the next unanticipated
+// writer is exactly what a reader-side check is for.
+//
+// Cached per stamp: the check reads up to ten files, the heartbeat sweeps every
+// five minutes, and the answer cannot change while the stamp does not.
+const graphContentCache = new Map();
+
+export function clearGraphContentCache() { graphContentCache.clear(); }
+
+// The verifier the anchor path uses when the caller injects none.
+//
+// Overridable ONLY so the offline fixtures can describe a synthetic tree:
+// their graphs name files like ops-watcher/foo.mjs that do not exist, and a
+// content check against the real working tree would refuse every one of them —
+// hiding what those tests are actually about. Production never calls this
+// setter; the two W8 tests use it to prove both answers.
+let graphContentVerifier = verifyGraphContentSync;
+
+export function setGraphContentVerifier(fn) {
+  const previous = graphContentVerifier;
+  graphContentVerifier = typeof fn === "function" ? fn : verifyGraphContentSync;
+  clearGraphContentCache();
+  return () => { graphContentVerifier = previous; clearGraphContentCache(); };
+}
+
+/**
+ * Stamp freshness AND content evidence. Returns the same shape as
+ * graphFreshnessForAnchors, with `contentVerified` and the verifier's reason
+ * when the content check ran.
+ *
+ * A graph that cannot be read, or that fails the content check, is NOT fresh:
+ * anchors that are confidently wrong are worse than no anchors at all, which is
+ * the rule this file already applied to the stamp.
+ */
+export function graphFreshnessWithContent(deps = {}) {
+  const stamp = graphFreshnessForAnchors(deps);
+  if (!stamp.fresh) return stamp;
+
+  const graphFile = deps.graphFile || ACTIVE_GRAPH_FILE;
+  let graph = deps.graph;
+  if (!graph) {
+    const readText = deps.readText || ((p) => readFileSync(p, "utf8"));
+    try {
+      graph = JSON.parse(readText(graphFile));
+    } catch {
+      return { ...stamp, fresh: false, contentVerified: false, reason: "graph unreadable for the content check" };
+    }
+  }
+
+  const cache = deps.contentCache || graphContentCache;
+  const key = `${graphFile}|${stamp.graphCommit}`;
+  let verdict = cache.get(key);
+  if (!verdict) {
+    const verify = deps.verifyContent || graphContentVerifier;
+    try {
+      verdict = verify(graph, { sourceRoot: deps.sourceRoot || REPO_ROOT, _readFileSync: deps._readFileSync });
+    } catch (err) {
+      verdict = { verified: false, checked: 0, skipped: 0, mismatches: [], reason: `content check threw: ${(err && err.message) || err}` };
+    }
+    cache.set(key, verdict);
+  }
+
+  if (!verdict.verified) {
+    return { ...stamp, fresh: false, contentVerified: false, reason: `stamp matches but ${verdict.reason}` };
+  }
+  return { ...stamp, contentVerified: true, reason: `${stamp.reason}, and ${verdict.reason}` };
+}
+
 function headCommitForAnchors(deps = {}) {
   const exec = deps._exec || execFileSync;
   return String(exec("git", ["rev-parse", "HEAD"], { cwd: REPO_ROOT, encoding: "utf8", windowsHide: true })).trim();
@@ -2250,8 +2328,10 @@ function activeGraphAnchorsForFiles(files, deps = {}) {
   // Fail CLOSED. Anything other than a proven-fresh graph produces no anchors
   // and the caller falls back to the plain file list, which is exactly today's
   // behaviour and is never wrong, only less helpful.
-  const freshness = deps.freshness || graphFreshnessForAnchors(deps);
-  if (!freshness.fresh) return new Map();
+  //
+  // The graph is parsed BEFORE the freshness call so the content check can read
+  // it without a second parse: W8 makes freshness mean stamp AND contents, not
+  // stamp alone.
   const readText = deps.readText || ((p) => readFileSync(p, "utf8"));
   let graph;
   try {
@@ -2259,6 +2339,8 @@ function activeGraphAnchorsForFiles(files, deps = {}) {
   } catch {
     return new Map();
   }
+  const freshness = deps.freshness || graphFreshnessWithContent({ ...deps, graph });
+  if (!freshness.fresh) return new Map();
 
   const targets = files.map((f) => normalizeGraphRepoPath(f)).filter(Boolean);
   const anchors = new Map(targets.map((f) => [f, []]));

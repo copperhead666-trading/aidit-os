@@ -46,6 +46,9 @@ import {
   recordExecutionFailure,
   clearExecutionFailures,
   executionCapReached,
+  graphFreshnessWithContent,
+  setGraphContentVerifier,
+  clearGraphContentCache,
 } from "./directive-runner.mjs";
 import { verifyFile } from "./verify-file.mjs";
 import { isIdentifierShapedLabel } from "./graphify-refresh.mjs";
@@ -115,12 +118,16 @@ async function withStaleActiveGraph(graph, fn) {
   try { prevGraph = await fs.readFile(TEST_ACTIVE_GRAPH_FILE, "utf8"); } catch { prevGraph = null; }
   try { prevStamp = await fs.readFile(stampFile, "utf8"); } catch { prevStamp = null; }
 
+  // W8: these fixtures describe files that do not exist, so the content check
+  // is stubbed for the fixture lifetime. The W8 tests install their own.
+  const restoreVerifier = setGraphContentVerifier(FIXTURE_CONTENT_VERDICT);
   await fs.mkdir(path.dirname(TEST_ACTIVE_GRAPH_FILE), { recursive: true });
   await fs.writeFile(TEST_ACTIVE_GRAPH_FILE, JSON.stringify(graph), "utf8");
   await fs.writeFile(stampFile, "0000000000000000000000000000000000000000", "utf8");
   try {
     return await fn();
   } finally {
+    restoreVerifier();
     if (prevGraph !== null) await fs.writeFile(TEST_ACTIVE_GRAPH_FILE, prevGraph, "utf8");
     else await fs.unlink(TEST_ACTIVE_GRAPH_FILE).catch(() => {});
     if (prevStamp !== null) await fs.writeFile(stampFile, prevStamp, "utf8");
@@ -147,7 +154,10 @@ async function withStaleActiveGraph(graph, fn) {
 // it destroyed the real graph: a fixture that writes production state and does
 // not put it back is a worse bug than the one it is testing for. The neighbour
 // got the lesson; this one did not.
-async function withActiveGraph(graph, fn) {
+const FIXTURE_CONTENT_VERDICT = () => ({ verified: true, checked: 1, skipped: 0, mismatches: [], reason: "fixture tree" });
+
+async function withActiveGraph(graph, fn, { stubContent = true } = {}) {
+  const restoreVerifier = stubContent ? setGraphContentVerifier(FIXTURE_CONTENT_VERDICT) : () => {};
   const stampFile = `${TEST_ACTIVE_GRAPH_FILE}.commit.stamp`;
   let previous = null;
   let hadPrevious = true;
@@ -173,6 +183,7 @@ async function withActiveGraph(graph, fn) {
   try {
     return await fn();
   } finally {
+    restoreVerifier();
     if (previousStamp !== null) await fs.writeFile(stampFile, previousStamp, "utf8");
     else await fs.unlink(stampFile).catch(() => {});
     if (hadPrevious) {
@@ -2315,6 +2326,86 @@ await t("E2: a revised plan posted after an approval leaves the issue awaiting, 
   assert.equal(res.executed, 0);
   assert.equal(res.approved.length, 0, "the approval no longer applies to the newest plan");
   assert.equal(res.awaitingApproval.some((a) => a.identifier === "KOL-95"), true, "it is his decision again");
+});
+
+// =====================================================================
+// W8. THE READER MUST NOT TRUST THE STAMP ALONE.
+//
+// verifyGraphContent protected the WRITER. The reader compared stamp against
+// HEAD and nothing else, so a stamp written at the wrong moment over stale
+// content passed as fresh: reproduced on the ASUS at dbbec88, where
+// buildExecutionPrompt emitted six anchors at line numbers that had all moved.
+// =====================================================================
+
+await t("W8: a fresh stamp over STALE CONTENT is not fresh, and emits no anchors", async () => {
+  clearGraphContentCache();
+  const graph = {
+    nodes: [
+      { id: "fn:runFooCheck", label: "runFooCheck", type: "function", source_file: "ops-watcher/foo.mjs", source_location: "ops-watcher/foo.mjs:17" },
+    ],
+    edges: [],
+  };
+  // The content check answers as it would against a tree where the symbol has
+  // moved: the stamp matches, the contents do not.
+  const restore = setGraphContentVerifier(() => ({
+    verified: false, checked: 1, skipped: 0,
+    mismatches: ["ops-watcher/foo.mjs:17 runFooCheck"],
+    reason: "1/1 sampled symbols are not where the graph says",
+  }));
+  try {
+    await withActiveGraph(graph, async () => {
+      const freshness = graphFreshnessWithContent({
+        graph,
+        repoCommit: TEST_HEAD_COMMIT,
+        readText: () => TEST_HEAD_COMMIT,
+      });
+      assert.equal(freshness.fresh, false, "stamp alone must not certify the graph");
+      assert.equal(freshness.contentVerified, false);
+      assert.match(freshness.reason, /stamp matches but/);
+      const p = buildExecutionPrompt(issue({}), parsePlan(goodPlan));
+      assert.equal(p.includes("KG anchors"), false, "no anchors when the contents do not match the stamp");
+    }, { stubContent: false });
+  } finally {
+    restore();
+    clearGraphContentCache();
+  }
+});
+
+await t("W8: a fresh stamp over MATCHING content still emits anchors, and the check runs once per stamp", () => {
+  clearGraphContentCache();
+  let calls = 0;
+  const graph = { nodes: [{ id: "fn:x", label: "x", source_file: "a.mjs", source_location: "a.mjs:1" }], edges: [] };
+  const verify = () => { calls += 1; return { verified: true, checked: 3, skipped: 0, mismatches: [], reason: "3 sampled symbols confirmed in the tree" }; };
+  const deps = { graph, repoCommit: TEST_HEAD_COMMIT, readText: () => TEST_HEAD_COMMIT, verifyContent: verify, contentCache: new Map() };
+  const first = graphFreshnessWithContent(deps);
+  const second = graphFreshnessWithContent(deps);
+  assert.equal(first.fresh, true);
+  assert.equal(first.contentVerified, true);
+  assert.match(first.reason, /confirmed in the tree/);
+  assert.equal(second.fresh, true);
+  assert.equal(calls, 1, "cached per stamp: the heartbeat sweeps every five minutes and the answer cannot change while the stamp does not");
+});
+
+await t("W8: a graph that cannot be parsed is not fresh, whatever the stamp says", () => {
+  const r = graphFreshnessWithContent({
+    repoCommit: TEST_HEAD_COMMIT,
+    readText: (p) => (String(p).endsWith(".stamp") ? TEST_HEAD_COMMIT : "{not json"),
+    contentCache: new Map(),
+  });
+  assert.equal(r.fresh, false);
+  assert.match(r.reason, /graph unreadable/);
+});
+
+await t("W8: a content check that THROWS refuses rather than certifying", () => {
+  const r = graphFreshnessWithContent({
+    graph: { nodes: [], edges: [] },
+    repoCommit: TEST_HEAD_COMMIT,
+    readText: () => TEST_HEAD_COMMIT,
+    verifyContent: () => { throw new Error("disk gone"); },
+    contentCache: new Map(),
+  });
+  assert.equal(r.fresh, false);
+  assert.match(r.reason, /content check threw/);
 });
 
 // =====================================================================

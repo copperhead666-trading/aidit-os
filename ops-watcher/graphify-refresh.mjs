@@ -55,6 +55,7 @@
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { GRAPH_STAMP_SUFFIX } from "./venture-planner.mjs";
@@ -108,18 +109,6 @@ export function repoFingerprint(deps = {}) {
 export const CONTENT_CHECK_SAMPLE = 10;
 
 /**
- * Candidates for the content check: the DEEPEST located symbol in each file,
- * then the deepest of those across files.
- *
- * The depth is the whole point. A symbol near line 1 is stable no matter how
- * stale the graph is — imports and top-level constants do not move — so a
- * sample drawn from the head of files certifies a fossil. Measured on the two
- * graphs sitting on this machine, a 40-symbol sample taken that way scored
- * 40/40 on BOTH the stale graph and the fresh one: no discrimination at all.
- * The deepest symbol per file carries every insertion made above it, and the
- * same measurement on that sample scored 10/10 fresh against 8/10 stale.
- */
-/**
  * Is this label the NAME OF A SYMBOL, or is it prose?
  *
  * A label with a separator, a dot or a space is a file, a member expression, or
@@ -141,6 +130,18 @@ export function isIdentifierShapedLabel(label) {
   return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name);
 }
 
+/**
+ * Candidates for the content check: the DEEPEST located symbol in each file,
+ * then the deepest of those across files.
+ *
+ * The depth is the whole point. A symbol near line 1 is stable no matter how
+ * stale the graph is — imports and top-level constants do not move — so a
+ * sample drawn from the head of files certifies a fossil. Measured on the two
+ * graphs sitting on this machine, a 40-symbol sample taken that way scored
+ * 40/40 on BOTH the stale graph and the fresh one: no discrimination at all.
+ * The deepest symbol per file carries every insertion made above it, and the
+ * same measurement on that sample scored 10/10 fresh against 8/10 stale.
+ */
 export function contentCheckCandidates(graph, limit = CONTENT_CHECK_SAMPLE) {
   const perFile = new Map();
   for (const node of graph?.nodes || []) {
@@ -182,20 +183,25 @@ function joinRepoPath(root, rel) {
  *
  * Returns { verified, checked, skipped, mismatches, reason }. Never throws.
  */
-export async function verifyGraphContent(graph, deps = {}) {
-  const _fs = deps._fs || fs;
-  const sourceRoot = deps.sourceRoot || REPO_ROOT;
-  const candidates = contentCheckCandidates(graph, deps.contentSample || CONTENT_CHECK_SAMPLE);
-
+/**
+ * The verdict itself, given the lines already read. Pure.
+ *
+ * Split out so the WRITER (async, fs/promises) and the READER (sync, called
+ * from directive-runner's anchor path) reach the same answer through the same
+ * code. Two implementations of "is this graph still true" would drift, and the
+ * drift would be invisible: each would keep passing its own tests.
+ *
+ * `linesByFile` maps a repo-relative file to its lines, or to null when the
+ * file could not be read.
+ */
+export function graphContentVerdict(candidates, linesByFile) {
   const mismatches = [];
   let checked = 0;
   let skipped = 0;
 
-  for (const candidate of candidates) {
-    let lines;
-    try {
-      lines = String(await _fs.readFile(joinRepoPath(sourceRoot, candidate.file), "utf8")).split("\n");
-    } catch {
+  for (const candidate of Array.isArray(candidates) ? candidates : []) {
+    const lines = linesByFile instanceof Map ? linesByFile.get(candidate.file) : (linesByFile || {})[candidate.file];
+    if (!lines) {
       skipped += 1; // The file is gone; that is the planner's problem, not the graph's.
       continue;
     }
@@ -228,6 +234,47 @@ export async function verifyGraphContent(graph, deps = {}) {
     };
   }
   return { verified: true, checked, skipped, mismatches, reason: `${checked} sampled symbols confirmed in the tree` };
+}
+
+export async function verifyGraphContent(graph, deps = {}) {
+  const _fs = deps._fs || fs;
+  const sourceRoot = deps.sourceRoot || REPO_ROOT;
+  const candidates = contentCheckCandidates(graph, deps.contentSample || CONTENT_CHECK_SAMPLE);
+  const linesByFile = new Map();
+  for (const candidate of candidates) {
+    if (linesByFile.has(candidate.file)) continue;
+    try {
+      linesByFile.set(candidate.file, String(await _fs.readFile(joinRepoPath(sourceRoot, candidate.file), "utf8")).split("\n"));
+    } catch {
+      linesByFile.set(candidate.file, null);
+    }
+  }
+  return graphContentVerdict(candidates, linesByFile);
+}
+
+/**
+ * The same check, synchronously, for the READER.
+ *
+ * directive-runner's anchor path is synchronous all the way down, and the
+ * reader is where a stale graph actually costs something: it hands a lane line
+ * numbers that have moved. Making the check available there without turning
+ * that path async is the entire reason this variant exists — the verdict logic
+ * is shared, only the reading differs.
+ */
+export function verifyGraphContentSync(graph, deps = {}) {
+  const readFileSync = deps._readFileSync || fsSync.readFileSync;
+  const sourceRoot = deps.sourceRoot || REPO_ROOT;
+  const candidates = contentCheckCandidates(graph, deps.contentSample || CONTENT_CHECK_SAMPLE);
+  const linesByFile = new Map();
+  for (const candidate of candidates) {
+    if (linesByFile.has(candidate.file)) continue;
+    try {
+      linesByFile.set(candidate.file, String(readFileSync(joinRepoPath(sourceRoot, candidate.file), "utf8")).split("\n"));
+    } catch {
+      linesByFile.set(candidate.file, null);
+    }
+  }
+  return graphContentVerdict(candidates, linesByFile);
 }
 
 /**
