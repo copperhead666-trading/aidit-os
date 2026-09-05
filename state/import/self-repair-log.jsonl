@@ -1,44 +1,55 @@
-{"type":"repair-attempt","name":"canary-step","outcome":"skipped","reason":"lane-quota","ts":1788245557751}
-{"type":"repair-attempt","name":"canary-step","outcome":"skipped","reason":"cooldown","ts":1788245643887}
-{"type":"repair-attempt","name":"canary-step","outcome":"reverted","reason":"scoped-suite-red","ts":1788246080045}
-{"type":"repair-attempt","name":"canary-step","outcome":"reverted","reason":"scoped-suite-red","ts":1788246164111}
-{"type":"repair-attempt","name":"canary-step","outcome":"reverted","reason":"scoped-suite-red","ts":1788246229463}
-{"type":"repair-attempt","name":"canary-step","outcome":"reverted","reason":"scoped-suite-red","ts":1788246930224}
-{"type":"repair-attempt","name":"canary-step","outcome":"reverted","reason":"scoped-suite-red","ts":1788246983666}
-{"type":"repair-attempt","name":"canary-step","outcome":"skipped","reason":"lane-cooldown","lane":"hatta","ts":1788248571045}
-{"type":"repair-attempt","name":"canary-step","outcome":"repaired","suite":"canary-step.regression.test.mjs","durationMs":40619,"lane":"hatta","ts":1788248738045}
-{"type":"directive-execution","identifier":"KOL-70","outcome":"refused","reason":"verify-out-of-scope","lane":null,"ts":1788263817487}
-{"type":"directive-execution","identifier":"KOL-70","outcome":"refused","reason":"verify-out-of-scope","lane":null,"ts":1788264802747}
-{"type":"directive-execution","identifier":"KOL-70","outcome":"refused","reason":"verify-out-of-scope","lane":null,"ts":1788265782317}
-{"type":"directive-execution","identifier":"KOL-70","outcome":"refused","reason":"verify-out-of-scope","lane":null,"ts":1788266733718}
-{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"hatta","ts":1788267986402}
-{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"corleone","ts":1788269128357}
-{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"corleone","ts":1788269131042}
-{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"corleone","ts":1788269150628}
-{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"corleone","ts":1788269160245}
-{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"corleone","ts":1788269174948}
-{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"corleone","ts":1788270160930}
-{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"hatta","ts":1788271109911}
-{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"hatta","ts":1788272070504}
-{"type":"directive-execution","identifier":"KOL-69","outcome":"skipped","reason":"lane-cooldown","lane":"hatta","ts":1788272980112}
-{"type":"directive-execution","identifier":"KOL-69","outcome":"skipped","reason":"lane-cooldown","lane":"hatta","ts":1788272980111}
-{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"hatta","ts":1788273966769}
-{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"corleone","ts":1788275064541}
-{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"corleone","ts":1788276016056}
-{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"corleone","ts":1788276986254}
-{"type":"directive-execution","identifier":"KOL-69","outcome":"aborted","reason":"snapshot-failed","lane":"corleone","ts":1788277930860}
-{"type":"directive-capture-failed","identifier":"KOL-73","reason":"plan-parse-failed","detail":"missing OUT OF SCOPE","approvedAt":"2026-09-01T11:21:32.257Z","ts":1788322240799}
-{"type":"directive-capture-failed","identifier":"KOL-73","reason":"plan-parse-failed","detail":"missing OUT OF SCOPE","approvedAt":"2026-09-01T11:21:32.257Z","ts":1788323199508}
-{"type":"directive-capture-failed","identifier":"KOL-73","reason":"plan-parse-failed","detail":"missing OUT OF SCOPE","approvedAt":"2026-09-01T11:21:32.257Z","ts":1788324165536}
-{"type":"directive-capture-failed","identifier":"KOL-73","reason":"plan-parse-failed","detail":"missing OUT OF SCOPE","approvedAt":"2026-09-01T11:21:32.257Z","ts":1788325108580}
-{"type":"directive-capture-failed","identifier":"KOL-73","reason":"plan-parse-failed","detail":"missing OUT OF SCOPE","approvedAt":"2026-09-01T11:21:32.257Z","ts":1788326049287}
-{"type":"directive-capture-failed","identifier":"KOL-73","reason":"plan-parse-failed","detail":"missing OUT OF SCOPE","approvedAt":"2026-09-02T05:16:01.452Z","ts":1788327079401}
-{"type":"directive-execution","identifier":"KOL-73","outcome":"reverted","reason":"verify-red","lane":"corleone","ts":1788328241159}
-{"type":"directive-execution","identifier":"KOL-73","outcome":"done","filesChanged":["ops-watcher/e2e-soak/soak-test-2026-08-31.txt"],"verifyTail":"VERIFY OK ops-watcher/e2e-soak/soak-test-2026-08-31.txt (47 bytes)\n","lane":"corleone","ts":1788329322150}
-{"type":"directive-execution","identifier":"KOL-36","outcome":"reverted","reason":"verify-red","lane":"corleone","ts":1788340949150}
-{"type":"directive-execution","identifier":"KOL-36","outcome":"reverted","reason":"verify-red","lane":"corleone","ts":1788341930037}
-{"type":"directive-execution","identifier":"KOL-36","outcome":"reverted","reason":"verify-red","lane":"corleone","ts":1788342898016}
-{"type":"directive-execution","identifier":"KOL-36","outcome":"reverted","reason":"verify-red","lane":"corleone","ts":1788343866933}
-{"type":"directive-execution","identifier":"KOL-36","outcome":"reverted","reason":"verify-red","lane":"corleone","ts":1788345137351}
-{"type":"directive-execution","identifier":"KOL-36","outcome":"reverted","reason":"verify-red","lane":"corleone","ts":1788346105894}
-{"type":"directive-execution","identifier":"KOL-36","outcome":"reverted","reason":"verify-red","lane":"corleone","ts":1788347075463}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":4,"repairable":true,"blockedBy":null,"ts":1788511119322}
+{"type":"repair-attempt","name":"reconcile","outcome":"not-reproducible","lane":"corleone","ts":1788511119673}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":7,"repairable":false,"blockedBy":"cooldown","ts":1788513878446}
+{"type":"fault","name":"cockpit-status","kind":"timeout","reason":"newest record timed out","consecutiveFailures":4,"repairable":true,"blockedBy":null,"ts":1788540568589}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":4,"repairable":true,"blockedBy":null,"ts":1788540568590}
+{"type":"repair-attempt","name":"cockpit-status","outcome":"not-reproducible","lane":"corleone","ts":1788540568958}
+{"type":"fault","name":"cockpit-status","kind":"timeout","reason":"newest record timed out","consecutiveFailures":6,"repairable":false,"blockedBy":"cooldown","ts":1788542397780}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":6,"repairable":true,"blockedBy":null,"ts":1788542397781}
+{"type":"repair-attempt","name":"reconcile","outcome":"not-reproducible","lane":"corleone","ts":1788542398022}
+{"type":"fault","name":"cockpit-status","kind":"timeout","reason":"newest record timed out","consecutiveFailures":8,"repairable":false,"blockedBy":"cooldown","ts":1788544226416}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":8,"repairable":false,"blockedBy":"cooldown","ts":1788544226418}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788546062374}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788547964622}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788549937507}
+{"type":"fault","name":"cockpit-status","kind":"timeout","reason":"newest record timed out","consecutiveFailures":4,"repairable":false,"blockedBy":"cooldown","ts":1788551765991}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788551765992}
+{"type":"fault","name":"cockpit-status","kind":"timeout","reason":"newest record timed out","consecutiveFailures":6,"repairable":false,"blockedBy":"cooldown","ts":1788553623815}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788553623816}
+{"type":"fault","name":"cockpit-status","kind":"timeout","reason":"newest record timed out","consecutiveFailures":8,"repairable":false,"blockedBy":"cooldown","ts":1788555451748}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788555451749}
+{"type":"fault","name":"cockpit-status","kind":"timeout","reason":"newest record timed out","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788557285730}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788557285731}
+{"type":"fault","name":"cockpit-status","kind":"timeout","reason":"newest record timed out","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788559113541}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788559113542}
+{"type":"fault","name":"cockpit-status","kind":"timeout","reason":"newest record timed out","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788560942416}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788560942417}
+{"type":"fault","name":"cockpit-status","kind":"timeout","reason":"newest record timed out","consecutiveFailures":10,"repairable":true,"blockedBy":null,"ts":1788562771133}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788562771134}
+{"type":"repair-attempt","name":"cockpit-status","outcome":"not-reproducible","lane":"corleone","ts":1788562771496}
+{"type":"fault","name":"cockpit-status","kind":"timeout","reason":"newest record timed out","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788564603270}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":true,"blockedBy":null,"ts":1788564603271}
+{"type":"repair-attempt","name":"reconcile","outcome":"not-reproducible","lane":"corleone","ts":1788564603546}
+{"type":"fault","name":"cockpit-status","kind":"timeout","reason":"newest record timed out","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788567092971}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788567092985}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788569277305}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788571416808}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788573396446}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788575390233}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788577340190}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788579276922}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788581220640}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788583158696}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788585099792}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":true,"blockedBy":null,"ts":1788587037045}
+{"type":"repair-attempt","name":"reconcile","outcome":"not-reproducible","lane":"corleone","ts":1788587037389}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788588979252}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788590912207}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788593017409}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788595018076}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788596975975}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788598890639}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788600903306}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788602870536}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788604877104}
+{"type":"fault","name":"reconcile","kind":"unknown","reason":"fault did not match a known classifier","consecutiveFailures":10,"repairable":false,"blockedBy":"cooldown","ts":1788606732840}

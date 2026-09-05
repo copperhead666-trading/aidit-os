@@ -1,49 +1,25 @@
 {
   "attempts": {
-    "b31d890f-a19f-487c-ab1b-75502ebc3d07": 0,
-    "e2c0741d-c352-426a-b54a-aad7f20aad14": 0,
-    "b4663697-978b-44b1-8dfb-70318df380f4": 0,
-    "51b29a51-2ea7-4e8b-90fb-c1ac8338af04": 1,
-    "25897740-6e38-4794-a409-c45805553a99": 1
+    "25881f07-6911-47be-9a12-a5b15dfdffd0": 2
   },
   "lastPlanFailures": {
-    "51b29a51-2ea7-4e8b-90fb-c1ac8338af04": {
-      "reason": "verify-out-of-scope",
-      "detail": "VERIFY must not contain command chaining characters",
-      "attempt": 1,
-      "at": "2026-09-01T22:35:05.399Z"
-    },
-    "b31d890f-a19f-487c-ab1b-75502ebc3d07": {
-      "reason": "approved-plan-unparseable",
-      "detail": "missing OUT OF SCOPE",
-      "attempt": 1,
-      "at": "2026-09-02T05:31:19.546Z"
-    },
-    "25897740-6e38-4794-a409-c45805553a99": {
-      "reason": "verify-file-red-without-files",
-      "detail": "regex did not match handoffs/hermes-kimi/AHMAD-DELTA-PHASE1.md",
-      "attempt": 1,
-      "at": "2026-09-02T12:23:55.673Z"
+    "25881f07-6911-47be-9a12-a5b15dfdffd0": {
+      "reason": "parse-failed",
+      "detail": "plan is too short",
+      "attempt": 2,
+      "at": "2026-09-05T00:12:10.013Z"
     }
   },
-  "executionFailures": {
-    "25897740-6e38-4794-a409-c45805553a99": {
-      "planKey": "a20cb81fc212ec05",
-      "reason": "reverted: verify-red",
-      "count": 2,
-      "at": "2026-09-02T11:04:10.494Z",
-      "capReportedAt": "2026-09-02T11:20:19.006Z"
-    }
-  },
+  "executionFailures": {},
   "attemptCapDecisionResets": {
-    "51b29a51-2ea7-4e8b-90fb-c1ac8338af04": {
+    "25881f07-6911-47be-9a12-a5b15dfdffd0": {
       "decision": "approved",
-      "at": "2026-09-01T22:25:49.505Z",
-      "commentId": "bdbbb010-4e49-4663-b248-aafbf21abd1d",
-      "raw": "OWNER MENYETUJUI via Telegram (2026-09-01T22:25:49.479Z) — ketukan tombol oleh owner via @ahmadsuperbot. Label OWNER_REQUIRED dihapus sehingga alur otomatis dapat dilanjutkan.",
-      "escalationAt": "2026-09-01T15:20:15.961Z"
+      "at": "2026-09-04T23:34:01.696Z",
+      "commentId": "ae71fe38-78cb-4c6c-840c-3b69c3bca3b8",
+      "raw": "OWNER MENYETUJUI via Telegram (2026-09-04T23:34:01.677Z) — ketukan tombol oleh owner via @ahmadsuperbot. Label OWNER_REQUIRED dihapus sehingga alur otomatis dapat dilanjutkan.",
+      "escalationAt": "2026-09-04T19:10:22.855Z"
     }
   },
   "pendingCards": {},
-  "lastSweepMs": 1788435743474
+  "lastSweepMs": 1788606902803
 }
