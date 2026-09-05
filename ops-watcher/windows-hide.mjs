@@ -33,7 +33,7 @@ export const SPAWN_FUNCTIONS = Object.freeze([
 
 // Directories that are ours to fix. node_modules, .paperclip session logs and
 // sibling worktrees are not first-party source.
-export const SCAN_DIRS = Object.freeze(["ops-watcher", "scripts", "hatta", "cockpit", "agents"]);
+export const SCAN_DIRS = Object.freeze(["ops-watcher", "scripts", "hatta", "cockpit", "agents", ".claude"]);
 const SCAN_EXTENSIONS = Object.freeze([".mjs", ".cjs", ".js"]);
 const SKIP_DIR_NAMES = new Set([
   "node_modules", ".git", ".paperclip", "worktrees", "graphify-out", "e2e-soak",

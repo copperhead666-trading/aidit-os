@@ -240,7 +240,7 @@ function checkSecurityFile(filename, minLines = 100) {
  */
 function countProcesses() {
   try {
-    const ps = execSync('ps aux 2>/dev/null || echo ""', { encoding: 'utf-8' });
+    const ps = execSync('ps aux 2>/dev/null || echo ""', { encoding: 'utf-8', windowsHide: true });
 
     const agenticFlow = (ps.match(/agentic-flow/g) || []).length;
     const mcp = (ps.match(/mcp.*start/g) || []).length;
