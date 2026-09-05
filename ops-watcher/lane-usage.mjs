@@ -110,6 +110,20 @@ export function normalizeCliDetail(detail) {
   }
 }
 
+function nullableBoolean(value) {
+  return typeof value === "boolean" ? value : null;
+}
+
+function normalizeOutcome(outcome) {
+  if (!outcome || typeof outcome !== "object" || Array.isArray(outcome)) return null;
+  return {
+    verifyPassed: nullableBoolean(outcome.verifyPassed),
+    filesChanged: nonNegativeInt(outcome.filesChanged),
+    filesPlanned: nonNegativeInt(outcome.filesPlanned),
+    deliveredWhatWasAsked: nullableBoolean(outcome.deliveredWhatWasAsked),
+  };
+}
+
 /**
  * Append ONE JSON line (NDJSON) to the lane-usage log. Best-effort, never throws.
  *
@@ -152,6 +166,7 @@ export async function logLaneUsage({
   stdoutBytes,
   stderrBytes,
   cli,
+  outcome,
   extra,
   file,
 } = {}) {
@@ -173,6 +188,8 @@ export async function logLaneUsage({
     stderrBytes: nonNegativeInt(stderrBytes) ?? stdioBytes(stderr),
     cli: normalizeCliDetail(cli),
   };
+  const normalizedOutcome = normalizeOutcome(outcome);
+  if (normalizedOutcome) record.outcome = normalizedOutcome;
   if (extra !== undefined) record.extra = extra;
   try {
     await fs.appendFile(target, JSON.stringify(record) + "\n", "utf8");
