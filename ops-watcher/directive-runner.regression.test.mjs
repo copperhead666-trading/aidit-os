@@ -48,10 +48,20 @@ import {
   executionCapReached,
 } from "./directive-runner.mjs";
 import { verifyFile } from "./verify-file.mjs";
+import { isIdentifierShapedLabel } from "./graphify-refresh.mjs";
+import { acquireLock, releaseLock } from "./telegram-listener-daemon.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TMP_STATE = path.join(__dirname, "directive-runner.regression.state.tmp");
 const NOW = Date.parse("2026-09-01T10:00:00.000Z");
+// === TEST ISOLATION (lock file) ===
+// Every sweep test injects lockFile: TMP_LOCK — a temp path DISTINCT from the
+// real production ops-watcher/directive-runner.lock. Without this, an offline
+// test would refuse whenever the live heartbeat happened to be holding the real
+// lock mid-sweep, and a killed test would leave a lock on the production path.
+const TMP_LOCK = path.join(__dirname, "directive-runner.regression.lock.tmp");
+const LOCK_DEPS = { lockFile: TMP_LOCK, acquireLock, releaseLock };
+const clearTempLock = () => fs.unlink(TMP_LOCK).catch(() => {});
 
 let passed = 0, failed = 0;
 const failures = [];
@@ -86,7 +96,7 @@ const REPO_ROOT_FOR_TEST = path.resolve(path.dirname(fileURLToPath(import.meta.u
 
 const TEST_HEAD_COMMIT = (() => {
   try {
-    return String(execFileSync("git", ["rev-parse", "HEAD"], { cwd: REPO_ROOT_FOR_TEST, encoding: "utf8" })).trim();
+    return String(execFileSync("git", ["rev-parse", "HEAD"], { cwd: REPO_ROOT_FOR_TEST, encoding: "utf8", windowsHide: true })).trim();
   } catch {
     return "";
   }
@@ -300,11 +310,12 @@ function makeSweepDeps({ issues, comments, plan = goodPlan, stateFile = TMP_STAT
     stateFile,
     now: NOW,
     log: () => {},
+    ...LOCK_DEPS,
     ...extra,
   };
   return { deps, posts, cards, messages, patches, labels, spies, getExecuteCalls: () => executeCalls };
 }
-async function resetTmp() { await fs.unlink(TMP_STATE).catch(() => {}); }
+async function resetTmp() { await fs.unlink(TMP_STATE).catch(() => {}); await clearTempLock(); }
 function memoryStateFs(initial) {
   let data = JSON.stringify(initial);
   return {
@@ -312,6 +323,11 @@ function memoryStateFs(initial) {
     writeFile: async (_file, body) => { data = String(body); },
   };
 }
+
+// E2/E3 write bookkeeping comments in the house marker shape ([DECISION BRIEF],
+// [ESCALATION ACTIONS]). They are not content posts, and the assertions below
+// are about content — the plan, the escalation, the result.
+const contentPosts = (posts) => posts.filter((p) => !/^\[[A-Z ]+\]/.test(String(p?.body?.body || "")));
 
 async function t(name, fn) {
   try { await fn(); ok(name); } catch (e) { bad(name, e); }
@@ -912,7 +928,7 @@ await t("sweep with one new directive posts exactly one plan comment and no exec
   const res = await runDirectiveSweepOnce(deps);
   assert.equal(res.scanned, 1);
   assert.equal(res.planned, 1);
-  assert.equal(posts.length, 1);
+  assert.equal(contentPosts(posts).length, 1);
   assert.match(posts[0].body.body, /^DIRECTIVE PLAN \(/);
   assert.equal(spies.execute + spies.telegram + spies.git + spies.pm2, 0);
 });
@@ -959,7 +975,7 @@ await t("scope-violating plan posts refusal comment and no plan comment", async 
   const { deps, posts, cards, labels } = makeSweepDeps({ issues: [issue({ id: "i1" })], comments, plan: badScope });
   const res = await runDirectiveSweepOnce(deps);
   assert.equal(res.refused, 1);
-  assert.equal(posts.length, 1);
+  assert.equal(contentPosts(posts).length, 1);
   assert.match(posts[0].body.body, /^PLAN_REFUSED/);
   assert.match(posts[0].body.body, /file-scope-out-of-scope/);
   assert.match(posts[0].body.body, /Percobaan 1\/2/);
@@ -978,7 +994,7 @@ await t("bad VERIFY plan posts refusal comment and sends no decision card", asyn
   const { deps, posts, cards, labels } = makeSweepDeps({ issues: [issue({ id: "i1", identifier: "KOL-73" })], comments, plan: badVerify });
   const res = await runDirectiveSweepOnce(deps);
   assert.equal(res.refused, 1);
-  assert.equal(posts.length, 1);
+  assert.equal(contentPosts(posts).length, 1);
   assert.match(posts[0].body.body, /^PLAN_REFUSED/);
   assert.match(posts[0].body.body, /VERIFY:/);
   assert.match(posts[0].body.body, /verify-out-of-scope/);
@@ -1023,7 +1039,7 @@ await t("FILES NONE with red verify-file VERIFY refuses before decision card", a
   assert.equal(res.refused, 1);
   assert.equal(verifyCalls, 1);
   assert.equal(cards.length, 0);
-  assert.equal(posts.length, 1);
+  assert.equal(contentPosts(posts).length, 1);
   assert.match(posts[0].body.body, /^PLAN_REFUSED/);
   assert.match(posts[0].body.body, /verify-file-red-without-files/);
   assert.match(posts[0].body.body, /regex did not match/);
@@ -1115,13 +1131,23 @@ await t("plan attempt cap adds OWNER_REQUIRED and one plain Indonesian escalatio
   assert.equal(res.scanned, 1);
   assert.equal(res.planned, 0);
   assert.deepEqual(labels.map((x) => x.label), ["OWNER_REQUIRED"]);
-  assert.equal(posts.length, 1);
-  assert.match(posts[0].body.body, /^DIRECTIVE OWNER REQUIRED/);
-  assert.match(posts[0].body.body, /setelah 2 percobaan/);
-  assert.match(posts[0].body.body, /perintah verifikasi di rencana berada di luar bentuk aman/i);
-  assert.match(posts[0].body.body, /memberi arahan yang lebih spesifik/i);
-  assert.match(posts[0].body.body, /menutup issue/i);
-  assert.doesNotMatch(posts[0].body.body, /verify-out-of-scope/);
+  // E3: the gated brief goes first, then the plain-Indonesian escalation
+  // comment. Two comments, in that order, because no card of his may go out
+  // with nothing behind it.
+  assert.equal(contentPosts(posts).length, 1, "one escalation comment for the owner");
+  const briefPost = posts.find((p) => String(p.body.body).startsWith("[DECISION BRIEF]"));
+  assert.ok(briefPost, "the gated brief is posted");
+  const brief = JSON.parse(briefPost.body.body.slice("[DECISION BRIEF]".length)).decision_brief;
+  assert.match(brief.pertanyaan, /KOL-70/);
+  assert.equal(brief.pilihan.length >= 2, true, "he is given real options, not one button");
+  assert.match(brief.kalau_didiamkan, /berhenti di tempat/);
+  const capPost = contentPosts(posts)[0];
+  assert.match(capPost.body.body, /^DIRECTIVE OWNER REQUIRED/);
+  assert.match(capPost.body.body, /setelah 2 percobaan/);
+  assert.match(capPost.body.body, /perintah verifikasi di rencana berada di luar bentuk aman/i);
+  assert.match(capPost.body.body, /memberi arahan yang lebih spesifik/i);
+  assert.match(capPost.body.body, /menutup issue/i);
+  assert.doesNotMatch(capPost.body.body, /verify-out-of-scope/);
   assert.equal(cards.length, 0);
 });
 
@@ -1139,9 +1165,9 @@ await t("plan attempt cap escalation is idempotent on the next sweep", async () 
   const second = makeSweepDeps({ issues, comments, extra: { maxPlanAttempts: 2 } });
   await runDirectiveSweepOnce(second.deps);
   assert.equal(first.labels.length, 1);
-  assert.equal(first.posts.length, 1);
+  assert.equal(contentPosts(first.posts).length, 1, "one escalation comment; the brief and the declaration are markers");
   assert.equal(second.labels.length, 0);
-  assert.equal(second.posts.length, 0);
+  assert.equal(second.posts.length, 0, "and neither is posted twice");
   assert.equal(comments.i1.filter((x) => /^DIRECTIVE OWNER REQUIRED/.test(x.body)).length, 1);
 });
 
@@ -1270,7 +1296,11 @@ await t("label failure still blocks re-escalation comment", async () => {
   assert.equal(res.planned, 0);
   assert.equal(labelCalls.length, 1);
   assert.equal(escalationPosts.length, 0);
-  assert.equal(posts.length, 0);
+  // E3 posts the brief before attempting the label, so a failed label leaves
+  // the brief and nothing else: no escalation comment, no card, no claim that
+  // the owner was reached.
+  assert.equal(contentPosts(posts).length, 0, "no escalation comment when the label failed");
+  assert.ok(posts.some((p) => String(p.body.body).startsWith("[DECISION BRIEF]")), "the brief was posted before the label attempt");
   assert.equal(cards.length, 0);
   assert.ok(res.errors.some((e) => String(e).includes("owner-required label FAILED") && String(e).includes("404")));
 });
@@ -1295,7 +1325,7 @@ await t("owner approval after attempt-cap escalation resets attempts and plans u
   const res = await runDirectiveSweepOnce(deps);
   assert.equal(res.scanned, 1);
   assert.equal(res.planned, 1);
-  assert.equal(posts.length, 1);
+  assert.equal(contentPosts(posts).length, 1);
   assert.match(posts[0].body.body, /^DIRECTIVE PLAN \(/);
   assert.equal(cards.length, 1);
   assert.equal(labels.length, 0);
@@ -1532,8 +1562,9 @@ await t("plan attempt cap translates parse, file-scope, and verify reasons", asy
     const comments = { i1: [] };
     const { deps, posts } = makeSweepDeps({ issues: [issue({ id: "i1" })], comments, extra: { maxPlanAttempts: 2 } });
     await runDirectiveSweepOnce(deps);
-    assert.match(posts[0].body.body, plain);
-    assert.doesNotMatch(posts[0].body.body, raw);
+    const escalation = contentPosts(posts)[0];
+    assert.match(escalation.body.body, plain);
+    assert.doesNotMatch(escalation.body.body, raw);
   }
 });
 
@@ -1921,7 +1952,7 @@ await t("sweep execution: reverted posts failure comment, leaves status alone, a
   });
   const res = await runDirectiveSweepOnce(deps);
   assert.equal(res.reverted, 1);
-  assert.equal(posts.length, 1);
+  assert.equal(contentPosts(posts).length, 1);
   assert.match(posts[0].body.body, /^DIRECTIVE GAGAL/);
   assert.match(posts[0].body.body, /verify-red/);
   assert.equal(patches.length, 0);
@@ -1944,7 +1975,7 @@ await t("sweep execution: no-op says nothing changed, leaves status alone, and s
   });
   const res = await runDirectiveSweepOnce(deps);
   assert.equal(res.noop, 1);
-  assert.equal(posts.length, 1);
+  assert.equal(contentPosts(posts).length, 1);
   assert.match(posts[0].body.body, /^DIRECTIVE NO-OP/);
   assert.match(posts[0].body.body, /tidak ada perubahan/i);
   assert.equal(patches.length, 0);
@@ -2255,6 +2286,123 @@ await t("buildExecutionPrompt annotates files with anchors read from graphify-ou
     );
     assert.equal(p.includes("Issue Text Bait Anchor"), false);
   });
+});
+
+// =====================================================================
+// E2 edit — a plan posted AFTER an approval puts the issue back to awaiting.
+// This is what makes "edit never executes the original" true in the executor
+// rather than only in the card's wording.
+// =====================================================================
+
+await t("E2: a revised plan posted after an approval leaves the issue awaiting, and executes nothing", async () => {
+  await resetTmp();
+  const planAt = "2026-09-01T09:00:00.000Z";
+  const approvedAt = "2026-09-01T09:30:00.000Z";
+  const revisedAt = "2026-09-01T09:45:00.000Z";
+  const comments = {
+    kol95: [
+      c(`${PLAN_MARKER} (iso):\n${goodPlan}`, planAt),
+      c(TG_APPROVE, approvedAt),
+      c(`${PLAN_MARKER} (iso) — rencana revisi OWNER via Telegram. Rencana sebelumnya TIDAK dijalankan.\n${goodPlan}`, revisedAt),
+    ],
+  };
+  const { deps, spies } = makeSweepDeps({
+    issues: [issue({ id: "kol95", identifier: "KOL-95" })],
+    comments,
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(spies.execute, 0, "the original plan must not run once a revision exists");
+  assert.equal(res.executed, 0);
+  assert.equal(res.approved.length, 0, "the approval no longer applies to the newest plan");
+  assert.equal(res.awaitingApproval.some((a) => a.identifier === "KOL-95"), true, "it is his decision again");
+});
+
+// =====================================================================
+// V1. THE SAME FILTER, AT EMISSION.
+//
+// graphify emits nodes whose label IS the docstring text. The content check
+// already refuses those; anchor emission did not, so a lane was pointed at
+// "Return DASHBOARD_SECRET. Raises at start @ L23" as if it were a symbol.
+// Measured on the venture graph: 3,372 Python nodes located beyond L1 across
+// 174 files, only 966 identifier-shaped — 2,406 docstrings.
+// =====================================================================
+
+await t("V1: a docstring-shaped label is never emitted as an anchor for a source file", async () => {
+  const graph = {
+    nodes: [
+      { id: "ops-watcher/foo.mjs", label: "ops-watcher/foo.mjs", type: "file" },
+      { id: "fn:runFooCheck", label: "runFooCheck", type: "function", source_file: "ops-watcher/foo.mjs", source_location: "ops-watcher/foo.mjs:17" },
+      {
+        id: "doc:secret",
+        label: "Return DASHBOARD_SECRET. Raises at start",
+        type: "docstring",
+        source_file: "ops-watcher/foo.mjs",
+        source_location: "ops-watcher/foo.mjs:23",
+      },
+    ],
+    edges: [],
+  };
+  await withActiveGraph(graph, async () => {
+    const plan = parsePlan(goodPlan);
+    const p = buildExecutionPrompt(issue({}), plan);
+    const line = p.split("\n").find((l) => l.includes("ops-watcher/foo.mjs (KG anchors"));
+    assert.ok(line, "the file still gets its real anchors");
+    assert.ok(line.includes("runFooCheck"), "the identifier-shaped symbol survives");
+    assert.equal(line.includes("Return DASHBOARD_SECRET"), false, "the docstring must not be emitted as an anchor");
+  });
+});
+
+await t("V1: a docstring reached through an EDGE is filtered too", async () => {
+  const graph = {
+    nodes: [
+      { id: "ops-watcher/foo.mjs", label: "ops-watcher/foo.mjs", type: "file" },
+      { id: "fn:runFooCheck", label: "runFooCheck", type: "function", source_file: "ops-watcher/foo.mjs", source_location: "ops-watcher/foo.mjs:17" },
+      { id: "doc:prose", label: "Loads the config and raises on a missing key", type: "docstring", source_file: "ops-watcher/other.mjs", source_location: "ops-watcher/other.mjs:9" },
+      { id: "fn:neighbourSymbol", label: "neighbourSymbol", type: "function", source_file: "ops-watcher/other.mjs", source_location: "ops-watcher/other.mjs:31" },
+    ],
+    edges: [
+      { source: "fn:runFooCheck", target: "doc:prose", type: "CALLS" },
+      { source: "fn:runFooCheck", target: "fn:neighbourSymbol", type: "CALLS" },
+    ],
+  };
+  await withActiveGraph(graph, async () => {
+    const plan = parsePlan(goodPlan);
+    const p = buildExecutionPrompt(issue({}), plan);
+    const line = p.split("\n").find((l) => l.includes("ops-watcher/foo.mjs (KG anchors"));
+    assert.ok(line, "the file line carries anchors");
+    assert.equal(line.includes("Loads the config"), false, "a neighbour docstring is still prose");
+  });
+});
+
+await t("V1: a prose heading in a .md file is NOT filtered — it is that section's real name", async () => {
+  const graph = {
+    nodes: [
+      { id: "doc:bar-scope", label: "Bar Scope", type: "section", source_file: "docs/bar.md", source_location: "docs/bar.md:4" },
+    ],
+    edges: [],
+  };
+  await withActiveGraph(graph, async () => {
+    const plan = { ...parsePlan(goodPlan), files: ["docs/bar.md"] };
+    const p = buildExecutionPrompt(issue({}), plan);
+    assert.ok(p.includes("Bar Scope"), "a markdown heading anchors to a real place and stays");
+  });
+});
+
+await t("V1: emission and the content check ask the SAME question", () => {
+  // One predicate, imported by both. Drift between the two is what put a
+  // docstring in front of a lane while the sampler was refusing it.
+  for (const good of ["runFooCheck", "_privateThing", "$dollar", "buildExecutionPrompt()"]) {
+    assert.equal(isIdentifierShapedLabel(good), true, good);
+  }
+  for (const prose of [
+    "Return DASHBOARD_SECRET. Raises at start",
+    "Bar Scope",
+    "ops-watcher/foo.mjs",
+    "obj.member",
+    "",
+  ]) {
+    assert.equal(isIdentifierShapedLabel(prose), false, prose);
+  }
 });
 
 // =====================================================================
@@ -2643,7 +2791,7 @@ await t("sweep throttle: past SWEEP_MIN_INTERVAL_MS -> a normal sweep runs and l
   const res = await runDirectiveSweepOnce(deps);
   assert.equal(res.skipped, undefined);
   assert.equal(res.planned, 1);
-  assert.equal(posts.length, 1);
+  assert.equal(contentPosts(posts).length, 1);
   assert.match(posts[0].body.body, /^DIRECTIVE PLAN \(/);
   const st = JSON.parse(await fs.readFile(TMP_STATE, "utf8"));
   assert.equal(st.lastSweepMs, NOW);
@@ -3118,7 +3266,7 @@ await t("C1 a failed decision card is recorded as pending, not silently dropped"
   });
   const res = await runDirectiveSweepOnce(deps);
   assert.equal(res.planned, 1);
-  assert.equal(posts.length, 1, "the plan comment still stands");
+  assert.equal(contentPosts(posts).length, 1, "the plan comment still stands");
   assert.equal(res.errors.some((e) => /card-failed/.test(e)), true);
   const saved = JSON.parse(await stateFs.readFile());
   assert.equal(!!saved.pendingCards.i1, true, "the undelivered card must be remembered");
@@ -3460,6 +3608,86 @@ await t("S3 a DONE_VERIFIED label that did not land is reported", async () => {
   assert.equal(res.errors.some((e) => /DONE_VERIFIED label NOT added \(status 404\)/.test(e)), true);
 });
 
+// === L. SINGLE-INSTANCE SWEEP LOCK (P1) ===
+// directive-runner is the ONLY component that changes files and was the only
+// one of the four sweeps without a cross-process lock, while the heartbeat
+// fires it every five minutes unattended.
+
+await t("L1 a sweep held by a LIVE holder is refused, and reads nothing", async () => {
+  await resetTmp();
+  // A lock file naming a pid that is certainly alive: this process.
+  await fs.writeFile(TMP_LOCK, JSON.stringify({ pid: process.pid, startedAt: new Date(NOW).toISOString() }));
+  let reads = 0, lists = 0;
+  const { deps } = makeSweepDeps({ issues: [issue({ id: "kol90", identifier: "KOL-90" })], comments: {} });
+  const res = await runDirectiveSweepOnce({
+    ...deps,
+    listIssues: async () => { lists++; return { issues: [], networkError: false }; },
+    httpGet: async () => { reads++; return { body: [], networkError: false }; },
+  });
+  assert.equal(res.lockRefused, true, "a live holder must refuse the sweep");
+  assert.equal(res.pid, process.pid);
+  assert.equal(lists, 0, "a refused sweep must not list issues");
+  assert.equal(reads, 0, "a refused sweep must not read comments");
+  // The refusal must NOT delete the live holder's lock.
+  assert.equal((await fs.readFile(TMP_LOCK, "utf8")).includes(String(process.pid)), true);
+  await clearTempLock();
+});
+
+await t("L2 a completed sweep releases the lock, so the next sweep runs", async () => {
+  await resetTmp();
+  const mk = () => makeSweepDeps({ issues: [issue({ id: "kol91", identifier: "KOL-91" })], comments: { kol91: [] } });
+  const first = await runDirectiveSweepOnce(mk().deps);
+  assert.equal(first.lockRefused, undefined, "the first sweep must not be refused");
+  assert.equal(await fs.access(TMP_LOCK).then(() => true, () => false), false, "the lock must be released after the sweep");
+  const second = await runDirectiveSweepOnce(mk().deps);
+  assert.equal(second.lockRefused, undefined, "the second sweep must acquire the released lock");
+});
+
+await t("L3 a sweep that THROWS still releases the lock", async () => {
+  await resetTmp();
+  const { deps } = makeSweepDeps({ issues: [], comments: {} });
+  const res = await runDirectiveSweepOnce({
+    ...deps,
+    // activeVentures is resolved before the sweep's own try/catch.
+    activeVentures: async () => { throw new Error("boom"); },
+  }).catch((e) => ({ threw: String(e && e.message) }));
+  assert.ok(res, "the sweep returned or threw");
+  assert.equal(await fs.access(TMP_LOCK).then(() => true, () => false), false, "a thrown sweep must not leave the lock behind");
+});
+
+await t("L4 an unknown lock state refuses rather than running unguarded", async () => {
+  await resetTmp();
+  let lists = 0;
+  const { deps } = makeSweepDeps({ issues: [], comments: {} });
+  const res = await runDirectiveSweepOnce({
+    ...deps,
+    listIssues: async () => { lists++; return { issues: [], networkError: false }; },
+    acquireLock: async () => { throw new Error("disk gone"); },
+  });
+  assert.equal(res.lockRefused, true, "a lock-layer failure must refuse, not proceed");
+  assert.equal(res.error, "lock-failed");
+  assert.equal(lists, 0, "a lock-failed sweep must not touch Paperclip");
+});
+
+await t("L5 the sweep lock is a REAL file on its own path, not the other runners'", async () => {
+  await resetTmp();
+  let sawLockDuringSweep = null;
+  const { deps } = makeSweepDeps({ issues: [], comments: {} });
+  await runDirectiveSweepOnce({
+    ...deps,
+    // Observed from inside the sweep: the lock exists while the sweep runs.
+    listIssues: async () => {
+      sawLockDuringSweep = await fs.readFile(TMP_LOCK, "utf8").catch(() => null);
+      return { issues: [], networkError: false };
+    },
+  });
+  assert.ok(sawLockDuringSweep, "the lock file must exist while the sweep runs");
+  assert.equal(JSON.parse(sawLockDuringSweep).pid, process.pid);
+  assert.notEqual(path.basename(TMP_LOCK), "review-runner.lock");
+  assert.notEqual(path.basename(TMP_LOCK), "test-runner.lock");
+});
+
 await resetTmp();
+
 console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

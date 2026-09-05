@@ -306,16 +306,52 @@ await t("G4 pre-flight: a plan that ASKS for a git write is refused before dispa
 // Live, against the real venture repository.
 // ---------------------------------------------------------------------------
 
-await t("live: the real venture's five uncommitted files are read and refused", () => {
+// V2. A TEST MAY NOT ASSERT A NUMBER THE OWNER IS BEING ASKED TO CHANGE.
+//
+// This test used to assert the venture had exactly FIVE uncommitted files.
+// KOL-82 asks the owner to commit or discard them — so acting on the
+// recommendation the system itself made would have turned the suite red on the
+// Lenovo, and the owner would have been told his own decision broke the build.
+//
+// The live read stays: reading the REAL repository is what caught the porcelain
+// left-edge trimming bug (" M src/x.py" parsed as "rc/x.py"). What changes is
+// what is asserted — the PARSING CONTRACT, against whatever git status returns
+// today, at any count including zero.
+await t("live: the venture's uncommitted files are parsed correctly, whatever git status says", () => {
   const paths = ventureUncommittedPaths(VENTURE);
-  assert.ok(Array.isArray(paths), "the real repository answers");
-  assert.equal(paths.length, 5, `config/ventures.json records five uncommitted files; found ${paths.length}`);
+  if (paths === null) {
+    // No venture checked out on this machine (or git cannot answer). Skip
+    // cleanly and SAY SO — a silent pass here would hide the parser entirely.
+    console.log("  SKIP: no venture repository at ventures/caveman-trading-os — the live read has nothing to parse");
+    return;
+  }
+  assert.ok(Array.isArray(paths), "the real repository answers with a list");
+
   for (const p of paths) {
     assert.ok(p.startsWith("ventures/caveman-trading-os/"), `${p} is repo-relative to Aidit OS`);
+    // The porcelain bug this test exists for: trimming the left edge ate the
+    // status column's leading space and " M src/x.py" became "rc/x.py".
     assert.equal(/\/rc\//.test(p), false, `${p} must not have lost its first path character`);
+    const rel = p.slice("ventures/caveman-trading-os/".length);
+    assert.ok(rel.length > 0, `${p} carries a path, not just the venture prefix`);
+    assert.equal(rel.startsWith(" "), false, `${p} must not carry a status column`);
+    assert.equal(rel.includes(" -> "), false, `${p} must have been split at the rename arrow`);
+    assert.equal(rel.startsWith('"'), false, `${p} must have had its quoting removed`);
+    assert.equal(rel.includes("\\"), false, `${p} must use forward slashes`);
   }
-  const guard = checkUncommittedFiles([paths[0]], [VENTURE]);
-  assert.equal(guard.ok, false, "the real uncommitted file is refused");
+  assert.equal(new Set(paths).size, paths.length, "no path is reported twice");
+
+  // The gate behaves correctly at whatever the count is today — including zero,
+  // which is what KOL-82 produces once the owner acts.
+  if (paths.length) {
+    assert.equal(checkUncommittedFiles([paths[0]], [VENTURE]).ok, false, "a real uncommitted file is refused");
+  } else {
+    console.log("  (the venture is clean — the owner has acted on KOL-82)");
+    assert.equal(
+      checkUncommittedFiles(["ventures/caveman-trading-os/src/anything.py"], [VENTURE]).ok, true,
+      "a clean venture refuses nothing",
+    );
+  }
 });
 
 console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);

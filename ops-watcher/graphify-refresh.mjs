@@ -119,6 +119,28 @@ export const CONTENT_CHECK_SAMPLE = 10;
  * The deepest symbol per file carries every insertion made above it, and the
  * same measurement on that sample scored 10/10 fresh against 8/10 stale.
  */
+/**
+ * Is this label the NAME OF A SYMBOL, or is it prose?
+ *
+ * A label with a separator, a dot or a space is a file, a member expression, or
+ * a docstring — graphify emits nodes whose label IS the docstring text, and
+ * those never appear verbatim on the line they are attributed to.
+ *
+ * Measured on the caveman-trading-os graph (Python, 3,372 located symbols):
+ *   identifier-shaped labels   300/300 found on the exact line
+ *   prose/docstring labels      90/300
+ *
+ * Exported because the SAME question is asked in two places: the content check
+ * that decides what to sample, and directive-runner's anchor emission that
+ * decides what a lane is pointed at. They were answered differently, so
+ * "Return DASHBOARD_SECRET. Raises at start @ L23" was refused as a sample and
+ * emitted as an anchor.
+ */
+export function isIdentifierShapedLabel(label) {
+  const name = String(label == null ? "" : label).trim().replace(/\(\)$/, "");
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name);
+}
+
 export function contentCheckCandidates(graph, limit = CONTENT_CHECK_SAMPLE) {
   const perFile = new Map();
   for (const node of graph?.nodes || []) {
@@ -126,19 +148,12 @@ export function contentCheckCandidates(graph, limit = CONTENT_CHECK_SAMPLE) {
     if (!file || typeof file !== "string") continue;
     const matched = /(\d+)/.exec(String(node.source_location || ""));
     if (!matched) continue;
-    // Only IDENTIFIER-shaped labels. A label with a separator, a dot or a space
-    // is a file, a member expression, or a docstring — graphify emits nodes
-    // whose label IS the docstring text, and those never appear verbatim on the
-    // line they are attributed to.
-    //
-    // Measured on the caveman-trading-os graph (Python, 3,372 located symbols):
-    //   identifier-shaped labels   300/300 found on the exact line
-    //   prose/docstring labels      90/300
-    // Sampling the second kind would refuse every fresh venture graph. This
+    // Only IDENTIFIER-shaped labels — see isIdentifierShapedLabel above.
+    // Sampling a docstring label would refuse every fresh venture graph. This
     // repository has no Python, so the distinction only surfaced once a graph
     // was built over a venture.
     const label = String(node.label || "").replace(/\(\)$/, "");
-    if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(label)) continue;
+    if (!isIdentifierShapedLabel(label)) continue;
     const line = Number(matched[1]);
     if (!Number.isInteger(line) || line < 1) continue;
     const current = perFile.get(file);

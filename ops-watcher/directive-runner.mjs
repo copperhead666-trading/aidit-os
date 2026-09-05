@@ -79,10 +79,32 @@ import {
   recordLaneOutcome as defaultRecordLaneOutcome,
 } from "./lane-guard.mjs";
 import { parseArgs as parseVerifyFileArgs, verifyFile as verifyFileReal } from "./verify-file.mjs";
+// V1: anchor emission asks the SAME question the content check asks. One
+// definition, so the two answers cannot drift apart again.
+import { isIdentifierShapedLabel } from "./graphify-refresh.mjs";
+// E3: the same brief gate ahmad-escalate.mjs uses, on this file's own two
+// OWNER_REQUIRED paths.
+import { postGatedBrief } from "./owner-gate.mjs";
+import { DECISION_BRIEF_MARKER } from "./decision-brief.mjs";
+// E2: the escalation declares its own actions, in the house marker shape.
+import { buildEscalationActionsCommentBody } from "./escalation-actions.mjs";
+// Single-instance sweep lock. Reuses the EXACT atomic acquireLock/releaseLock/
+// isPidAliveReal that review-runner and test-runner already import from here —
+// a fourth lock implementation would be a fourth thing to get wrong.
+import {
+  acquireLock as acquireLockReal,
+  releaseLock as releaseLockReal,
+  isPidAliveReal,
+} from "./telegram-listener-daemon.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
 const STATE_FILE = path.join(__dirname, "directive-runner-state.json");
+// Sweep lock file. Separate from review-runner.lock / test-runner.lock /
+// ahmad-dispatch.lock: these runners are independent and must not block one
+// another. directive-runner is the only one that CHANGES FILES, so an
+// unguarded concurrent sweep here is the highest-consequence one in the system.
+const LOCK_FILE = path.join(__dirname, "directive-runner.lock");
 const ACTIVE_GRAPH_FILE = path.join(REPO_ROOT, "graphify-out", "active", "graph.json");
 const GRAPH_ANCHOR_LIMIT_PER_FILE = 6;
 // Overall cap across ALL files. The point of anchors is a SMALLER packet; a
@@ -210,6 +232,10 @@ function newestComment(comments) {
 }
 function isPlanComment(c) {
   const b = bodyOf(c);
+  // A structured marker comment is never a plan, whatever its JSON happens to
+  // quote. A decision brief that mentioned the words "DIRECTIVE PLAN" in a
+  // source field was read as the newest plan and stopped the executor.
+  if (b.trimStart().startsWith("[")) return false;
   return b.includes(PLAN_MARKER) &&
     !b.includes(APPROVED_MARKER) &&
     !b.includes(REJECTED_MARKER) &&
@@ -909,6 +935,104 @@ function attemptCapComment({ attempts, failure, nowMs }) {
   ].join("\n");
 }
 
+// E3. THE BRIEF GATE, FOR THE EXECUTOR'S OWN ESCALATIONS.
+//
+// This file adds OWNER_REQUIRED in two places — the plan-attempt cap and the
+// execution cap — and both used to reach the owner as a title and four buttons,
+// because only ahmad-escalate.mjs and raise-decision.mjs went through
+// decision-brief.mjs. These build the same five slots the validator requires,
+// from what the sweep actually knows, and say so in the slot where it does not.
+/** The newest [DECISION BRIEF] comment posted after `sinceMs`, or null. */
+function newestBriefAfter(comments, sinceMs) {
+  let newest = null;
+  for (const c of Array.isArray(comments) ? comments : []) {
+    if (!bodyOf(c).trimStart().startsWith(DECISION_BRIEF_MARKER)) continue;
+    const t = commentTime(c);
+    if (Number.isFinite(sinceMs) && t != null && t <= sinceMs) continue;
+    if (!newest || (t != null && newest.t != null && t > newest.t)) newest = { c, t };
+  }
+  return newest ? newest.c : null;
+}
+
+export function attemptCapBrief({ issue, attempts, failure }) {
+  const ident = issue?.identifier || issue?.id || "directive ini";
+  return {
+    pertanyaan: `Directive ${ident} tidak dapat direncanakan setelah ${attempts} percobaan. Apa yang Anda ingin dilakukan?`,
+    yang_sudah_ada: [
+      {
+        kutipan: `Perencanaan ${ident} gagal ${attempts} kali berturut-turut. Alasan terakhir: ${plainPlanFailureReason(failure)}.`,
+        sumber: `ops-watcher/directive-runner.mjs — penghitung percobaan di directive-runner-state.json`,
+      },
+      {
+        kutipan: `Judul directive: ${String(issue?.title || "(tanpa judul)")}.`,
+        sumber: `Paperclip issue ${ident}`,
+      },
+    ],
+    pilihan: [
+      {
+        key: "arahan_baru",
+        label: "Beri arahan yang lebih spesifik",
+        konsekuensi: "Rencana baru disusun memakai arahan Anda, dan penghitung percobaan dimulai lagi dari nol.",
+      },
+      {
+        key: "ubah_scope",
+        label: "Perkecil atau ubah lingkup directive",
+        konsekuensi: "Bagian yang menyulitkan dikeluarkan dari lingkup, sehingga sisanya bisa dikerjakan lebih dulu.",
+      },
+      {
+        key: "tutup",
+        label: "Tutup directive ini",
+        konsekuensi: "Tidak ada lagi percobaan perencanaan, dan pekerjaan ini hilang dari antrean sampai Anda membukanya kembali.",
+      },
+    ],
+    rekomendasi: {
+      pilihan: "arahan_baru",
+      alasan: `Kegagalan terakhir berbunyi "${plainPlanFailureReason(failure)}", yang biasanya berarti perencananya kurang konteks, bukan bahwa pekerjaannya mustahil.`,
+    },
+    kalau_didiamkan: `Directive ${ident} berhenti di tempat: tidak ada percobaan perencanaan baru dan tidak ada eksekusi, sampai Anda memutuskan.`,
+  };
+}
+
+export function executionCapBrief({ issue, attempts, reason }) {
+  const ident = issue?.identifier || issue?.id || "directive ini";
+  const why = String(reason || "tidak diketahui");
+  return {
+    pertanyaan: `Directive ${ident} gagal dijalankan ${attempts} kali dengan rencana yang sama. Apa yang Anda ingin dilakukan?`,
+    yang_sudah_ada: [
+      {
+        kutipan: `Eksekusi ${ident} gagal ${attempts} kali dengan alasan yang sama: ${why}. Semua perubahan sudah dikembalikan.`,
+        sumber: "ops-watcher/directive-runner.mjs — executionFailures di directive-runner-state.json",
+      },
+      {
+        kutipan: `Rencana yang dipakai adalah rencana yang sudah Anda setujui sebelumnya untuk ${ident}.`,
+        sumber: `Paperclip issue ${ident} — komentar rencana terakhir`,
+      },
+    ],
+    pilihan: [
+      {
+        key: "rencana_baru",
+        label: "Minta rencana baru",
+        konsekuensi: "Rencana lama dibuang dan perencana menyusun pendekatan lain untuk masalah yang sama.",
+      },
+      {
+        key: "ubah_scope",
+        label: "Ubah lingkupnya lebih dulu",
+        konsekuensi: "Bagian yang gagal dikeluarkan dari lingkup, sehingga sisa pekerjaannya dapat diselesaikan.",
+      },
+      {
+        key: "tutup",
+        label: "Tutup directive ini",
+        konsekuensi: "Percobaan dihentikan seluruhnya dan tidak ada lane yang akan menyentuhnya lagi.",
+      },
+    ],
+    rekomendasi: {
+      pilihan: "rencana_baru",
+      alasan: `Rencana yang sama sudah gagal ${attempts} kali dengan alasan yang sama, sehingga mengulanginya hampir pasti menghasilkan kegagalan yang sama lagi.`,
+    },
+    kalau_didiamkan: `Tidak ada perubahan pada repositori dan tidak ada percobaan baru: ${ident} menunggu keputusan Anda tanpa batas waktu.`,
+  };
+}
+
 // ---- Stage 2: deliver the plan to the owner as a decision card -------------\n// Builds the phone-screen summary card text in professional Indonesian: issue
 // identifier + title, the plan's OBJECTIVE, file count, the VERIFY command, and
 // the RISK level. The full plan stays in the Paperclip comment; the card is the
@@ -976,17 +1100,43 @@ export function buildDecisionCardText(issue, plan) {
 // z=DEFER. The card only ever sent a: and r:, so DETAILS and DEFER existed and
 // were unreachable. Four actions, laid out two per row so the destructive one is
 // not adjacent to the harmless one.
-export function buildDecisionCardButtons(shortId) {
-  return [
-    [
-      { text: "✅ SETUJUI", callback_data: `a:${shortId}` },
-      { text: "📄 LIHAT DETAIL", callback_data: `d:${shortId}` },
-    ],
-    [
-      { text: "✏️ TOLAK + ALASAN", callback_data: `r:${shortId}` },
-      { text: "🕒 TUNDA", callback_data: `z:${shortId}` },
-    ],
-  ];
+// E2. What a PLAN card supports. This is the escalation where every one of the
+// four actions is real: he can approve the plan, revise it, answer in his own
+// words, or decline it. The card that had only "approve" and "reject" is the
+// one he was talking about.
+export const PLAN_CARD_ACTIONS = Object.freeze({
+  allow_accept: true,
+  allow_edit: true,
+  allow_respond: true,
+  allow_ignore: true,
+});
+
+// A capped directive has nothing to accept: the plan it had is the one that
+// failed. Approving it would mean "run the thing that already failed twice", so
+// that button is deliberately absent.
+export const CAP_ESCALATION_ACTIONS = Object.freeze({
+  allow_accept: false,
+  allow_edit: true,
+  allow_respond: true,
+  allow_ignore: true,
+});
+
+export function buildDecisionCardButtons(shortId, actions = PLAN_CARD_ACTIONS) {
+  const a = actions || PLAN_CARD_ACTIONS;
+  const rows = [];
+  const first = [];
+  if (a.allow_accept) first.push({ text: "✅ SETUJUI", callback_data: `a:${shortId}` });
+  first.push({ text: "📄 LIHAT DETAIL", callback_data: `d:${shortId}` });
+  rows.push(first);
+  const middle = [];
+  if (a.allow_edit) middle.push({ text: "✏️ UBAH RENCANA", callback_data: `e:${shortId}` });
+  if (a.allow_respond) middle.push({ text: "💬 BALAS", callback_data: `b:${shortId}` });
+  if (middle.length) rows.push(middle);
+  const last = [];
+  if (a.allow_ignore) last.push({ text: "🚫 TOLAK + ALASAN", callback_data: `r:${shortId}` });
+  last.push({ text: "🕒 TUNDA", callback_data: `z:${shortId}` });
+  rows.push(last);
+  return rows;
 }
 
 // The default decision-card sender: reuses telegram-client.sendMessage (the same
@@ -1050,7 +1200,61 @@ function failureTelegramText({ identifier, outcome, reason }) {
   return `Directive ${identifier} tidak dapat diselesaikan (${outcome}): ${reason || "tidak diketahui"}. Status tetap approved; tidak ada perubahan yang dipertahankan.`;
 }
 
+// SINGLE-INSTANCE SWEEP LOCK (same shape as review-runner / test-runner: the
+// same acquireLock/releaseLock/isPidAliveReal, a lock file of its own, refusal
+// on a live holder, refusal on an unknown lock state).
+//
+// The WHOLE sweep is single-instance. The lock is taken before ANY read, write,
+// dispatch or execution, and released in a finally, so a sweep that throws,
+// returns early (throttled, no base, network error) or completes normally
+// always releases it. A concurrent invocation that finds the lock held does no
+// Paperclip read/write and no execution at all.
+//
+// The refusal flag is `lockRefused`, not `refused`: this summary already uses
+// `refused` as a COUNTER of directives refused by the scope gate, and reusing
+// that name would make a refusal look like a count of one.
+//
+// deps adds: { lockFile, acquireLock, releaseLock, isAlive, lockPid, lockFs }
 export async function runDirectiveSweepOnce(deps = {}) {
+  const {
+    lockFile = LOCK_FILE,
+    acquireLock: _acquireLock = acquireLockReal,
+    releaseLock: _releaseLock = releaseLockReal,
+    isAlive = isPidAliveReal,
+    lockPid = process.pid,
+    // The lock gets its OWN fs seam. deps._fs is the STATE-FILE mock in this
+    // module and handing that to the lock would make the lock write into a
+    // test double — the exact way a lock silently stops being a lock.
+    lockFs = fs,
+    log: lockLog = () => {},
+  } = deps;
+
+  let lock;
+  try {
+    lock = await _acquireLock({ lockFile, pid: lockPid, isAlive, _fs: lockFs });
+  } catch (err) {
+    // A lock-layer failure must never silently let the race through: an unknown
+    // lock state is treated as held, because the alternative is two processes
+    // editing the same files.
+    const msg = (err && err.stack) ? err.stack : String(err);
+    lockLog(`directive-runner: lock acquire threw (${msg}) -> refusing to run (no concurrent execution on unknown lock state)`);
+    return { lockRefused: true, error: "lock-failed", errors: [`lock-failed: ${(err && err.message) || err}`] };
+  }
+  if (!lock.acquired) {
+    lockLog(`directive-runner: REFUSING to run — another sweep is already in progress (pid=${lock.pid}). Remove ${path.basename(lockFile)} only if you are sure it is stale. No Paperclip reads/writes performed, no file changed.`);
+    return { lockRefused: true, pid: lock.pid, errors: [] };
+  }
+  lockLog(`directive-runner: acquired sweep lock (pid=${lock.pid}) at ${iso()}`);
+
+  try {
+    return await runDirectiveSweepLocked(deps);
+  } finally {
+    await _releaseLock({ lockFile, _fs: lockFs });
+  }
+}
+
+// The sweep body. Only ever called with the sweep lock held.
+async function runDirectiveSweepLocked(deps = {}) {
   const summary = {
     scanned: 0, planned: 0, refused: 0,
     stalled: [], awaitingApproval: [], approved: [], rejected: [], unexecutable: [],
@@ -1146,6 +1350,12 @@ export async function runDirectiveSweepOnce(deps = {}) {
       summary.errors.push("no Paperclip base resolved");
       return summary;
     }
+    // The sweep posts comments through _post(url, {body, authorType}); owner-gate
+    // speaks postComment(base, issueId, body, opts). One adapter, so the gate
+    // owns no transport and this file keeps its single posting seam.
+    const postCommentViaSweep = async (_base, issueId, body, opts) =>
+      _post(`${base}/api/issues/${issueId}/comments`, { body, authorType: (opts && opts.authorType) || "user" });
+
     const issuesRes = await listIssuesFn(base, companyId);
     if (issuesRes.networkError) {
       summary.errors.push(`issues list network error: ${issuesRes.networkErrorMessage}`);
@@ -1321,6 +1531,37 @@ export async function runDirectiveSweepOnce(deps = {}) {
           ? !!(newestEscalation && newestEscalation.t > decisionAtMs)
           : (hasLabel(issue, OWNER_REQUIRED_LABEL) || !!newestEscalation);
         if (!dryRun && !alreadyEscalated) {
+          // E3: the brief before the label. A card whose brief was refused is
+          // not sent at all — the refusal is written on the issue instead, and
+          // the issue stays visible in the daily digest.
+          const capFailure = state.lastPlanFailures?.[key] || inferLastPlanFailure(comments);
+          // A brief already posted for THIS round is reused rather than
+          // re-posted: the label add can fail and the sweep runs again every
+          // five minutes, and a stack of identical briefs on his issue is
+          // litter, not content.
+          const briefForRound = newestBriefAfter(comments, decisionAtMs);
+          if (!briefForRound) {
+            // E2: there is no plan to accept here — what he can do is give a
+            // revised plan, answer in his own words, or close the directive.
+            await _post(`${base}/api/issues/${issue.id}/comments`, {
+              body: buildEscalationActionsCommentBody(CAP_ESCALATION_ACTIONS),
+              authorType: "user",
+            });
+          }
+          const gate = briefForRound
+            ? { ok: true, posted: true, reused: true }
+            : await postGatedBrief({
+              base,
+              issueId: issue.id,
+              brief: attemptCapBrief({ issue, attempts: prior, failure: capFailure }),
+              producer: "directive-runner (plan attempt cap)",
+              postComment: postCommentViaSweep,
+              log,
+            });
+          if (!gate.ok || !gate.posted) {
+            summary.errors.push(`${ident}: escalation brief ${gate.ok ? "did not land" : "REFUSED"} — OWNER_REQUIRED not added, no bare card sent`);
+            continue;
+          }
           let labelOk = false;
           try {
             const labelRes = await addOwnerRequiredLabelFn(issue, OWNER_REQUIRED_LABEL);
@@ -1435,6 +1676,16 @@ export async function runDirectiveSweepOnce(deps = {}) {
         summary.planned += 1;
         state.attempts[key] = 0;
         await persistState(state);
+        // E2: the SENDER declares which actions this escalation supports, so a
+        // card re-sent later by telegram-notify shows the same four the plan
+        // card shows here, rather than reverting to approve/reject.
+        const declaration = await _post(`${base}/api/issues/${issue.id}/comments`, {
+          body: buildEscalationActionsCommentBody(PLAN_CARD_ACTIONS),
+          authorType: "user",
+        });
+        if (!judgeWrite(declaration).ok) {
+          log(`directive-runner: ${ident} action declaration NOT posted — a re-sent card will fall back to the default buttons`);
+        }
         // Deliver the plan to the owner as a decision card. If the card cannot
         // be sent, the plan comment still stands and the sweep records
         // `card-failed` — never leave the owner with an approved-looking state
@@ -1493,6 +1744,25 @@ export async function runDirectiveSweepOnce(deps = {}) {
           continue;
         }
         const reason = record && record.reason ? record.reason : "unknown";
+        // E3: the same gate on this path. The execution cap is the escalation
+        // most likely to reach him at night, so it is the least excusable one
+        // to send as a bare title.
+        await _post(`${base}/api/issues/${exIssue.id}/comments`, {
+          body: buildEscalationActionsCommentBody(CAP_ESCALATION_ACTIONS),
+          authorType: "user",
+        });
+        const capGate = await postGatedBrief({
+          base,
+          issueId: exIssue.id,
+          brief: executionCapBrief({ issue: exIssue, attempts: MAX_EXECUTION_ATTEMPTS, reason }),
+          producer: "directive-runner (execution cap)",
+          postComment: postCommentViaSweep,
+          log,
+        });
+        if (!capGate.ok || !capGate.posted) {
+          summary.errors.push(`${exIdent}: execution-cap brief ${capGate.ok ? "did not land" : "REFUSED"} — OWNER_REQUIRED not added, no bare card sent`);
+          continue;
+        }
         const cpost = await _post(`${base}/api/issues/${exIssue.id}/comments`, {
           body: [
             `${EXECUTION_CAP_MARKER} (${iso(nowMs)}): directive dihentikan setelah ${MAX_EXECUTION_ATTEMPTS} eksekusi gagal identik.`,
@@ -1789,6 +2059,37 @@ export function scoreAnchorRelevance(label, planText) {
   return hits * ANCHOR_RELEVANCE_PER_PART;
 }
 
+// V1. THE SAME FILTER, AT EMISSION.
+//
+// The content check already refuses a label that is not identifier-shaped,
+// because graphify emits nodes whose label IS the docstring text. Anchor
+// emission did not, so a lane was handed
+//   "Return DASHBOARD_SECRET. Raises at start @ L23"
+// as an anchor. Measured on the venture graph: of 3,372 Python nodes located
+// beyond L1 across 174 files, only 966 carry an identifier-shaped label —
+// 2,406 are docstrings. That is 71% of the anchors being prose.
+//
+// The filter applies where a label CLAIMS to name a symbol: source files. A
+// heading in a .md is not a symbol claim — "Bar Scope @ L4" is the real name of
+// that section and points at the right place — so prose files keep prose
+// labels. Filtering them too would delete correct anchors without removing a
+// single docstring.
+const ANCHOR_SYMBOL_FILE_EXTENSIONS = new Set([
+  ".py", ".mjs", ".cjs", ".js", ".jsx", ".ts", ".tsx", ".rs", ".go", ".java",
+  ".rb", ".php", ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".swift", ".kt", ".sh",
+]);
+
+function anchorFileExpectsSymbols(file) {
+  const ext = path.extname(String(file || "")).toLowerCase();
+  return ANCHOR_SYMBOL_FILE_EXTENSIONS.has(ext);
+}
+
+/** An anchor label is usable when it names a symbol, in a file made of symbols. */
+function anchorLabelIsUsable(node, file) {
+  if (!anchorFileExpectsSymbols(file)) return true;
+  return isIdentifierShapedLabel(node?.label || node?.name || node?.title || node?.id);
+}
+
 function graphNodeMatchesFile(node, file) {
   const candidates = [
     node?.source_file,
@@ -1864,7 +2165,7 @@ export function graphFreshnessForAnchors(deps = {}) {
 
 function headCommitForAnchors(deps = {}) {
   const exec = deps._exec || execFileSync;
-  return String(exec("git", ["rev-parse", "HEAD"], { cwd: REPO_ROOT, encoding: "utf8" })).trim();
+  return String(exec("git", ["rev-parse", "HEAD"], { cwd: REPO_ROOT, encoding: "utf8", windowsHide: true })).trim();
 }
 
 // N5. Which graph describes which file.
@@ -1913,7 +2214,7 @@ export function ventureHeadCommit(venture, deps = {}) {
   const exec = deps._exec || execFileSync;
   const venturePath = deps.venturePath || path.join(REPO_ROOT, String(venture?.repoPath || ""));
   try {
-    const head = String(exec("git", ["-C", venturePath, "rev-parse", "HEAD"], { encoding: "utf8" })).trim();
+    const head = String(exec("git", ["-C", venturePath, "rev-parse", "HEAD"], { encoding: "utf8", windowsHide: true })).trim();
     return head || null;
   } catch {
     return null;
@@ -1972,6 +2273,7 @@ function activeGraphAnchorsForFiles(files, deps = {}) {
       const labelAsPath = normalizeGraphRepoPath(node?.label || node?.name || node?.title);
       const idAsPath = normalizeGraphRepoPath(node?.id);
       const isFileNode = labelAsPath === file || idAsPath === file;
+      if (!isFileNode && !anchorLabelIsUsable(node, file)) continue;
       anchors.get(file).push({ node, priority: isFileNode ? 3 : 0 });
       if (node?.id) matchingNodeIdsByFile.get(file).add(String(node.id));
     }
@@ -1985,7 +2287,11 @@ function activeGraphAnchorsForFiles(files, deps = {}) {
       const matchingIds = matchingNodeIdsByFile.get(file);
       const neighborId = matchingIds.has(source) ? target : matchingIds.has(target) ? source : "";
       const neighbor = neighborId ? nodeById.get(neighborId) : null;
-      if (neighbor) anchors.get(file).push({ node: neighbor, priority: 1 });
+      if (!neighbor) continue;
+      const neighborIsFileNode = normalizeGraphRepoPath(neighbor?.label || neighbor?.name || neighbor?.title) === file
+        || normalizeGraphRepoPath(neighbor?.id) === file;
+      if (!neighborIsFileNode && !anchorLabelIsUsable(neighbor, file)) continue;
+      anchors.get(file).push({ node: neighbor, priority: 1 });
     }
   }
 
@@ -2412,6 +2718,11 @@ async function main() {
     process.exit(0);
   }
   const summary = await runDirectiveSweepOnce({ dryRun: args.dry, once: args.once, log: (m) => console.log(m) });
+  if (summary && summary.lockRefused) {
+    // Another sweep holds the lock (or the lock state is unknown). Already
+    // logged above; nothing was read, written or executed.
+    process.exit(0);
+  }
   if (summary && summary.skipped) {
     // Throttled: the skip reason was already logged via the log callback.
     process.exit(0);
