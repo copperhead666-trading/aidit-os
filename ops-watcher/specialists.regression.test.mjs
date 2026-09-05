@@ -104,7 +104,7 @@ async function t5_defaultMaxSpecialistsLimitsRenderedPersonas() {
 
 async function t6_everyTaskClassStaysUnderPersonaBudget() {
   const taskClasses = Object.keys(TASK_CLASS_SPECIALISTS);
-  assert.equal(taskClasses.length, 9, "T6: the registry contains all nine task classes");
+  assert.equal(taskClasses.length, 11, "T6: the registry contains all eleven task classes");
   const budget = 3000;
   for (const taskClass of taskClasses) {
     const section = await buildSpecialistSection(taskClass);
@@ -200,6 +200,38 @@ async function t10_injectedFsRunsOffline() {
   ok("T10: loadSpecialist and readSkillMatrix seams run fully offline through fake fs");
 }
 
+async function t11_measuredAiditWorkClassifiesToSpecialists() {
+  const fixtures = [
+    ["perbaiki test regression di ops-watcher", "test-regression"],
+    ["hitung metrik venture trading", "venture-metrics"],
+    ["desain ulang kartu telegram", "owner-communication"],
+    ["ubah skema database", "database-storage"],
+  ];
+  for (const [text, expected] of fixtures) {
+    const taskClass = classifyTaskClass(text);
+    assert.ok(taskClass, `T11: ${text} classifies to a non-empty class`);
+    assert.equal(taskClass, expected, `T11: ${text} classifies as ${expected}`);
+  }
+  ok("T11: measured Aidit OS work classifies to non-empty specialist classes");
+}
+
+async function t12_newSpecialistSectionsStayUnderPacketBudget() {
+  const budget = 2500;
+  for (const taskClass of ["test-regression", "venture-metrics"]) {
+    const section = await buildSpecialistSection(taskClass);
+    assert.ok(section.length > 0, `T12: ${taskClass} renders a specialist section`);
+    if (section.length >= budget) {
+      assert.fail(`${taskClass} rendered ${section.length} chars, over the under-${budget} budget by ${section.length - (budget - 1)} chars`);
+    }
+  }
+  ok("T12: new specialist sections render under 2500 chars");
+}
+
+async function t13_unrelatedOwnerTextStillClassifiesToNothing() {
+  assert.equal(classifyTaskClass("beli kopi"), null, "T13: unrelated owner text remains unclassified");
+  ok("T13: unrelated text still classifies to nothing");
+}
+
 function escapeRegExp(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -216,6 +248,9 @@ async function main() {
     t8_missingAndUnknownSpecialistsAreEmpty,
     t9_resolveCarriesSkillMatrixFields,
     t10_injectedFsRunsOffline,
+    t11_measuredAiditWorkClassifiesToSpecialists,
+    t12_newSpecialistSectionsStayUnderPacketBudget,
+    t13_unrelatedOwnerTextStillClassifiesToNothing,
   ];
   for (const t of tests) {
     try {
