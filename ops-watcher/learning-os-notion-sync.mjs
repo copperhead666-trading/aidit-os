@@ -6,6 +6,12 @@
 // database and upsert/read Learning OS topic rows by Topic ID.
 //
 //   node ops-watcher/learning-os-notion-sync.mjs --once
+//
+// SCOPE (owner decision KOL-84, accepted 2026-09-05, ledger D45): Notion is
+// scoped to Learning OS ONLY. It is not a second reading surface for Aidit OS
+// output — that surface is the Cockpit plus Telegram. Do not widen this sync
+// to issues, decisions, or lane output without a new owner decision; a second
+// surface costs synchronisation debt before the first one is finished.
 
 import { promises as fs } from "node:fs";
 import path from "node:path";

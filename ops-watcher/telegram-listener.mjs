@@ -741,6 +741,38 @@ export async function findIssueByTelegramMessageId(base, companyId, _get, telegr
 
 function redactCb(s) { return String(s || "").slice(0, 64); }
 
+// An APPROVE on a decision card means "do the recommended thing", but the
+// confirmation comment used to record only that approval happened. Six issues
+// were approved on 2026-09-05 and none of them says WHICH option the owner
+// accepted, so the record had to be reconstructed from the brief by hand.
+// Name the accepted option in the comment instead.
+export function acceptedOptionSuffix(brief) {
+  const key = brief && brief.rekomendasi && typeof brief.rekomendasi.pilihan === "string"
+    ? brief.rekomendasi.pilihan.trim() : "";
+  if (!key) return "";
+  const options = Array.isArray(brief.pilihan) ? brief.pilihan : [];
+  const hit = options.find((o) => o && o.key === key);
+  const label = hit && typeof hit.label === "string" && hit.label.trim() ? hit.label.trim() : null;
+  return label
+    ? ` Opsi yang disetujui: "${label}" (${key}) — pilihan yang direkomendasikan pada kartu.`
+    : ` Opsi yang disetujui: ${key} — pilihan yang direkomendasikan pada kartu.`;
+}
+
+// Never throws and never blocks the approval: a comment fetch that fails costs
+// the suffix, not the owner's decision.
+async function acceptedOptionSuffixFor(_get, base, issueId, log, shortId) {
+  try {
+    const r = await _get(`${base}/api/issues/${issueId}/comments`);
+    const body = r && r.body;
+    const list = Array.isArray(body) ? body : (Array.isArray(body && body.comments) ? body.comments : []);
+    const brief = parseDecisionBriefFromComments(commentsOldestFirst(list).slice().reverse());
+    return brief ? acceptedOptionSuffix(brief) : "";
+  } catch (err) {
+    log(`telegram-listener: ${shortId} APPROVE — could not read the brief to name the accepted option (${err && err.message}); recording the approval without it`);
+    return "";
+  }
+}
+
 // Re-fetch a fresh copy of the issue (so labelIds are current before we mutate).
 async function freshIssue(base, issueId, _get) {
   const r = await _get(`${base}/api/issues/${issueId}`);
@@ -1274,8 +1306,9 @@ export async function applyAction(ctx) {
     if (dup) {
       log(`telegram-listener: ${shortId} APPROVE — duplicate confirmation comment suppressed (recent identical decision already recorded)`);
     } else {
+      const optionSuffix = await acceptedOptionSuffixFor(_get, base, issueId, log, shortId);
       const cm = await _postComment(base, issueId,
-        `OWNER MENYETUJUI via Telegram (${iso()}) — ketukan tombol oleh owner via @ahmadsuperbot. Label OWNER_REQUIRED dihapus sehingga alur otomatis dapat dilanjutkan.`,
+        `OWNER MENYETUJUI via Telegram (${iso()}) — ketukan tombol oleh owner via @ahmadsuperbot. Label OWNER_REQUIRED dihapus sehingga alur otomatis dapat dilanjutkan.${optionSuffix}`,
         { authorType: "user" });
       if (cm && cm.networkError) log(`telegram-listener: ${shortId} APPROVE label WAS removed but the confirmation comment FAILED to post (network error)`);
     }

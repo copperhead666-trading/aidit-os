@@ -54,6 +54,7 @@ import {
   slashCommandNotImplementedReply,
   AHMAD_AGENT_ID,
   spawnHeartbeatReal,
+  acceptedOptionSuffix,
 } from "./telegram-listener.mjs";
 
 const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "tg-daemon-test-"));
@@ -1317,6 +1318,74 @@ async function t10d_findIssueByTelegramMessageIdUnit() {
 // =====================================================================
 // runner
 // =====================================================================
+// =====================================================================
+// T11: an APPROVE names the option it accepted
+// Six issues were approved on 2026-09-05 and the confirmation comment on
+// each says only that approval happened. Which option the owner accepted
+// had to be reconstructed by hand from the brief.
+// =====================================================================
+async function t11_approveNamesTheAcceptedOption() {
+  const brief = {
+    pertanyaan: "Notion mau dipakai untuk apa?",
+    pilihan: [
+      { key: "permukaan_baca", label: "Permukaan baca di luar Telegram" },
+      { key: "learning_os_saja", label: "Khusus Learning OS saja" },
+    ],
+    rekomendasi: { pilihan: "learning_os_saja", alasan: "cakupan sempit bisa dinilai" },
+  };
+  assert.match(acceptedOptionSuffix(brief), /Khusus Learning OS saja/, "T11: the suffix names the accepted label");
+  assert.match(acceptedOptionSuffix(brief), /learning_os_saja/, "T11: the suffix carries the option key");
+  assert.equal(acceptedOptionSuffix({ pilihan: [] }), "", "T11: no recommendation -> no suffix");
+  assert.equal(acceptedOptionSuffix(null), "", "T11: no brief -> no suffix, never a throw");
+  assert.match(acceptedOptionSuffix({ rekomendasi: { pilihan: "cabut" }, pilihan: [] }), /cabut/,
+    "T11: a key with no matching option still gets recorded");
+
+  spawnHeartbeatCalls.length = 0;
+  const trace = [];
+  const issue = makeIssue({ id: "iss-11", identifier: "KOL-11", labelIds: ["lbl-OWNER_REQUIRED"] });
+  const briefComment = { id: "c-brief", body: `[DECISION BRIEF] ${JSON.stringify({ decision_brief: {
+    pertanyaan: "Notion sudah punya kode dan kredensial, Anda ingin dipakai untuk apa?",
+    yang_sudah_ada: [{ kutipan: "Kode sinkronisasi Notion sudah ada di ops-watcher.", sumber: "ops-watcher/learning-os-notion-sync.mjs" }],
+    pilihan: [
+      { key: "permukaan_baca", label: "Permukaan baca di luar Telegram", konsekuensi: "Satu tempat lagi yang harus dijaga sinkron." },
+      { key: "learning_os_saja", label: "Khusus Learning OS saja", konsekuensi: "Cakupannya sempit dan bisa dinilai berguna atau tidak." },
+    ],
+    rekomendasi: { pilihan: "learning_os_saja", alasan: "Cakupan sempit membuat integrasi ini bisa dinilai berguna atau tidak." },
+    kalau_didiamkan: "Kredensial Notion tetap ada di mesin tanpa pemakai yang jelas.",
+  } })}`, createdAt: "2026-09-05T10:00:00.000Z" };
+
+  const result = await processUpdateForCallback(
+    { update_id: 11, callback_query: { id: "cbq-11", data: "a:KOL-11", message: { message_id: 111, chat: { id: 8987077084 } }, from: { id: 8987077084 } } },
+    {
+      base: "http://127.0.0.1:9999", companyId: COMPANY_ID,
+      labelMap: { OWNER_REQUIRED: "lbl-OWNER_REQUIRED" },
+      idMap: { "KOL-11": issue }, upOpts: {},
+      immediateAck: true,
+      _get: async (url) => {
+        if (url.includes("/comments")) return { networkError: false, status: 200, body: [briefComment] };
+        if (url.includes("/issues/")) return { networkError: false, status: 200, body: issue };
+        return { networkError: false, status: 200, body: [issue] };
+      },
+      _listLabels: async () => ({ labels: [], networkError: false }),
+      _ensureLabel: async () => ({ id: "lbl-x" }),
+      _postComment: async (b, id, body) => { trace.push({ fn: "postComment", body }); return { comment: { id: "c" }, status: 201, networkError: false }; },
+      _patchIssue: async () => ({ issue: {}, status: 200, networkError: false }),
+      _answerCallbackQuery: async () => ({ sent: true, ok: true }),
+      _editMessageText: async () => ({ sent: true, ok: true }),
+      _sendMessage: async () => ({ sent: true, ok: true }),
+      _spawnHeartbeat: _spawnHeartbeatMock,
+      _httpPost: async () => ({ status: 201, body: {}, networkError: false }),
+      log: () => {}, now: Date.now, decisionDedupe: new Map(),
+    },
+  );
+
+  assert.equal(result.outcome, "approved", "T11: still approves");
+  const approval = trace.find((e) => e.fn === "postComment" && /OWNER MENYETUJUI/.test(e.body));
+  assert.ok(approval, "T11: an approval comment was posted");
+  assert.match(approval.body, /Khusus Learning OS saja/, "T11: the posted comment names the accepted option");
+  ok("T11: an APPROVE records WHICH option it accepted, not only that approval happened");
+}
+
 const tests = [
   ["T1", t1_immediateAckOrdering],
   ["T2", t2_backoff],
@@ -1347,6 +1416,7 @@ const tests = [
   ["T10b", t10b_replyNoMatchFallsThroughToDirective],
   ["T10c", t10c_scanNetworkErrorFallsThrough],
   ["T10d", t10d_findIssueByTelegramMessageIdUnit],
+  ["T11", t11_approveNamesTheAcceptedOption],
 ];
 
 for (const [name, fn] of tests) {
