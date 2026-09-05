@@ -445,6 +445,63 @@ async function testExplicitByteCountsWinOverStreams() {
   } catch (err) { bad(name, err); }
 }
 
+async function testRecordWithoutOutcomeKeepsShape() {
+  const name = "O1 omitting outcome keeps the record shape unchanged";
+  const file = await makeTempFile();
+  try {
+    await logLaneUsage({ lane: "corleone", promptLength: 4, ok: true, timedOut: false, exitCode: 0, durationMs: 20, file });
+    const obj = JSON.parse((await fs.readFile(file, "utf8")).trim());
+    assert.deepEqual(Object.keys(obj), [
+      "ts",
+      "lane",
+      "promptLength",
+      "ok",
+      "timedOut",
+      "exitCode",
+      "durationMs",
+      "turns",
+      "stdoutBytes",
+      "stderrBytes",
+      "cli",
+    ]);
+    assert.equal("outcome" in obj, false, "outcome is absent when not provided");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function testOutcomeRoundTripsEveryField() {
+  const name = "O2 outcome round-trips every field, including null defaults";
+  const file = await makeTempFile();
+  try {
+    await logLaneUsage({
+      lane: "corleone",
+      ok: true,
+      outcome: {
+        verifyPassed: true,
+        filesChanged: 2,
+        filesPlanned: 7,
+        deliveredWhatWasAsked: false,
+      },
+      file,
+    });
+    await logLaneUsage({ lane: "hatta", ok: false, outcome: {}, file });
+    const recs = (await fs.readFile(file, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(recs[0].outcome, {
+      verifyPassed: true,
+      filesChanged: 2,
+      filesPlanned: 7,
+      deliveredWhatWasAsked: false,
+    });
+    assert.deepEqual(recs[1].outcome, {
+      verifyPassed: null,
+      filesChanged: null,
+      filesPlanned: null,
+      deliveredWhatWasAsked: null,
+    });
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
 async function main() {
   console.log("# ops-watcher lane-usage regression tests");
   await testAppendsValidJsonLine();
@@ -466,6 +523,8 @@ async function main() {
   await testStdioBytesCountsBytesNotCharacters();
   await testCliDetailIsCappedAndFlat();
   await testExplicitByteCountsWinOverStreams();
+  await testRecordWithoutOutcomeKeepsShape();
+  await testOutcomeRoundTripsEveryField();
   console.log("");
   console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
   if (failed > 0) { for (const f of failures) console.log(`  FAILED: ${f}`); process.exit(1); }

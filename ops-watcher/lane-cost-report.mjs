@@ -71,7 +71,16 @@ function blankCost() {
     p95DurationMs: 0,
     avgPromptLength: 0,
     timeoutRate: 0,
+    measured: 0,
+    verifyPassed: 0,
+    deliveredCount: 0,
+    deliveryRate: null,
   };
+}
+
+function measuredOutcome(run) {
+  const outcome = run && run.outcome;
+  return outcome && typeof outcome === "object" && !Array.isArray(outcome) ? outcome : null;
 }
 
 function summarizeRuns(runs, opts = {}) {
@@ -85,11 +94,15 @@ function summarizeRuns(runs, opts = {}) {
     const durationMs = finiteNumber(run && run.durationMs);
     const ok = Boolean(run && run.ok === true);
     const timedOut = isTimedOut(run, timeoutMs);
+    const outcome = measuredOutcome(run);
 
     item.runs++;
     item.ok += ok ? 1 : 0;
     item.failed += ok ? 0 : 1;
     item.timedOut += timedOut ? 1 : 0;
+    item.measured += outcome ? 1 : 0;
+    item.verifyPassed += outcome && outcome.verifyPassed === true ? 1 : 0;
+    item.deliveredCount += outcome && outcome.deliveredWhatWasAsked === true ? 1 : 0;
     item.totalMs += durationMs;
     item.wastedMs += ok ? 0 : durationMs;
     durations.push(durationMs);
@@ -106,6 +119,7 @@ function summarizeRuns(runs, opts = {}) {
   item.p95DurationMs = percentile(durations, 95);
   item.avgPromptLength = promptCount === 0 ? 0 : promptTotal / promptCount;
   item.timeoutRate = item.runs === 0 ? 0 : item.timedOut / item.runs;
+  item.deliveryRate = item.measured === 0 ? null : item.deliveredCount / item.measured;
   return item;
 }
 
@@ -144,22 +158,30 @@ function pct(value) {
   return `${Math.round(value * 100)}%`;
 }
 
+function measuredPct(value) {
+  return Number.isFinite(value) ? pct(value) : "n/a";
+}
+
 export function renderCostReport(report) {
   const lanes = report && report.lanes ? report.lanes : {};
   const totals = report && report.totals ? report.totals : blankCost();
   const slowest = report && Array.isArray(report.slowestRuns) ? report.slowestRuns : [];
   const skippedLines = Number.isFinite(report && report.skippedLines) ? report.skippedLines : 0;
+  const laneItems = Object.values(lanes);
+  const measuredRuns = laneItems.length ? laneItems.reduce((sum, item) => sum + item.measured, 0) : totals.measured;
+  const totalRuns = laneItems.length ? laneItems.reduce((sum, item) => sum + item.runs, 0) : totals.runs;
   const lines = [
-    "| lane | runs | okRate | p50DurationMs | p95DurationMs | wastedRate | timeoutRate |",
-    "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    "| lane | runs | okRate | p50DurationMs | p95DurationMs | wastedRate | timeoutRate | measured | verifyPassed | deliveredCount | deliveryRate |",
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
   ];
 
   for (const [lane, item] of Object.entries(lanes).sort(([a], [b]) => a.localeCompare(b))) {
-    lines.push(`| ${lane} | ${item.runs} | ${pct(item.okRate)} | ${item.p50DurationMs} | ${item.p95DurationMs} | ${pct(item.wastedRate)} | ${pct(item.timeoutRate)} |`);
+    lines.push(`| ${lane} | ${item.runs} | ${pct(item.okRate)} | ${item.p50DurationMs} | ${item.p95DurationMs} | ${pct(item.wastedRate)} | ${pct(item.timeoutRate)} | ${item.measured} | ${item.verifyPassed} | ${item.deliveredCount} | ${measuredPct(item.deliveryRate)} |`);
   }
 
   lines.push("");
   lines.push(`Totals: ${totals.runs} runs, ${pct(totals.okRate)} okRate, ${totals.totalMs} totalMs, ${totals.wastedMs} wastedMs (${pct(totals.wastedRate)}), ${pct(totals.timeoutRate)} timeoutRate, ${skippedLines} malformed lines skipped.`);
+  lines.push(`${measuredRuns} runs carry a correctness measurement and ${totalRuns - measuredRuns} do not.`);
   lines.push("");
   lines.push("| ts | lane | durationMs | ok | timedOut | promptLength |");
   lines.push("| --- | --- | ---: | --- | --- | ---: |");

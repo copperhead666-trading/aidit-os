@@ -104,6 +104,52 @@ await t("C6 read failure returns ok false with error", async () => {
   assert.match(result.error, /no usage file/);
 });
 
+await t("C7 deliveryRate is computed over measured runs only", () => {
+  const runs = [
+    { ts: "2026-09-04T00:00:00.000Z", lane: "corleone", ok: true, timedOut: false, durationMs: 1, outcome: { deliveredWhatWasAsked: true, verifyPassed: true } },
+    { ts: "2026-09-04T01:00:00.000Z", lane: "corleone", ok: true, timedOut: false, durationMs: 1, outcome: { deliveredWhatWasAsked: false, verifyPassed: false } },
+  ];
+  for (let i = 0; i < 8; i++) runs.push({ ts: `2026-09-04T0${i}:30:00.000Z`, lane: "corleone", ok: true, timedOut: false, durationMs: 1 });
+  const lanes = costPerLane(runs);
+  assert.equal(lanes.corleone.runs, 10);
+  assert.equal(lanes.corleone.measured, 2);
+  assert.equal(lanes.corleone.deliveredCount, 1);
+  assert.equal(lanes.corleone.deliveryRate, 1 / 2);
+});
+
+await t("C8 a lane with zero measured runs renders n/a and not 0%", () => {
+  const runs = [
+    { ts: "t", lane: "hatta", ok: true, timedOut: true, durationMs: 100 },
+    { ts: "t", lane: "hatta", ok: false, timedOut: true, durationMs: 100 },
+  ];
+  const markdown = renderCostReport({
+    totals: costPerLane(runs).hatta,
+    lanes: costPerLane(runs),
+    slowestRuns: [],
+    skippedLines: 0,
+  });
+  const hattaLine = markdown.split("\n").find((line) => line.startsWith("| hatta |"));
+  const cells = hattaLine.split("|").map((cell) => cell.trim());
+  assert.equal(cells[11], "n/a");
+  assert.notEqual(cells[11], "0%");
+});
+
+await t("C9 markdown states measured and unmeasured counts", () => {
+  const markdown = renderCostReport({
+    totals: costPerLane([
+      { ts: "t", lane: "corleone", ok: true, timedOut: false, durationMs: 1, outcome: { deliveredWhatWasAsked: true } },
+      { ts: "t", lane: "hatta", ok: true, timedOut: false, durationMs: 1 },
+    ]).corleone,
+    lanes: costPerLane([
+      { ts: "t", lane: "corleone", ok: true, timedOut: false, durationMs: 1, outcome: { deliveredWhatWasAsked: true } },
+      { ts: "t", lane: "hatta", ok: true, timedOut: false, durationMs: 1 },
+    ]),
+    slowestRuns: [],
+    skippedLines: 0,
+  });
+  assert.match(markdown, /1 runs carry a correctness measurement and 1 do not/);
+});
+
 console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
 if (failed) {
   for (const failure of failures) console.log(`  FAILED: ${failure}`);
