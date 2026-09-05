@@ -142,7 +142,10 @@ export function defaultCheckScheduledTasks() {
 //   { checked: false, severity: "GAP",      reason: "<why schtasks down>"" }// schtasks itself failed -> fall back to documented GAP
 // Never throws. One failing per-task query never silences the others.
 // ====================================================================
-const SCHTASKS_RESURRECT_NAME = "FounderOS-Aidit-PM2-Resurrect";
+export const PM2_RESURRECT_TASK_NAMES = [
+  "AiditOS-PM2-Resurrect",
+  "FounderOS-Aidit-PM2-Resurrect",
+];
 const SCHTASKS_LEGACY_NAMES = [
   "FounderOS-Aidit-Heartbeat",
   "FounderOS-Aidit-TelegramListener",
@@ -221,7 +224,7 @@ export async function runSchtasksSpawn(taskName, { timeoutMs = SCHTASKS_TIMEOUT_
 }
 
 export async function checkScheduledTasksReal({ runSchtasks = runSchtasksSpawn, timeoutMs = SCHTASKS_TIMEOUT_MS } = {}) {
-  const names = [SCHTASKS_RESURRECT_NAME, ...SCHTASKS_LEGACY_NAMES];
+  const names = [...PM2_RESURRECT_TASK_NAMES, ...SCHTASKS_LEGACY_NAMES];
   const results = {};
   for (const name of names) {
     try {
@@ -238,20 +241,24 @@ export async function checkScheduledTasksReal({ runSchtasks = runSchtasksSpawn, 
     }
   }
 
-  const resurrect = results[SCHTASKS_RESURRECT_NAME];
+  const resurrectResults = PM2_RESURRECT_TASK_NAMES.map((name) => ({
+    name,
+    result: results[name],
+    statuses: parseSchtasksStatuses(results[name] && results[name].stdout),
+  }));
   // schtasks binary itself unavailable (spawn-level failure, NOT a "task not
   // found" exit) -> fall back to the documented GAP, never a false all-clear.
-  if (resurrect.code === null && !resurrect.timedOut) {
+  if (resurrectResults.every(({ result }) => result.code === null && !result.timedOut)) {
     return {
       checked: false,
       severity: "GAP",
       reason:
-        `schtasks unavailable to STEWARD (${(resurrect.stderr || "spawn error").trim()}); ` +
-        `a human/AHMAD must verify ${SCHTASKS_RESURRECT_NAME} stays ENABLED and ` +
+        `schtasks unavailable to STEWARD (${(resurrectResults[0].result.stderr || "spawn error").trim()}); ` +
+        `a human/AHMAD must verify one of ${PM2_RESURRECT_TASK_NAMES.join(", ")} stays ENABLED and ` +
         `the legacy tasks (${SCHTASKS_LEGACY_NAMES.join(", ")}) stay DISABLED`,
     };
   }
-  if (resurrect.timedOut) {
+  if (resurrectResults.every(({ result }) => result.timedOut)) {
     return {
       checked: false,
       severity: "GAP",
@@ -259,18 +266,20 @@ export async function checkScheduledTasksReal({ runSchtasks = runSchtasksSpawn, 
     };
   }
 
-  // PM2-Resurrect must be Ready/Running (enabled). Missing or Disabled -> CRITICAL.
-  const resurrectStatuses = parseSchtasksStatuses(resurrect.stdout);
-  const resurrectEnabled = resurrectStatuses.some(
-    (s) => /^Ready$/i.test(s) || /^Running$/i.test(s),
+  // Any accepted PM2-Resurrect task name may be Ready/Running (enabled).
+  // Missing all accepted names, or finding only disabled/non-Ready names, is
+  // CRITICAL because PM2 auto-resurrect would not fire on reboot.
+  const readyResurrect = resurrectResults.find(({ statuses }) =>
+    statuses.some((s) => /^Ready$/i.test(s) || /^Running$/i.test(s)),
   );
-  if (!resurrectEnabled) {
+  if (!readyResurrect) {
     return {
       checked: true,
       severity: "CRITICAL",
       reason:
-        `${SCHTASKS_RESURRECT_NAME} is not Ready/enabled ` +
-        `(statuses: ${resurrectStatuses.join(", ") || "none — task missing?"}) — ` +
+        `No accepted PM2 resurrect scheduled task is Ready/enabled ` +
+        `(looked for: ${PM2_RESURRECT_TASK_NAMES.join(", ")}; statuses: ` +
+        `${resurrectResults.map(({ name, statuses }) => `${name}=${statuses.join(", ") || "none - task missing?"}`).join("; ")}) - ` +
         `PM2 auto-resurrect will not fire on reboot; re-enable via Task Scheduler`,
     };
   }
@@ -298,7 +307,7 @@ export async function checkScheduledTasksReal({ runSchtasks = runSchtasksSpawn, 
     checked: true,
     severity: null,
     reason:
-      `${SCHTASKS_RESURRECT_NAME} Ready; legacy tasks ` +
+      `${readyResurrect.name} Ready; legacy tasks ` +
       `(${SCHTASKS_LEGACY_NAMES.join(", ")}) all Disabled`,
   };
 }

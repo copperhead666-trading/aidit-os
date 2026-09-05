@@ -14,6 +14,7 @@ import { promises as fs } from "node:fs";
 import {
   runStewardOnce,
   STEWARD_AGENT_ID,
+  PM2_RESURRECT_TASK_NAMES,
   defaultCheckScheduledTasks,
   checkScheduledTasksReal,
   checkPm2StaleCodeReal,
@@ -595,63 +596,73 @@ function schtasksStdout(taskName, status) {
 // { checked:true, severity:null } (gap closed, no finding).
 async function t13_schtasksHappyPath() {
   const calls = [];
+  const [currentName, historicalName] = PM2_RESURRECT_TASK_NAMES;
   const runSchtasks = async (name) => {
     calls.push(name);
-    if (name === "FounderOS-Aidit-PM2-Resurrect") {
+    if (name === currentName) {
       return { code: 0, stdout: schtasksStdout(name, "Ready"), stderr: "", timedOut: false };
+    }
+    if (name === historicalName) {
+      return { code: 1, stdout: "", stderr: "ERROR: The system cannot find the file specified.", timedOut: false };
     }
     return { code: 0, stdout: schtasksStdout(name, "Disabled"), stderr: "", timedOut: false };
   };
   const r = await checkScheduledTasksReal({ runSchtasks });
   assert.equal(r.checked, true, "T13: checked true");
   assert.equal(r.severity, null, "T13: severity null (gap closed, all good)");
-  assert.ok(/Ready/.test(r.reason), "T13: reason mentions Ready");
+  assert.ok(r.reason.includes(`${currentName} Ready`), "T13: reason names the current Ready task");
   assert.ok(/Disabled/.test(r.reason), "T13: reason mentions Disabled");
-  assert.equal(calls.length, 4, "T13: queried all 4 tasks exactly once");
-  ok("T13: schtasks happy path (Resurrect Ready, legacy Disabled) -> { checked:true, severity:null } (gap closed)");
+  assert.equal(calls.length, 5, "T13: queried both resurrect task names and all 3 legacy tasks exactly once");
+  ok("T13: current resurrect task name Ready -> { checked:true, severity:null } (gap closed)");
 }
 
-// T14: finds a problem — (a) a legacy task re-enabled, (b) PM2-Resurrect
-// disabled. Both -> CRITICAL.
+// T14: accepted resurrect task names and failure details.
 async function t14_schtasksFindsProblem() {
-  // (a) FounderOS-Aidit-Heartbeat re-enabled (Ready) while Resurrect is Ready.
+  const [currentName, historicalName] = PM2_RESURRECT_TASK_NAMES;
+
+  // (a) The historical PM2-Resurrect name is still Ready and the current name
+  // is absent. That machine is healthy because either accepted name counts.
   const runSchtasksA = async (name) => {
-    if (name === "FounderOS-Aidit-PM2-Resurrect") {
-      return { code: 0, stdout: schtasksStdout(name, "Ready"), stderr: "", timedOut: false };
+    if (name === currentName) {
+      return { code: 1, stdout: "", stderr: "ERROR: The system cannot find the file specified.", timedOut: false };
     }
-    if (name === "FounderOS-Aidit-Heartbeat") {
+    if (name === historicalName) {
       return { code: 0, stdout: schtasksStdout(name, "Ready"), stderr: "", timedOut: false };
     }
     return { code: 0, stdout: schtasksStdout(name, "Disabled"), stderr: "", timedOut: false };
   };
   const rA = await checkScheduledTasksReal({ runSchtasks: runSchtasksA });
-  assert.equal(rA.severity, "CRITICAL", "T14a: legacy re-enabled -> CRITICAL");
+  assert.equal(rA.severity, null, "T14a: historical resurrect name Ready -> no finding");
   assert.equal(rA.checked, true, "T14a: checked true (schtasks ran)");
-  assert.ok(/Heartbeat.*re-enabled/.test(rA.reason), "T14a: reason names the re-enabled legacy task");
+  assert.ok(rA.reason.includes(`${historicalName} Ready`), "T14a: reason names the historical Ready task");
 
-  // (b) PM2-Resurrect disabled (all tasks Disabled).
+  // (b) Neither accepted PM2-Resurrect task name is present.
   const runSchtasksB = async (name) => ({
-    code: 0,
-    stdout: schtasksStdout(name, "Disabled"),
-    stderr: "",
+    code: PM2_RESURRECT_TASK_NAMES.includes(name) ? 1 : 0,
+    stdout: PM2_RESURRECT_TASK_NAMES.includes(name) ? "" : schtasksStdout(name, "Disabled"),
+    stderr: PM2_RESURRECT_TASK_NAMES.includes(name) ? "ERROR: The system cannot find the file specified." : "",
     timedOut: false,
   });
   const rB = await checkScheduledTasksReal({ runSchtasks: runSchtasksB });
-  assert.equal(rB.severity, "CRITICAL", "T14b: PM2-Resurrect disabled -> CRITICAL");
-  assert.ok(/PM2-Resurrect is not Ready/i.test(rB.reason), "T14b: reason names PM2-Resurrect not being Ready");
+  assert.equal(rB.severity, "CRITICAL", "T14b: neither PM2-Resurrect task present -> CRITICAL");
+  for (const name of PM2_RESURRECT_TASK_NAMES) {
+    assert.ok(rB.reason.includes(name), `T14b: reason lists looked-for task name ${name}`);
+  }
 
-  // (c) PM2-Resurrect task missing entirely (schtasks exits non-zero, no Status
-  // line) — treated as "not Ready/enabled" -> CRITICAL (not a schtasks-unavailable
-  // GAP, because schtasks itself DID run and exit non-zero).
+  // (c) A resurrect task exists but is Disabled/not Ready.
   const runSchtasksC = async (name) => {
-    if (name === "FounderOS-Aidit-PM2-Resurrect") {
+    if (name === currentName) {
+      return { code: 0, stdout: schtasksStdout(name, "Disabled"), stderr: "", timedOut: false };
+    }
+    if (name === historicalName) {
       return { code: 1, stdout: "", stderr: "ERROR: The system cannot find the file specified.", timedOut: false };
     }
     return { code: 0, stdout: schtasksStdout(name, "Disabled"), stderr: "", timedOut: false };
   };
   const rC = await checkScheduledTasksReal({ runSchtasks: runSchtasksC });
-  assert.equal(rC.severity, "CRITICAL", "T14c: PM2-Resurrect task missing -> CRITICAL (not a GAP)");
-  ok("T14: schtasks finds a problem (legacy re-enabled / Resurrect disabled / Resurrect missing) -> CRITICAL");
+  assert.equal(rC.severity, "CRITICAL", "T14c: present-but-Disabled resurrect task -> CRITICAL");
+  assert.ok(rC.reason.includes(`${currentName}=Disabled`), "T14c: reason reports the Disabled resurrect task status");
+  ok("T14: historical resurrect name Ready is healthy; missing both or Disabled resurrect task -> CRITICAL");
 }
 
 // T15: schtasks itself errors (spawn-level, code null / thrown) -> falls back
