@@ -15,7 +15,9 @@ import {
   buildScpArgs,
   buildSshArgs,
   dispatchSoekarno,
+  hostIsThisMachine,
   parseClaudeJson,
+  resolveLocalClaude,
   SOEKARNO_ALLOWED_TOOLS,
   SOEKARNO_SYSTEM_PROMPT,
 } from "./soekarno-dispatch.mjs";
@@ -92,7 +94,7 @@ function spawnHarness(results = {}) {
     calls.push({ cmd, args, options });
     if (cmd === "scp") return results.scp ?? { status: 0, stdout: "", stderr: "" };
     if (cmd === "ssh") return results.ssh ?? { status: 0, stdout: "ok\n", stderr: "" };
-    throw new Error(`unexpected spawn: ${cmd}`);
+    return results.claude ?? { status: 0, stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "local ok", session_id: "sess-local", num_turns: 1, duration_ms: 100 }), stderr: "" };
   };
   return { calls, spawnSync };
 }
@@ -116,8 +118,39 @@ async function runDispatch(prompt, over = {}) {
     log: over.log || noopLog,
     timeoutMs: over.timeoutMs || 1234,
     tmpDir,
+    hostname: over.hostname || (() => "not-soekarno-test-host"),
+    networkInterfaces: over.networkInterfaces || (() => ({
+      test: [{ address: "203.0.113.44", family: "IPv4", internal: false }],
+    })),
+    pathDirs: over.pathDirs,
+    _fs: over._fs,
   });
   return { ...h, result, tmpDir };
+}
+
+function localHostDeps() {
+  return {
+    hostname: () => "not-soekarno-test-host",
+    networkInterfaces: () => ({
+      tailscale: [{ address: "100.87.42.3", family: "IPv4", internal: false }],
+    }),
+  };
+}
+
+function localClaudeDeps() {
+  if (process.platform !== "win32") return {};
+  return {
+    pathDirs: ["C:\\npm"],
+    _fs: {
+      readFileSync(file) {
+        assert.equal(file, path.join("C:\\npm", "claude.cmd"));
+        return '"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe" %*';
+      },
+      accessSync(file) {
+        assert.equal(path.resolve(file), path.resolve("C:\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe"));
+      },
+    },
+  };
 }
 
 async function t1_promptNeverReachesSshArgv() {
@@ -262,6 +295,10 @@ async function t8_laneGuardSkipIsHonouredAndNonSkipRuns() {
     spawnSync: ran.spawnSync,
     log: noopLog,
     tmpDir: makeTmpDir(TMP_ROOT, "t8-run"),
+    hostname: () => "not-soekarno-test-host",
+    networkInterfaces: () => ({
+      test: [{ address: "203.0.113.44", family: "IPv4", internal: false }],
+    }),
   });
 
   assert.equal(runResult.ok, true, "T8: non-skip path succeeds with fake spawns");
@@ -354,6 +391,84 @@ async function t12_aValidEnvelopeYieldsResultTurnsAndCli() {
   ok("T12: a valid envelope yields the result plus real per-run numbers");
 }
 
+async function t13_hostIsThisMachineMatchesHostnameInterfaceAndLocalhost() {
+  assert.equal(hostIsThisMachine("WIN10@lane-box", {
+    hostname: () => "LANE-BOX",
+    networkInterfaces: () => ({}),
+  }), true, "T13: injected hostname match is local");
+  assert.equal(hostIsThisMachine("WIN10@100.87.42.3", localHostDeps()), true, "T13: injected interface address match is local");
+  assert.equal(hostIsThisMachine("WIN10@localhost", {
+    hostname: () => "elsewhere",
+    networkInterfaces: () => ({}),
+  }), true, "T13: localhost is local");
+  assert.equal(hostIsThisMachine("WIN10@203.0.113.99", localHostDeps()), false, "T13: unrelated address is remote");
+  ok("T13: hostIsThisMachine recognizes hostname, interface, localhost and remote addresses");
+}
+
+async function t14_localHostSpawnsClaudeAndNeverScpOrSsh() {
+  const prompt = "local branch prompt";
+  const { calls, result } = await runDispatch(prompt, {
+    tmpRoot: TMP_ROOT,
+    tmpName: "t14",
+    ...localHostDeps(),
+    ...localClaudeDeps(),
+  });
+
+  assert.equal(result.ok, true, "T14: local claude result is green");
+  assert.equal(calls.length, 1, "T14: only local claude is spawned");
+  assert.notEqual(calls[0].cmd, "scp", "T14: scp is not called");
+  assert.notEqual(calls[0].cmd, "ssh", "T14: ssh is not called");
+  assert.equal(calls[0].args[0], "-p", "T14: local claude receives -p");
+  assert.equal(calls[0].args[1], prompt, "T14: local claude receives the prompt as one argv entry");
+  ok("T14: local SOEKARNO dispatch spawns claude directly without scp or ssh");
+}
+
+async function t15_localSpawnUsesHiddenWindowAndNoShell() {
+  const { calls } = await runDispatch("local options", {
+    tmpRoot: TMP_ROOT,
+    tmpName: "t15",
+    ...localHostDeps(),
+    ...localClaudeDeps(),
+  });
+
+  assert.equal(calls.length, 1, "T15: local branch has one spawn");
+  assert.equal(calls[0].options.windowsHide, true, "T15: local claude hides the Windows console");
+  assert.equal(calls[0].options.shell, false, "T15: local claude uses shell:false");
+  ok("T15: local claude spawn uses windowsHide:true and shell:false");
+}
+
+async function t16_remoteHostStillUsesScpAndSsh() {
+  const { calls } = await runDispatch("remote still remote", {
+    tmpRoot: TMP_ROOT,
+    tmpName: "t16",
+    hostname: () => "another-host",
+    networkInterfaces: () => ({
+      ethernet: [{ address: "192.0.2.10", family: "IPv4", internal: false }],
+    }),
+  });
+
+  assert.deepEqual(calls.map((c) => c.cmd), ["scp", "ssh"], "T16: remote host still runs scp then ssh");
+  ok("T16: nonmatching host still takes the scp and ssh path");
+}
+
+async function t17_missingLocalClaudeIsFailureAndSpawnsNothing() {
+  const { calls, result } = await runDispatch("missing claude", {
+    tmpRoot: TMP_ROOT,
+    tmpName: "t17",
+    ...localHostDeps(),
+    pathDirs: [],
+  });
+
+  if (process.platform === "win32") {
+    assert.equal(result.ok, false, "T17: missing local claude is red");
+    assert.match(result.stderr, /local claude executable could not be resolved/, "T17: missing local claude is reported");
+    assert.equal(calls.length, 0, "T17: no spawn happens without local claude");
+  } else {
+    assert.equal(resolveLocalClaude({ pathDirs: [] }), "claude", "T17: non-Windows local claude is the executable name");
+  }
+  ok("T17: unresolved local claude fails without falling through to ssh on Windows");
+}
+
 const TMP_ROOT = path.join(os.tmpdir(), `soekarno-dispatch-regression-${process.pid}`);
 
 async function main() {
@@ -372,6 +487,11 @@ async function main() {
     t10_theClaudeFlagsReachTheRemoteCommand,
     t11_invalidJsonIsAFailureNotASilentFallback,
     t12_aValidEnvelopeYieldsResultTurnsAndCli,
+    t13_hostIsThisMachineMatchesHostnameInterfaceAndLocalhost,
+    t14_localHostSpawnsClaudeAndNeverScpOrSsh,
+    t15_localSpawnUsesHiddenWindowAndNoShell,
+    t16_remoteHostStillUsesScpAndSsh,
+    t17_missingLocalClaudeIsFailureAndSpawnsNothing,
   ];
 
   try {
