@@ -218,8 +218,16 @@ export function buildMessageText(it, shortId, brief = null) {
   if (brief.kalau_didiamkan) {
     lines.push(``, `*Kalau didiamkan:* ${escMd(trimTo(brief.kalau_didiamkan, 220))}`);
   }
-  const jumlah = Array.isArray(brief.pilihan) ? brief.pilihan.length : 0;
-  lines.push(``, `${jumlah} pilihan \u00B7 keadaan sekarang dan sumbernya ada di DETAIL.`);
+  const pilihan = Array.isArray(brief.pilihan) ? brief.pilihan : [];
+  if (pilihan.length) {
+    lines.push(``, `*Pilihan:*`);
+    for (const [idx, opt] of pilihan.entries()) {
+      const label = trimTo(opt?.label || opt?.key || `Pilihan ${idx + 1}`, 90);
+      const marker = opt?.key === brief.rekomendasi?.pilihan ? ` *(saran)*` : "";
+      lines.push(`${idx + 1}. ${escMd(label)}${marker}`);
+    }
+  }
+  lines.push(``, `Keadaan sekarang, sumber, dan konsekuensi tiap pilihan ada di DETAIL.`);
   return lines.join("\n");
 }
 
