@@ -137,6 +137,24 @@ npx @claude-flow/cli@latest swarm init --topology hierarchical --max-agents 8 --
 
 ## Memory & Learning
 
+### Which layer is the truth about WHAT
+
+Approved by the owner on 2026-09-05 (KOL-88), after an agent — this one — wrote
+"Paperclip is the single source of truth" into a diagram and the owner corrected
+it. Three layers, three different questions:
+
+- **git / GitHub is the truth about the CODE** and its history. What the system
+  actually is, and what changed, is settled by the repository and its suite.
+- **Paperclip is the truth about the CURRENT OPERATIONAL STATE**: which issue is
+  live, what is waiting on the owner, what a lane is working on right now.
+  KOL-34 calls it exactly that — canonical operational state / current truth.
+- **gbrain is the truth about the BUSINESS DOCUMENTS**: the backlog, the ledger,
+  handoffs, specs, anything an agent must be able to quote back to the owner.
+
+On conflict, live Paperclip state outranks historical notes; but neither of them
+overrules the repository about what the code does. Never call any one of the
+three "the source of truth" without saying the truth about what.
+
 ### Which index owns what
 
 Two indexes both claiming to be the source of truth is worse than one.
