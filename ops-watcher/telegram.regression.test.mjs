@@ -492,12 +492,18 @@ async function testDecisionCardShowsCostOfWaiting() {
   } catch (e) { bad(name, e); }
 }
 
-async function testDecisionCardShowsOptionCountAndDefersStateToDetail() {
-  const name = "(0i) buildMessageText shows option count and points current state/sources to DETAIL";
+async function testDecisionCardShowsOptionsAndDefersStateConsequencesToDetail() {
+  const name = "(0i) buildMessageText shows option labels, marks the recommendation, and keeps consequences in DETAIL";
   try {
     const brief = decisionBrief();
     const text = buildMessageText({ title: "Generic title" }, "KOL-COUNT", brief);
-    assert.ok(text.includes(`${brief.pilihan.length} pilihan · keadaan sekarang dan sumbernya ada di DETAIL.`));
+    assert.match(text, /^1\. Tetap 3% flat$/m, "first option label appears in brief order");
+    assert.match(text, /^2\. Bertingkat 2-5% \*\(saran\)\*$/m, "recommended option is visibly marked");
+    assert.match(text, /^3\. Tunda sampai audit selesai$/m, "third option label appears in brief order");
+    assert.doesNotMatch(text, /Perlu perubahan config/, "option consequences stay behind DETAIL");
+    assert.doesNotMatch(text, /Tidak ada perubahan rilis/, "option consequences stay behind DETAIL");
+    assert.doesNotMatch(text, /keputusan komisi masuk antrean lagi/, "option consequences stay behind DETAIL");
+    assert.ok(text.includes("Keadaan sekarang, sumber, dan konsekuensi tiap pilihan ada di DETAIL."));
     assert.ok(!text.includes(brief.yang_sudah_ada[0].kutipan), "current-state quote stays out of the card");
     assert.ok(!text.includes(brief.yang_sudah_ada[0].sumber), "current-state source stays behind DETAIL");
     ok(name);
@@ -1663,7 +1669,7 @@ async function main() {
     await testDecisionCardRecommendationUsesOptionLabel();
     await testDecisionCardUnmatchedRecommendationStillRendersKey();
     await testDecisionCardShowsCostOfWaiting();
-    await testDecisionCardShowsOptionCountAndDefersStateToDetail();
+    await testDecisionCardShowsOptionsAndDefersStateConsequencesToDetail();
     await testDecisionCardStaysUnderTelegramLimitWithHugeBrief();
     await testDecisionCardTruncatesCleanly();
     await testDecisionCardEscapesBriefMarkdownSpecials();
