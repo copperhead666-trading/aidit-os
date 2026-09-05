@@ -394,29 +394,34 @@ await t("H11 default MAX_ITERATIONS agrees with the outer budget over per-call t
     return JSON.parse(stdout.trim().split("\n").at(-1));
   };
 
-  // 480000 / 120000 = 4. The old default of 40 was never reachable.
+  // The bound is the CLOCK now, not floor(480000 / 120000). That arithmetic
+  // assumed every call takes the worst case; the measured reality on 2026-09-05
+  // was about six seconds a call, so a run stopped after four calls having
+  // spent 24 seconds of a 480 second budget and written nothing. A hard ceiling
+  // of 40 remains so a fast-looping model cannot spin forever.
   const defaultRun = await runProbe({});
-  assert.equal(defaultRun.iterations, 4);
-  // The message must name the ceiling AND the bound that produced it. "Reached
-  // 4" alone reads as a bug; the arithmetic reads as a fact somebody can act on.
-  assert.match(defaultRun.error, /Reached MAX_ITERATIONS \(4, set by the 480000ms outer budget over a 120000ms per-call timeout\)/);
+  assert.equal(defaultRun.iterations, 40, "the hard ceiling, not the old per-call arithmetic");
+  // The message must name WHICH bound ended the run, with its numbers.
+  assert.match(defaultRun.error, /ceiling \(40/);
 
   // HATTA_MAX_ITER can only LOWER the ceiling.
   const lowerOverride = await runProbe({ HATTA_MAX_ITER: "2" });
   assert.equal(lowerOverride.iterations, 2, "an explicit ceiling below the derived one wins");
-  assert.match(lowerOverride.error, /set by HATTA_MAX_ITER=2/);
+  assert.match(lowerOverride.error, /HATTA_MAX_ITER=2/);
 
   // It must NOT raise it. This is the case that was asserted backwards: an
   // explicit 6 used to win outright, which reintroduces the exact bug being
   // fixed — the outer wrapper still kills the run at 480000ms, and the failure
   // surfaces as an opaque outer timeout instead of the harness's own evidence.
   // The budget is a physical bound; the override is a preference.
-  const higherOverride = await runProbe({ HATTA_MAX_ITER: "40" });
-  assert.equal(higherOverride.iterations, 4, "an explicit ceiling above the budget does NOT win");
+  const higherOverride = await runProbe({ HATTA_MAX_ITER: "99" });
+  assert.equal(higherOverride.iterations, 40, "an explicit ceiling above the hard one does NOT win");
 
-  // Halving the per-call timeout doubles what the same budget affords.
+  // The per-call timeout no longer decides how many calls fit — the clock does,
+  // and a probe whose calls return instantly reaches the hard ceiling either
+  // way. What the per-call timeout still governs is when ONE wedged call is cut.
   const scaledRun = await runProbe({ HATTA_REQUEST_TIMEOUT_MS: "60000" });
-  assert.equal(scaledRun.iterations, 8);
+  assert.equal(scaledRun.iterations, 40);
 
   // A budget smaller than a single call still yields at least 1, never 0.
   const tinyBudget = await runProbe({ HATTA_OUTER_RUN_BUDGET_MS: "1000" });

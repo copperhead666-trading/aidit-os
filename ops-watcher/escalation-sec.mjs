@@ -69,6 +69,12 @@ export function dispatchHermesReal(prompt, {
     try {
       child = spawnFn(invocation.file, invocation.args, {
         stdio: ["ignore", "pipe", "pipe"],
+        // Stated at the CALL SITE on purpose. The headless audit reads calls,
+        // not the objects they spread, so a windowsHide that lives only inside
+        // invocation.options is a rule the check cannot see and therefore
+        // cannot keep.
+        windowsHide: true,
+        shell: false,
         ...invocation.options,
       });
     } catch (err) {

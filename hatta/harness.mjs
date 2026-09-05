@@ -238,6 +238,16 @@ function iterationStopReason(index, startedAtMs, nowMs, {
     };
   }
 
+  // THE FLOOR IS ONE CALL, ALWAYS.
+  //
+  // A budget smaller than a single per-call timeout used to yield
+  // max(1, floor(budget/perCall)) = 1 iteration. The clock-based bound made it
+  // ZERO: the reserve alone exhausted the budget before the first call, so the
+  // harness returned having done nothing at all and reported it as a budget
+  // exhaustion. A run that never calls the model is not a short run, it is a
+  // broken one, and it hides whatever it was asked to do.
+  if (index === 0) return null;
+
   const elapsedMs = Math.max(0, nowMs - startedAtMs);
   const runnableBudgetMs = Math.max(0, outerRunBudgetMs - requestTimeoutMs);
   if (elapsedMs >= runnableBudgetMs) {
