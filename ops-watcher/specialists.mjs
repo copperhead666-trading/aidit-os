@@ -54,6 +54,8 @@ export const DEFAULT_MAX_SPECIALISTS = 2;
 //     correctly reaches a designer, while "add a risk limit" does not.
 export const TASK_CLASS_KEYWORDS = Object.freeze([
   ["trading-safety", ["position sizing", "risk limit", "backtest", "drawdown", "stop loss", "stop-loss", "max loss", "leverage", "liquidation"]],
+  ["test-regression", ["regression test", "test regression", "regression", "regresi", "test", "tests", "testing", "tes", "perbaiki test", "perbaiki tes"]],
+  ["venture-metrics", ["venture metrics", "venture metric", "metrics", "metric", "metrik", "hitung metrik", "hitung metrics", "hitung", "venture"]],
   ["frontend-design", ["dashboard", "cockpit", "ui", "ux", "design", "layout", "component", "css", "page", "screen", "visual", "tampilan", "halaman"]],
   ["database-storage", ["database", "postgres", "sql", "schema", "migration", "index", "query", "ledger"]],
   ["backend-api", ["api", "endpoint", "route", "server", "backend", "webhook", "http"]],
@@ -76,6 +78,8 @@ export const TASK_CLASS_SPECIALISTS = Object.freeze({
   "repo-analysis": ["specialized-codebase-archaeologist", "engineering-codebase-onboarding-engineer"],
   "cleanup-archive": ["engineering-minimal-change-engineer", "specialized-codebase-archaeologist"],
   "trading-safety": ["finance-investment-researcher", "testing-reality-checker"],
+  "test-regression": ["testing-reality-checker", "engineering-code-reviewer"],
+  "venture-metrics": ["finance-investment-researcher", "specialized-chief-of-staff"],
   "infra-network": ["engineering-sre", "engineering-devops-automator"],
   "owner-communication": ["specialized-chief-of-staff", "design-visual-storyteller"],
 });
