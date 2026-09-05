@@ -296,7 +296,7 @@ function t16_agentMessageItemIsTheAnswer() {
     JSON.stringify({ type: "turn.completed", usage: { input_tokens: 10, output_tokens: 4 } }),
   ].join("\n");
   const parsed = mod.parseCodexExecJsonl(jsonl, { effort: "low" });
-  assert.match(parsed.stdout, /OBJECTIVE: build the thing/);
+  assert.match(parsed.readableStdout, /OBJECTIVE: build the thing/);
   assert.equal(parsed.turns, 1);
   ok("T16: an agent_message item is the lane ANSWER, not dropped");
 }
