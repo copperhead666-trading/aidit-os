@@ -170,10 +170,10 @@ no truncation and no mangling; there is silence. A caller that does not inspect
 `error.code` sees an empty answer and can easily record it as "the lane said
 nothing" rather than "the packet was never delivered".
 
-**Verdict: PASS on integrity, FAIL on failure reporting.** Nothing is silently
-mangled, but an over-long packet fails silently. A guard belongs where the
-prompt is handed to `spawn`, so the outcome is a stated reason instead of an
-empty result.
+**Verdict: PASS on integrity, FAIL on failure reporting — fixed the same day**
+(`bf93b1a`). Nothing is silently mangled; the over-long case now refuses before
+spawn with a message that says the packet was NOT delivered and that the lane
+is not what failed.
 
 ---
 
@@ -224,10 +224,13 @@ and those files are still there.
 There is also a stray nested worktree, `D:\AI\worktrees\worktrees\lane-corleone`,
 from an earlier path mistake.
 
-**Verdict: FAIL.** Not data loss — every leftover is recoverable and none of it
-reached `main` — but the next dispatch starts from an unknown state. The fix is
-for `ensureLaneWorktree` to report the dirty state it is handing over, and for
-the caller to decide, rather than for the dirt to be invisible.
+**Verdict: FAIL — fixed the same day** (`9e50453`). Not data loss: every
+leftover is recoverable and none of it reached `main`. But the next dispatch was
+starting from an unknown state. `ensureLaneWorktree` now counts the uncommitted
+entries it is handing over and says so (`dirty`, and a reason that reads NOT
+clean), and the three dispatchers print it. Nothing is cleaned automatically —
+those files are the only copy of work a lane already did, and deleting them to
+tidy a status line is how real work disappears.
 
 ---
 
@@ -324,7 +327,12 @@ Partial second copies exist and are worth naming honestly:
 `state/import/paperclip-2026-09-03.json` is a two-day-old snapshot. None of them
 reconstructs the board — they are the conclusions, not the record.
 
-**Verdict: FAIL.** The canonical operational state has one copy on one disk.
+**Verdict: FAIL — partly closed the same day** (`077d470`). A full snapshot was
+taken with `scripts/migrate-to-ledger.mjs --export`: 92 issues, 342 comments, 0
+errors, committed to `state/import/paperclip-2026-09-05.json` and pushed. Today's
+six approvals are in it, each with the brief it was approved against. That is a
+dated second copy, not a backup system — the board is still the only LIVE copy,
+and nothing re-takes the snapshot on a schedule.
 
 ---
 
@@ -343,17 +351,27 @@ That is **KOL-79**, and the decision stays the owner's.
 
 # What these three domains change about the overall verdict
 
-Fixed today, in this pass: the cockpit link that pointed at a dark machine (B3),
-and the misread suite (B1) — the suite is green, 80/80, on the Node this
-machine pins.
+Fixed in this pass, each with a test that fails if it comes back:
 
-Still holding the system back, in the order that matters:
+- the cockpit link that pointed at a dark machine (B3, `f251044`);
+- the misread suite (B1) — green at 80/80 on the Node this machine pins;
+- a lane worktree silently handing its leftovers to the next run (E4, `9e50453`);
+- an over-long packet vanishing instead of failing (E2, `bf93b1a`);
+- a second copy of the board, decisions included (F4, `077d470`);
+- the correctness signal, wired end to end (`fcfc1a8`): a dispatch and its
+  verdict are correlated by `runId`, and `verifyPassed` is true only when the
+  plan's VERIFY and the full suite are both green;
+- a working lane called dead for exiting slowly (`8ef58a8`): all five lanes now
+  probe UP, with the slow ones honestly labelled slow.
+
+Still open, in the order that matters:
 
 1. **No tested restore, and a backup drive that fails its own verification**
-   (F3). Everything else is recoverable work; this one is not.
-2. **The board has a single copy** (F4).
-3. **A lane worktree hands its leftovers to the next run** (E4).
-4. **An over-long packet fails silently** (E2).
-5. **Correctness is still unmeasured**: 0 of 44 runs carry a measurement, and
-   the report says `n/a` rather than pretending. The work to fill it is in
-   flight in an isolated worktree.
+   (F3). Everything else here is recoverable work; this one is not. It needs a
+   healthy target, which is the owner's to choose.
+2. **Correctness is measured but not yet demonstrated.** The plumbing and its
+   tests are in; the live column still reads 0 of 45 because no directive has
+   executed since. The first real directive fills it.
+3. **The n8n connector** (KOL-87, approved for removal) can only be disconnected
+   from the owner's claude.ai settings.
+4. **KOL-79 and KOL-80** remain the owner's decisions.
