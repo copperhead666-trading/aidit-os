@@ -10,6 +10,13 @@
 
 import assert from "node:assert/strict";
 import fsSync from "node:fs";
+// The cockpit host is a per-machine fact. Asserting a literal hostname here is
+// how "asus-gray.tailc7b60e.ts.net" survived the move to this machine and kept
+// being handed to the owner as a working link. Read the expectation from the
+// one file allowed to know it.
+const EXPECTED_COCKPIT_HOST = new URL(
+  JSON.parse(fsSync.readFileSync(new URL("../config/machine.json", import.meta.url), "utf8")).cockpit.public_base,
+).host;
 import {
   COMMANDS,
   isValidBotCommand,
@@ -155,7 +162,7 @@ async function testMissingDataRendersTidakTersedia() {
     // cockpit always returns the URL (no missing-data concept): no count fields,
     // no "tidak tersedia" — just the URL + the Tailscale line.
     const cNull = renderCockpit(null);
-    assert.ok(/asus-gray\.tailc7b60e\.ts\.net/.test(cNull), "renderCockpit keeps the URL on null");
+    assert.ok(cNull.includes(EXPECTED_COCKPIT_HOST), "renderCockpit keeps this machine's cockpit host on null");
     assert.ok(!/tidak tersedia/.test(cNull), "renderCockpit does not fabricate tidak tersedia");
     assert.equal(/.*\n.*\n.*$/.test(cNull), true, "renderCockpit is the short two-line form");
 
@@ -247,7 +254,7 @@ async function testCockpitAndHelpReplies() {
   try {
     const c = await handleCommand("/cockpit", depsWith());
     assert.equal(c.handled, true);
-    assert.ok(/https:\/\/asus-gray\.tailc7b60e\.ts\.net\//.test(c.reply), "cockpit URL present");
+    assert.ok(c.reply.includes(`https://${EXPECTED_COCKPIT_HOST}/`), "cockpit URL points at this machine, not one that is dark");
     assert.ok(/Tailscale harus nyala/i.test(c.reply), "cockpit mentions Tailscale must be on");
     assert.ok(/laptop menyala/i.test(c.reply), "cockpit mentions laptop must be running");
 

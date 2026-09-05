@@ -54,9 +54,10 @@
 //
 //   node ops-watcher/telegram-commands.regression.test.mjs
 
+import { readCockpitUrl } from "./cockpit-url.mjs";
 import { clearPause as realClearPause, pauseBanner, readPause as realReadPause, setPaused as realSetPaused } from "./pause-gate.mjs";
 
-const COCKPIT_URL = "https://asus-gray.tailc7b60e.ts.net/";
+const COCKPIT_URL = readCockpitUrl();
 
 // The BotCommand array registered via setMyCommands. Descriptions are Indonesian,
 // informal register (the owner's own). Kept short so the Telegram menu reads

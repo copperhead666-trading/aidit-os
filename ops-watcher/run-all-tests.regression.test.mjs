@@ -4,7 +4,7 @@
 //   node ops-watcher/run-all-tests.regression.test.mjs
 
 import assert from "node:assert/strict";
-import { runAllTests, summarize } from "./run-all-tests.mjs";
+import { runAllTests, summarize, pinnedNodeNotice } from "./run-all-tests.mjs";
 
 let passed = 0, failed = 0;
 const failures = [];
@@ -183,6 +183,24 @@ function testSummarizePure() {
   } catch (e) { bad(name, e); }
 }
 
+// A green suite scored as two failures cost this session two false verdicts
+// before anyone checked which Node was running it.
+function testPinnedNodeNotice() {
+  const name = "pinnedNodeNotice: names the pinned Node only when the running one differs";
+  try {
+    const machine = JSON.stringify({ node: { version: "22.14.0", bin: "D:\pinned\node.exe" } });
+    const readFile = () => machine;
+    assert.equal(pinnedNodeNotice({ readFile, version: "v22.14.0" }), null, "the pinned Node gets no notice");
+    const notice = pinnedNodeNotice({ readFile, version: "v26.5.0" });
+    assert.match(notice, /v26.5.0/, "the notice names the Node that ran");
+    assert.match(notice, /22.14.0/, "the notice names the pinned Node");
+    assert.ok(notice.includes("D:\pinned\node.exe"), "the notice gives the command to re-run with");
+    assert.equal(pinnedNodeNotice({ readFile: () => { throw new Error("ENOENT"); } }), null, "no machine.json means no notice, never a throw");
+    assert.equal(pinnedNodeNotice({ readFile: () => "{}" }), null, "a machine.json with no pinned Node means no notice");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
 async function main() {
   console.log("# run-all-tests regression tests");
   await testDiscoveryFiltersAndSorts();
@@ -192,6 +210,7 @@ async function main() {
   await testThrownRunSuiteCaptured();
   await testOnlyFiltering();
   testSummarizePure();
+  testPinnedNodeNotice();
   console.log("");
   console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
   if (failed > 0) {

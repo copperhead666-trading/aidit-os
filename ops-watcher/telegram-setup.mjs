@@ -6,10 +6,11 @@
 
 import { COMMANDS } from "./telegram-commands.mjs";
 import * as tg from "./telegram-client.mjs";
+import { readCockpitUrl } from "./cockpit-url.mjs";
 
 // Must match the `tailscale funnel` target so the Telegram Mini App URL and
 // the published cockpit endpoint cannot drift silently.
-export const COCKPIT_URL = "https://asus-gray.tailc7b60e.ts.net/";
+export const COCKPIT_URL = readCockpitUrl();
 
 export const MENU_BUTTON = Object.freeze({
   type: "web_app",

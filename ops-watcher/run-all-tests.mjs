@@ -5,7 +5,7 @@
 //   node ops-watcher/run-all-tests.mjs --json
 //   node ops-watcher/run-all-tests.mjs --only <substring>
 
-import { promises as fs } from "node:fs";
+import { promises as fs, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -234,6 +234,31 @@ function exitCodeFor(results) {
   return results.failed === 0 ? 0 : 1;
 }
 
+// Node 26 on Windows crashes at process teardown (libuv UV_HANDLE_CLOSING)
+// AFTER a suite's own tests have all passed, so this runner scores two green
+// suites as failures. config/machine.json pins the Node that does not do this.
+// Measured on this machine on 2026-09-05: system Node v26.5.0 -> 77/79, pinned
+// Node v22.14.0 -> 80/80, same commit, same files.
+//
+// Only printed alongside a failure, and only when the running Node differs from
+// the pinned one — a healthy run must not learn to carry a warning it can
+// ignore. Never throws: an unreadable machine.json simply means no notice.
+export function pinnedNodeNotice(deps = {}) {
+  try {
+    const readFile = deps.readFile || readFileSync;
+    const machine = JSON.parse(readFile(path.join(ROOT, "config", "machine.json"), "utf8"));
+    const pinned = machine && machine.node && machine.node.version;
+    const bin = machine && machine.node && machine.node.bin;
+    const running = (deps.version || process.version).replace(/^v/, "");
+    if (!pinned || !bin || running === String(pinned)) return null;
+    return `NOTE: this ran on Node v${running}, not the pinned v${pinned}. ` +
+      `Node 26 on Windows crashes at teardown after tests pass, which this runner scores as a failed suite. ` +
+      `Re-run with "${bin}" before treating a failure above as real.`;
+  } catch {
+    return null;
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv);
   const results = await runAllTests({
@@ -245,7 +270,11 @@ async function main() {
     console.log(JSON.stringify(results));
   } else {
     console.log(`SUITES: ${results.passed}/${results.total} passed`);
-    if (results.failed > 0) console.log(`FAILURES: ${results.failures.join(", ")}`);
+    if (results.failed > 0) {
+      console.log(`FAILURES: ${results.failures.join(", ")}`);
+      const wrongNode = pinnedNodeNotice();
+      if (wrongNode) console.log(wrongNode);
+    }
   }
   process.exit(exitCodeFor(results));
 }
