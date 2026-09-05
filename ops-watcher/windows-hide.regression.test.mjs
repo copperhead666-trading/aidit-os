@@ -46,9 +46,9 @@ async function t(name, fn) {
 
 await t("T1 every first-party spawn call site passes windowsHide", async () => {
   const sites = await auditRepo();
-  // A scanner that finds nothing would pass vacuously. It found 49 sites when
-  // this was written; the floor guards against the scan silently breaking.
-  assert.ok(sites.length >= 40, `expected the scan to find the repository's call sites, found ${sites.length}`);
+  // A scanner that finds nothing would pass vacuously. It found 69 sites after
+  // .claude was added on purpose; the floor guards against the scan silently breaking.
+  assert.ok(sites.length >= 69, `expected the scan to find the repository's call sites, found ${sites.length}`);
   const bad = offenders(sites);
   const report = bad.map((s) => `  ${s.file}:${s.line}  ${s.callee}(${s.snippet})`).join("\n");
   assert.equal(
@@ -68,6 +68,17 @@ await t("T2 the check actually fails when a call site omits windowsHide", () => 
   assert.equal(sites.length, 1);
   assert.equal(sites[0].hasWindowsHide, false);
   assert.equal(offenders(sites).length, 1, "a missing windowsHide must be reported, or T1 proves nothing");
+});
+
+await t("T2b .claude helper call sites without windowsHide are reported", () => {
+  const src = `const { spawnSync } = require("node:child_process");
+    module.exports = function hook() {
+      return spawnSync("node", ["helper.cjs"], { stdio: "ignore" });
+    };`;
+  const sites = findSpawnCallSites(src, { file: ".claude/helpers/synthetic.cjs" });
+  assert.equal(sites.length, 1);
+  assert.equal(sites[0].hasWindowsHide, false);
+  assert.equal(offenders(sites).length, 1, "a missing windowsHide in .claude/helpers must be reported");
 });
 
 await t("T3 windowsHide on the call itself is what counts, not elsewhere in the file", () => {

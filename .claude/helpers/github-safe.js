@@ -119,6 +119,7 @@ if ((command === 'issue' || command === 'pr') &&
       execFileSync('gh', ghArgv, {
         stdio: 'inherit',
         timeout: 30000,
+        windowsHide: true,
       });
 
     } catch (error) {
@@ -135,7 +136,7 @@ if ((command === 'issue' || command === 'pr') &&
       process.exit(0);
     }
     try {
-      execFileSync('gh', args, { stdio: 'inherit' });
+      execFileSync('gh', args, { stdio: 'inherit', windowsHide: true });
     } catch (error) {
       console.error('[ERROR]', error.message);
       process.exit(1);
@@ -148,7 +149,7 @@ if ((command === 'issue' || command === 'pr') &&
     process.exit(0);
   }
   try {
-    execFileSync('gh', args, { stdio: 'inherit' });
+    execFileSync('gh', args, { stdio: 'inherit', windowsHide: true });
   } catch (error) {
     console.error('[ERROR]', error.message);
     process.exit(1);

@@ -86,10 +86,10 @@ function getUserInfo() {
   // user input ever reaches these args (defense in depth). Errors are caught
   // and the defaults above remain.
   try {
-    name = execFileSync('git', ['config', 'user.name'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || 'user';
+    name = execFileSync('git', ['config', 'user.name'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim() || 'user';
   } catch { /* not in a repo / no name set — keep default */ }
   try {
-    gitBranch = execFileSync('git', ['branch', '--show-current'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    gitBranch = execFileSync('git', ['branch', '--show-current'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim();
   } catch { /* not in a repo — keep empty */ }
 
   return { name, gitBranch, modelName };
@@ -196,7 +196,7 @@ function getSwarmStatus() {
   let coordinationActive = false;
 
   try {
-    const ps = execSync('ps aux 2>/dev/null | grep -c agentic-flow || echo "0"', { encoding: 'utf-8' });
+    const ps = execSync('ps aux 2>/dev/null | grep -c agentic-flow || echo "0"', { encoding: 'utf-8', windowsHide: true });
     activeAgents = Math.max(0, parseInt(ps.trim()) - 1);
     coordinationActive = activeAgents > 0;
   } catch (e) {
@@ -216,7 +216,7 @@ function getSystemMetrics() {
   let subAgents = 0;
 
   try {
-    const mem = execSync('ps aux | grep -E "(node|agentic|claude)" | grep -v grep | awk \'{sum += \$6} END {print int(sum/1024)}\'', { encoding: 'utf-8' });
+    const mem = execSync('ps aux | grep -E "(node|agentic|claude)" | grep -v grep | awk \'{sum += \$6} END {print int(sum/1024)}\'', { encoding: 'utf-8', windowsHide: true });
     memoryMB = parseInt(mem.trim()) || 0;
   } catch (e) {
     // Fallback
@@ -234,7 +234,7 @@ function getSystemMetrics() {
 
   // Count active sub-agents from process list
   try {
-    const agents = execSync('ps aux 2>/dev/null | grep -c "claude-flow.*agent" || echo "0"', { encoding: 'utf-8' });
+    const agents = execSync('ps aux 2>/dev/null | grep -c "claude-flow.*agent" || echo "0"', { encoding: 'utf-8', windowsHide: true });
     subAgents = Math.max(0, parseInt(agents.trim()) - 1);
   } catch (e) {
     // Ignore

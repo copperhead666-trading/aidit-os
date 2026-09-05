@@ -21,7 +21,7 @@ function commandExists(cmd) {
   try {
     const r = execSync(
       process.platform === 'win32' ? 'where ' + cmd : 'command -v ' + cmd,
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }
     );
     return r.trim().length > 0;
   } catch { return false; }
@@ -31,6 +31,7 @@ function invokeHook(bin, binArgs, hookArgs, stdinData) {
   const args = [...binArgs, ...hookArgs];
   const result = spawnSync(bin, args, {
     shell: process.platform === 'win32',
+    windowsHide: true,
     input: stdinData || '',
     encoding: 'utf8',
     stdio: ['pipe', 'ignore', 'ignore'],
