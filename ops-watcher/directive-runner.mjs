@@ -2599,10 +2599,31 @@ export function nodeCommandToArgv(cmd) {
 // Shared spawn-with-capture helper used by the default runVerify / runFullSuite
 // / dispatchExecution bindings. shell:false, windowsHide:true, a timeout, and
 // never throws. Returns { ok, stdout, stderr }.
+// Windows caps a whole command line at 32,767 characters, and a packet is one
+// argv element. Measured 2026-09-05 on this machine: 32,600 characters spawn
+// fine, 32,700 fail with ENAMETOOLONG — and the failure is SILENT. spawnSync
+// returns status null with no output, so a caller that does not inspect
+// error.code records "the lane said nothing" when the truth is the packet was
+// never delivered. A wrong reason is worse than a failure, because it sends the
+// next person looking at the lane instead of at the prompt.
+//
+// Returns a message when the line is too long, null when it is fine.
+export function commandLineTooLong(argv, { limit = 32000, execPath = process.execPath } = {}) {
+  const parts = [execPath, ...(Array.isArray(argv) ? argv : [])].map((a) => String(a == null ? "" : a));
+  // +1 per argument for the separating space, which counts against the same cap.
+  const total = parts.reduce((sum, a) => sum + a.length + 1, 0);
+  if (total <= limit) return null;
+  return `command line is ${total} characters, over the ${limit} safe limit for this platform ` +
+    `(Windows caps it at 32767). The packet was NOT delivered to the lane — this is not a lane failure. ` +
+    `Shorten the prompt or pass the material as a file the lane reads.`;
+}
+
 function spawnCapture(argv, { timeoutMs = EXECUTION_TIMEOUT_MS, env } = {}) {
   return new Promise((resolve) => {
     let stdout = "", stderr = "", timedOut = false, settled = false, child;
     const finish = (r) => { if (settled) return; settled = true; resolve(r); };
+    const tooLong = commandLineTooLong(argv);
+    if (tooLong) { finish({ ok: false, stdout: "", stderr: tooLong }); return; }
     try {
       child = spawn(process.execPath, argv, {
         cwd: REPO_ROOT,

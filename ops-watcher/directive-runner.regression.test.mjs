@@ -8,6 +8,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  commandLineTooLong,
   classifyDirective,
   isPlannable,
   findPlanDecision,
@@ -3864,6 +3865,26 @@ await t("L5 the sweep lock is a REAL file on its own path, not the other runners
   assert.equal(JSON.parse(sawLockDuringSweep).pid, process.pid);
   assert.notEqual(path.basename(TMP_LOCK), "review-runner.lock");
   assert.notEqual(path.basename(TMP_LOCK), "test-runner.lock");
+});
+
+// E2 of the 2026-09-05 health diagnosis. Measured on this machine: 32,600
+// characters spawn, 32,700 fail with ENAMETOOLONG and produce NO output at all.
+// The silence is the danger — it reads as "the lane said nothing" when the
+// truth is that the packet never left this process.
+await t("E2 an over-long packet is refused with a stated reason, not delivered into silence", async () => {
+  assert.equal(commandLineTooLong(["ops-watcher/corleone-dispatch.mjs", "a short prompt"], { execPath: "node" }), null,
+    "an ordinary packet is not touched");
+
+  const msg = commandLineTooLong(["ops-watcher/corleone-dispatch.mjs", "x".repeat(40000)], { execPath: "node" });
+  assert.ok(msg, "an over-long packet is caught before spawn");
+  assert.match(msg, /NOT delivered/, "the message says the packet never arrived");
+  assert.match(msg, /not a lane failure/, "and that the lane is not the thing that failed");
+
+  // The cap covers the whole line: the interpreter path and the wrapper path
+  // are on it too, not just the prompt.
+  assert.equal(commandLineTooLong(["w.mjs", "x".repeat(100)], { execPath: "node", limit: 120 }), null);
+  assert.ok(commandLineTooLong(["w.mjs", "x".repeat(120)], { execPath: "node", limit: 120 }),
+    "the interpreter and wrapper paths count against the same cap");
 });
 
 await resetTmp();
