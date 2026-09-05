@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { readHarnessEvidence, parseHarnessStdout, buildNormalExitUsage } from "./hatta-dispatch.mjs";
+import { readHarnessEvidence, parseHarnessStdout, buildNormalExitUsage, harnessScriptFor } from "./hatta-dispatch.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TMP = path.join(__dirname, "hatta-dispatch.regression.evidence.tmp.json");
@@ -184,6 +184,33 @@ await t("H13 a successful run records turns and byte counts, and no timeout", ()
   assert.equal(rec.cli.model, "glm-5.3:cloud");
   assert.equal(rec.cli.toolCalls, 2, "counts, not the payloads");
   assert.equal(rec.cli.filesWritten, 1);
+});
+
+// === WORKTREE ISOLATION IS THE HARNESS PATH, NOT THE CWD ===
+// hatta/harness.mjs derives its path jail from its own location, so spawning
+// the SHARED harness with cwd set to a worktree gave a lane that read and wrote
+// the shared tree while every log line claimed isolation. Measured: a packet
+// placed in the worktree came back as ENOENT against the main repository path.
+
+await t("the harness that runs is the one INSIDE the workspace", () => {
+  const seen = [];
+  const r = harnessScriptFor("D:/tmp/lane-hatta", {
+    _fs: { existsSync: (p) => { seen.push(p); return true; } },
+    sharedHarness: "D:/repo/hatta/harness.mjs",
+  });
+  assert.equal(r.isolated, true);
+  assert.equal(r.script.split(path.sep).join("/"), "D:/tmp/lane-hatta/hatta/harness.mjs");
+  assert.equal(seen.length, 1, "it checks the workspace copy exists before using it");
+});
+
+await t("a workspace with no harness falls back LOUDLY, never silently", () => {
+  const r = harnessScriptFor("D:/tmp/lane-hatta", {
+    _fs: { existsSync: () => false },
+    sharedHarness: "D:/repo/hatta/harness.mjs",
+  });
+  assert.equal(r.isolated, false);
+  assert.equal(r.script, "D:/repo/hatta/harness.mjs");
+  assert.match(r.reason, /writes the SHARED tree/);
 });
 
 await fs.unlink(TMP).catch(() => {});

@@ -46,6 +46,34 @@ export function readHarnessEvidence(file = HARNESS_EVIDENCE_FILE, _fs = fsSync) 
 const HARNESS_SCRIPT = path.resolve(REPO_ROOT, "hatta", "harness.mjs");
 
 /**
+ * The harness to run for a given workspace — the one INSIDE it.
+ *
+ * WHY THIS EXISTS. hatta/harness.mjs derives its path jail from its OWN
+ * location (`WORKSPACE_ROOT = path.resolve(__harnessDir, "..")`), not from the
+ * cwd it is given. So spawning the SHARED repository's harness with
+ * `cwd: <worktree>` produced a lane that listed and wrote the SHARED tree while
+ * every log line said it was isolated. Measured 2026-09-05: a HATTA dispatch
+ * for a packet placed in the worktree failed with
+ * `ENOENT: ... D:\AI\Aidit OS\PACKET-W9.md` and listed the main repository's
+ * contents — worktree isolation that existed only in the cwd argument.
+ *
+ * Falls back to the shared harness, and says so, when the workspace has no
+ * harness of its own (a non-isolated fallback workspace, or a worktree made
+ * before the file existed). A silent fallback here would rebuild the exact bug
+ * lane-worktree.mjs was written to prevent.
+ */
+export function harnessScriptFor(workspacePath, deps = {}) {
+  const _fs = deps._fs || fsSync;
+  const shared = deps.sharedHarness || HARNESS_SCRIPT;
+  if (!workspacePath || path.resolve(workspacePath) === path.resolve(REPO_ROOT)) {
+    return { script: shared, isolated: false, reason: "workspace is the shared repository root" };
+  }
+  const candidate = path.join(workspacePath, "hatta", "harness.mjs");
+  if (_fs.existsSync(candidate)) return { script: candidate, isolated: true, reason: "harness inside the lane worktree" };
+  return { script: shared, isolated: false, reason: `no harness at ${candidate} — falling back to the shared one, which writes the SHARED tree` };
+}
+
+/**
  * The harness prints ONE JSON evidence object on stdout when it exits normally.
  * Pull it back out so the wrapper can see what actually happened instead of
  * treating every non-zero exit as an undifferentiated failure.
@@ -155,8 +183,12 @@ async function main() {
   // prevents, behind a module everyone assumes is protecting them.
   const workspace = ensureLaneWorktree("hatta");
   if (!workspace.isolated) process.stderr.write(`hatta-dispatch: ${workspace.reason}\n`);
+  // The harness jails to its OWN location, so the isolated tree only isolates
+  // anything when the harness that runs is the one inside it.
+  const harness = harnessScriptFor(workspace.path);
+  if (!harness.isolated) process.stderr.write(`hatta-dispatch: ${harness.reason}\n`);
   const t0 = Date.now();
-  const r = spawnSync(process.execPath, [HARNESS_SCRIPT, prompt], {
+  const r = spawnSync(process.execPath, [harness.script, prompt], {
     cwd: workspace.path,
     windowsHide: true,
     timeout: TIMEOUT_MS,
