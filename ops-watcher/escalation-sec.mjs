@@ -10,6 +10,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { buildHermesInvocation } from "./hermes-entry.mjs";
 import {
   discoverPaperclipPort,
   httpGet,
@@ -40,9 +41,14 @@ const iso = () => new Date().toISOString();
 // ---- Hermes dispatch (real). Returns { ok, stdout, stderr, timedOut, error }. ----
 // Deliberately mirrors review-runner.mjs's hermes one-shot shape:
 // hermes -z <prompt> --provider nous -m upstage/solar-pro4:free --in <workspace>
-export function dispatchHermesReal(prompt, { timeoutMs = HERMES_TIMEOUT_MS } = {}) {
+export function dispatchHermesReal(prompt, {
+  timeoutMs = HERMES_TIMEOUT_MS,
+  buildInvocation = buildHermesInvocation,
+  spawnFn = spawn,
+} = {}) {
   return new Promise((resolve) => {
-    const candidates = process.platform === "win32" ? ["hermes", "hermes.cmd"] : ["hermes"];
+    const hermesArgs = ["-z", prompt, "--provider", HERMES_PROVIDER, "-m", HERMES_MODEL, "--in", HERMES_WORKSPACE];
+    const invocation = buildInvocation(hermesArgs);
     let child = null;
     let stdout = "";
     let stderr = "";
@@ -55,46 +61,35 @@ export function dispatchHermesReal(prompt, { timeoutMs = HERMES_TIMEOUT_MS } = {
       resolve(result);
     };
 
-    const tryLaunch = (idx) => {
-      if (idx >= candidates.length) {
-        finish({ ok: false, stdout, stderr: stderr + `\nhermes executable not found (tried ${candidates.join(", ")})`, timedOut, error: "enoent" });
-        return;
-      }
-      const exe = candidates[idx];
-      try {
-        child = spawn(exe, ["-z", prompt, "--provider", HERMES_PROVIDER, "-m", HERMES_MODEL, "--in", HERMES_WORKSPACE], {
-          stdio: ["ignore", "pipe", "pipe"],
-          windowsHide: true,
-        });
-      } catch (err) {
-        stderr += `\nspawn(${exe}) threw: ${err && err.message}`;
-        tryLaunch(idx + 1);
-        return;
-      }
-      let fallingBack = false;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        try { child.kill("SIGTERM"); } catch { /* ignore */ }
-      }, timeoutMs);
-      child.stdout.on("data", (d) => (stdout += d.toString()));
-      child.stderr.on("data", (d) => (stderr += d.toString()));
-      child.on("error", (err) => {
-        clearTimeout(timer);
-        if (err && err.code === "ENOENT" && idx + 1 < candidates.length) {
-          fallingBack = true;
-          stderr += `\nspawn(${exe}) error: ${err.message}`;
-          tryLaunch(idx + 1);
-          return;
-        }
-        finish({ ok: false, stdout, stderr: stderr + String(err && err.message), timedOut, error: String(err && err.code || err && err.message) });
+    if (!invocation) {
+      finish({ ok: false, stdout, stderr: `${stderr}\nhermes executable not found (resolved no runnable entry)`, timedOut, error: "enoent" });
+      return;
+    }
+
+    try {
+      child = spawnFn(invocation.file, invocation.args, {
+        stdio: ["ignore", "pipe", "pipe"],
+        ...invocation.options,
       });
-      child.on("close", (code) => {
-        if (fallingBack) return;
-        clearTimeout(timer);
-        finish({ ok: code === 0 && !timedOut, stdout, stderr, timedOut, error: timedOut ? "timeout" : code === 0 ? null : `exit_${code}` });
-      });
-    };
-    tryLaunch(0);
+    } catch (err) {
+      finish({ ok: false, stdout, stderr: stderr + `\nspawn(${invocation.file}) threw: ${err && err.message}`, timedOut, error: String(err && err.code || err && err.message || err) });
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill("SIGTERM"); } catch { /* ignore */ }
+    }, timeoutMs);
+    child.stdout.on("data", (d) => (stdout += d.toString()));
+    child.stderr.on("data", (d) => (stderr += d.toString()));
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      finish({ ok: false, stdout, stderr: stderr + String(err && err.message), timedOut, error: String(err && err.code || err && err.message) });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      finish({ ok: code === 0 && !timedOut, stdout, stderr, timedOut, error: timedOut ? "timeout" : code === 0 ? null : `exit_${code}` });
+    });
   });
 }
 

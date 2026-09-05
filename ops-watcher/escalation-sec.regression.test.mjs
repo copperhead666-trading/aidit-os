@@ -5,7 +5,10 @@
 //   node ops-watcher/escalation-sec.regression.test.mjs
 
 import assert from "node:assert/strict";
-import { runEscalationSecOnce, COMPANY_ID } from "./escalation-sec.mjs";
+import { EventEmitter } from "node:events";
+import path from "node:path";
+import { runEscalationSecOnce, COMPANY_ID, dispatchHermesReal } from "./escalation-sec.mjs";
+import { resolveHermesEntry, buildHermesInvocation } from "./hermes-entry.mjs";
 
 let pass = 0;
 const ok = (label) => { pass += 1; console.log(`OK  ${label}`); };
@@ -347,6 +350,91 @@ async function t9b_markerCommentFailureAfterBrief() {
   ok("T9b: a brief that lands and a marker comment that does not is reported as post-comment");
 }
 
+// ---- T10: Windows hermes.cmd shim resolves to hermes.js ----
+async function t10_hermesShimResolvesEntry() {
+  const shimDir = "D:\\Development\\npm-global";
+  const entry = path.win32.join(shimDir, "node_modules", "hermes-agent", "bin", "hermes.js");
+  const files = new Map([
+    [
+      path.win32.join(shimDir, "hermes.cmd").toLowerCase(),
+      [
+        '"%dp0%\\node.exe"',
+        '"%dp0%\\node_modules\\hermes-agent\\bin\\hermes.js"',
+      ].join("\r\n"),
+    ],
+    [entry.toLowerCase(), ""],
+  ]);
+  const resolved = resolveHermesEntry({
+    platform: "win32",
+    envPath: shimDir,
+    path: path.win32,
+    fs: {
+      readFileSync: (file) => {
+        const hit = files.get(String(file).toLowerCase());
+        if (hit === undefined) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+        return hit;
+      },
+      accessSync: (file) => {
+        if (!files.has(String(file).toLowerCase())) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      },
+    },
+  });
+
+  assert.equal(resolved, entry, "T10: %dp0% expands against shim directory");
+  ok("T10: hermes.cmd body naming hermes.js resolves to the shim-relative JS entry");
+}
+
+// ---- T11: missing shim is an explicit dispatch failure ----
+async function t11_missingHermesEntryFailsDispatch() {
+  const r = await dispatchHermesReal("prompt", {
+    buildInvocation: () => null,
+    spawnFn: () => { throw new Error("must not spawn"); },
+  });
+
+  assert.equal(r.ok, false, "T11: dispatch fails");
+  assert.equal(r.error, "enoent", "T11: failure is classified as missing executable");
+  assert.match(r.stderr, /hermes executable not found/, "T11: stderr reports missing Hermes");
+  ok("T11: missing Hermes entry reports failure instead of pretending the lane ran");
+}
+
+// ---- T12: resolved invocation spawns node on hermes.js without a shell ----
+async function t12_hermesInvocationUsesNodeAndNoShell() {
+  const hermesJs = "D:\\Development\\npm-global\\node_modules\\hermes-agent\\bin\\hermes.js";
+  const invocation = buildHermesInvocation(["-z", "hello"], {
+    platform: "win32",
+    hermesJs,
+    nodePath: "C:\\Program Files\\nodejs\\node.exe",
+  });
+
+  assert.deepEqual(invocation, {
+    file: "C:\\Program Files\\nodejs\\node.exe",
+    args: [hermesJs, "-z", "hello"],
+    options: { shell: false, windowsHide: true },
+  });
+
+  let spawnCall = null;
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.kill = () => {};
+  const promise = dispatchHermesReal("hello", {
+    buildInvocation: () => invocation,
+    spawnFn: (file, args, options) => {
+      spawnCall = { file, args, options };
+      queueMicrotask(() => child.emit("close", 0));
+      return child;
+    },
+  });
+  const r = await promise;
+
+  assert.equal(r.ok, true, "T12: fake dispatch succeeds");
+  assert.equal(spawnCall.file, invocation.file, "T12: spawns process/node executable");
+  assert.deepEqual(spawnCall.args, invocation.args, "T12: hermes.js is argv[0]");
+  assert.equal(spawnCall.options.shell, false, "T12: shell is disabled");
+  assert.equal(spawnCall.options.windowsHide, true, "T12: Windows window is hidden");
+  ok("T12: Hermes invocation uses node + hermes.js with shell:false and windowsHide:true");
+}
+
 async function main() {
   const tests = [
     t1_notifiesBlockedUnnotifiedIssue,
@@ -362,6 +450,9 @@ async function main() {
     t9_postCommentNetworkErrorContinues,
     t9b_markerCommentFailureAfterBrief,
     t9c_declarationFailureIsNotFatal,
+    t10_hermesShimResolvesEntry,
+    t11_missingHermesEntryFailsDispatch,
+    t12_hermesInvocationUsesNodeAndNoShell,
   ];
   for (const t of tests) await t();
   console.log(`\nescalation-sec.regression.test.mjs: ${pass}/${tests.length} passed`);
