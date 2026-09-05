@@ -59,6 +59,7 @@ import fsSync from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { GRAPH_STAMP_SUFFIX } from "./venture-planner.mjs";
+import { activeVentures } from "./ventures.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -75,6 +76,11 @@ export const MIN_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 // A build that overruns this is wedged, not slow.
 export const BUILD_TIMEOUT_MS = 20 * 60 * 1000;
 
+// Thirty minutes because a venture graph rebuild costs real CPU on a 2013
+// dual-core that is also running the board, the cockpit and the lanes. A
+// venture commit needs a fresh graph, but not within seconds.
+export const VENTURE_REFRESH_MIN_INTERVAL_MS = 30 * 60 * 1000;
+
 function nowMs(now) {
   return typeof now === "function" ? now() : (now || Date.now());
 }
@@ -82,6 +88,14 @@ function nowMs(now) {
 async function readJson(file, _fs) {
   try {
     return JSON.parse(await _fs.readFile(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+async function readText(file, _fs) {
+  try {
+    return String(await _fs.readFile(file, "utf8")).trim();
   } catch {
     return null;
   }
@@ -576,6 +590,122 @@ export async function refreshVentureGraph(venture, deps = {}) {
 
   log(`graphify-refresh: ${id} promoted ${fresh.nodes.length} nodes, stamped ${commitState.head} — ${content.reason}`);
   return { ok: true, refreshed: true, id, nodes: fresh.nodes.length, head: commitState.head, contentChecked: content.checked };
+}
+
+/**
+ * Sweep active ventures and refresh at most one stale venture graph.
+ *
+ * The heartbeat runs every five minutes and a graph build is minutes of CPU; two
+ * venture builds in one sweep would compete with the work the machine exists to
+ * do. Stale ventures after the first build wait for the next heartbeat.
+ */
+export async function refreshVentureGraphsIfStale(deps = {}) {
+  const _fs = deps._fs || fs;
+  const listVentures = deps.activeVentures || activeVentures;
+  const refresh = deps.refreshVentureGraph || refreshVentureGraph;
+  const commitStateFor = deps.ventureCommitState || ventureCommitState;
+  const at = nowMs(deps.now);
+  const minIntervalMs = deps.minIntervalMs || VENTURE_REFRESH_MIN_INTERVAL_MS;
+  const stateFile = deps.stateFile || STATE_FILE;
+  const log = deps.log || ((m) => console.log(m));
+  const summary = { checked: 0, rebuilt: 0, skipped: [], errors: [] };
+
+  const state = (await readJson(stateFile, _fs)) || {};
+  const ventureRefresh = state.ventureRefresh && typeof state.ventureRefresh === "object" ? state.ventureRefresh : {};
+  const saveAttempt = async (id, head, result) => {
+    ventureRefresh[id] = { lastAttemptMs: at, lastHead: head || null, lastResult: result };
+    try {
+      await _fs.writeFile(stateFile, JSON.stringify({ ...state, ventureRefresh }, null, 2) + "\n", "utf8");
+    } catch (err) {
+      summary.errors.push({ id, reason: `state-write-failed: ${err && err.message ? err.message : err}` });
+    }
+  };
+
+  let ventures = [];
+  try {
+    ventures = await listVentures(deps);
+  } catch (err) {
+    summary.errors.push({ id: null, reason: `active-ventures-failed: ${err && err.message ? err.message : err}` });
+    return summary;
+  }
+
+  for (const venture of Array.isArray(ventures) ? ventures : []) {
+    if (venture?.status && String(venture.status).toLowerCase() !== "active") continue;
+
+    const id = String(venture?.id || "");
+    summary.checked += 1;
+    if (!id || !venture?.repoPath) {
+      summary.skipped.push({ id, reason: "venture has no id or repoPath" });
+      continue;
+    }
+
+    const venturePath = deps.venturePath || path.join(REPO_ROOT, String(venture.repoPath));
+    let commitState = null;
+    try {
+      commitState = commitStateFor(venturePath, deps);
+    } catch (err) {
+      summary.errors.push({ id, reason: `venture-git-failed: ${err && err.message ? err.message : err}` });
+      continue;
+    }
+    if (!commitState) {
+      summary.skipped.push({ id, reason: "venture-git-unreadable" });
+      continue;
+    }
+    if (commitState.dirty) {
+      summary.skipped.push({ id, reason: `venture-dirty: ${commitState.dirtyFiles} uncommitted file(s)` });
+      continue;
+    }
+
+    const priorAttempt = ventureRefresh[id];
+    if (
+      priorAttempt &&
+      priorAttempt.lastHead === commitState.head &&
+      Number.isFinite(priorAttempt.lastAttemptMs) &&
+      at - priorAttempt.lastAttemptMs < minIntervalMs
+    ) {
+      summary.skipped.push({ id, reason: "inside venture graph refresh interval" });
+      continue;
+    }
+
+    const graphPath = (deps.ventureGraphPath || ventureGraphPath)(id);
+    const stampPath = (deps.ventureGraphStampPath || ventureGraphStampPath)(id);
+    let graphMissing = false;
+    try {
+      await _fs.stat(graphPath);
+    } catch {
+      graphMissing = true;
+    }
+
+    const stamp = await readText(stampPath, _fs);
+    if (!graphMissing && stamp === commitState.head) {
+      summary.skipped.push({ id, reason: "venture graph already matches HEAD" });
+      continue;
+    }
+
+    if (summary.rebuilt > 0) {
+      summary.skipped.push({ id, reason: "another venture graph already rebuilt this sweep" });
+      continue;
+    }
+
+    try {
+      const result = await refresh(venture, { ...deps, venturePath });
+      await saveAttempt(id, commitState.head, result?.ok ? "rebuilt" : (result?.reason || "failed"));
+      if (result?.ok && result?.refreshed) {
+        summary.rebuilt += 1;
+      } else {
+        summary.errors.push({ id, reason: result?.reason || "refresh failed" });
+      }
+    } catch (err) {
+      const reason = err && err.message ? err.message : String(err);
+      await saveAttempt(id, commitState.head, `threw: ${reason}`);
+      summary.errors.push({ id, reason });
+    }
+  }
+
+  for (const item of summary.skipped) {
+    log(`graphify-refresh: ${item.id || "(unknown)"} skipped — ${item.reason}`);
+  }
+  return summary;
 }
 
 // ---- CLI ----

@@ -12,9 +12,12 @@ import {
   CONTENT_CHECK_SAMPLE,
   MIN_REFRESH_INTERVAL_MS,
   STATE_FILE,
+  VENTURE_REFRESH_MIN_INTERVAL_MS,
   contentCheckCandidates,
+  refreshVentureGraphsIfStale,
   refreshVentureGraph,
   ventureGraphPath,
+  ventureGraphStampPath,
   refreshOnce,
   repoFingerprint,
   shouldRefresh,
@@ -124,7 +127,7 @@ function fakeFs(over = {}) {
     },
     async writeFile(file, content, encoding) {
       calls.push({ op: "writeFile", file, content, encoding });
-      if (fail.writeFile) throw fail.writeFile;
+      if (fail.writeFile && (fail.writeFile === true || fail.writeFile === file)) throw fail.writeFile;
       files.set(file, content);
     },
     async unlink(file) {
@@ -728,11 +731,162 @@ async function t23_contentCheckSamplesOnlyIdentifierShapedLabels() {
   ok("T23: the content check samples identifier-shaped labels only, so python docstrings do not fail a fresh graph");
 }
 
+function sweepDeps(fs, over = {}) {
+  return {
+    _fs: fs,
+    now: () => NOW,
+    log: () => {},
+    stateFile: STATE,
+    activeVentures: async () => [VENTURE],
+    ventureCommitState: () => ({ head: "ventureHEAD", dirty: false, dirtyFiles: 0 }),
+    ventureGraphPath: () => V_GRAPH,
+    ventureGraphStampPath: () => V_STAMP,
+    refreshVentureGraph: async () => ({ ok: true, refreshed: true, id: VENTURE.id, head: "ventureHEAD" }),
+    minIntervalMs: INTERVAL,
+    ...over,
+  };
+}
+
+async function t24_freshVentureGraphIsSkippedWithoutBuild() {
+  const fs = fakeFs({ files: { [V_GRAPH]: graph(3), [V_STAMP]: "ventureHEAD" } });
+  let builds = 0;
+
+  const result = await refreshVentureGraphsIfStale(sweepDeps(fs, {
+    refreshVentureGraph: async () => { builds++; return { ok: true, refreshed: true }; },
+  }));
+
+  assert.equal(result.checked, 1, "T24: one active venture is checked");
+  assert.equal(result.rebuilt, 0, "T24: matching stamp skips rebuild");
+  assert.equal(builds, 0, "T24: no build is attempted when stamp equals HEAD");
+  assert.deepEqual(result.errors, [], "T24: fresh skip is not an error");
+  assert.match(result.skipped[0].reason, /already matches HEAD/);
+  ok("T24: a venture whose graph stamp equals HEAD is skipped without building");
+}
+
+async function t25_movedVentureHeadTriggersRebuild() {
+  const fs = fakeFs({ files: { [V_GRAPH]: graph(3), [V_STAMP]: "oldHEAD" } });
+  let builds = 0;
+
+  const result = await refreshVentureGraphsIfStale(sweepDeps(fs, {
+    refreshVentureGraph: async () => { builds++; return { ok: true, refreshed: true, id: VENTURE.id }; },
+  }));
+
+  assert.equal(result.rebuilt, 1, "T25: stale stamped graph is rebuilt");
+  assert.equal(builds, 1, "T25: one build is attempted");
+  assert.equal(result.errors.length, 0, "T25: successful rebuild has no errors");
+  const stateWrite = fs.calls.find((c) => c.op === "writeFile" && c.file === STATE);
+  assert.ok(stateWrite, "T25: rebuild attempt is recorded in state");
+  assert.equal(JSON.parse(stateWrite.content).ventureRefresh[VENTURE.id].lastHead, "ventureHEAD");
+  ok("T25: a venture whose HEAD moved past its graph stamp is rebuilt");
+}
+
+async function t26_missingGraphOrStampTriggersRebuild() {
+  for (const [label, files] of [
+    ["missing graph", { [V_STAMP]: "ventureHEAD" }],
+    ["missing stamp", { [V_GRAPH]: graph(3) }],
+  ]) {
+    const fs = fakeFs({ files });
+    let builds = 0;
+
+    const result = await refreshVentureGraphsIfStale(sweepDeps(fs, {
+      refreshVentureGraph: async () => { builds++; return { ok: true, refreshed: true, id: VENTURE.id }; },
+    }));
+
+    assert.equal(result.rebuilt, 1, `T26 ${label}: stale venture is rebuilt`);
+    assert.equal(builds, 1, `T26 ${label}: one build is attempted`);
+    assert.equal(result.errors.length, 0, `T26 ${label}: successful rebuild has no errors`);
+  }
+  ok("T26: a missing venture graph or missing venture graph stamp triggers a rebuild");
+}
+
+async function t27_dirtyVentureIsSkippedBeforeBuild() {
+  const fs = fakeFs({ files: { [V_GRAPH]: graph(3), [V_STAMP]: "oldHEAD" } });
+  let builds = 0;
+
+  const result = await refreshVentureGraphsIfStale(sweepDeps(fs, {
+    ventureCommitState: () => ({ head: "ventureHEAD", dirty: true, dirtyFiles: 2 }),
+    refreshVentureGraph: async () => { builds++; return { ok: true, refreshed: true }; },
+  }));
+
+  assert.equal(result.rebuilt, 0, "T27: dirty venture is not rebuilt");
+  assert.equal(builds, 0, "T27: dirty venture skips before refreshVentureGraph can refuse");
+  assert.match(result.skipped[0].reason, /venture-dirty: 2 uncommitted file\(s\)/);
+  assert.equal(fs.calls.some((c) => c.op === "writeFile" && c.file === STATE), false, "T27: dirty skip is not recorded as a rebuild attempt");
+  ok("T27: a dirty venture is skipped with a reason and no build attempt");
+}
+
+async function t28_onlyOneStaleVentureIsRebuiltPerSweep() {
+  const a = { id: "alpha", status: "active", repoPath: "ventures/alpha" };
+  const b = { id: "beta", status: "active", repoPath: "ventures/beta" };
+  const fs = fakeFs({
+    files: {
+      "mem:/graphify-out/ventures/alpha/graph.json": graph(3),
+      "mem:/graphify-out/ventures/alpha/graph.json.commit.stamp": "old",
+      "mem:/graphify-out/ventures/beta/graph.json": graph(3),
+      "mem:/graphify-out/ventures/beta/graph.json.commit.stamp": "old",
+    },
+  });
+  const built = [];
+
+  const result = await refreshVentureGraphsIfStale(sweepDeps(fs, {
+    activeVentures: async () => [a, b],
+    ventureCommitState: (_path) => ({ head: _path.includes("alpha") ? "alphaHEAD" : "betaHEAD", dirty: false, dirtyFiles: 0 }),
+    ventureGraphPath: (id) => `mem:/graphify-out/ventures/${id}/graph.json`,
+    ventureGraphStampPath: (id) => `mem:/graphify-out/ventures/${id}/graph.json.commit.stamp`,
+    refreshVentureGraph: async (venture) => { built.push(venture.id); return { ok: true, refreshed: true, id: venture.id }; },
+  }));
+
+  assert.deepEqual(built, ["alpha"], "T28: exactly the first stale venture is built");
+  assert.equal(result.checked, 2, "T28: both active ventures are considered");
+  assert.equal(result.rebuilt, 1, "T28: only one rebuild is reported");
+  assert.match(result.skipped.find((s) => s.id === "beta").reason, /already rebuilt this sweep/);
+  ok("T28: with two stale ventures, exactly one is rebuilt in a sweep");
+}
+
+async function t29_minimumIntervalPreventsRepeatedAttempts() {
+  let now = NOW;
+  const fs = fakeFs({ files: { [V_GRAPH]: graph(3), [V_STAMP]: "oldHEAD" } });
+  let builds = 0;
+  const run = () => refreshVentureGraphsIfStale(sweepDeps(fs, {
+    now: () => now,
+    refreshVentureGraph: async () => { builds++; return { ok: false, refreshed: false, reason: "build-failed: exit 7" }; },
+  }));
+
+  const first = await run();
+  now += INTERVAL - 1;
+  const second = await run();
+
+  assert.equal(first.rebuilt, 0, "T29: failed first build is not reported as rebuilt");
+  assert.equal(first.errors.length, 1, "T29: failed first build is reported");
+  assert.equal(builds, 1, "T29: first sweep attempts the stale venture");
+  assert.equal(second.rebuilt, 0, "T29: second sweep does not rebuild");
+  assert.equal(builds, 1, "T29: interval suppresses a second attempt");
+  assert.match(second.skipped[0].reason, /refresh interval/);
+  ok("T29: inside the venture refresh interval, a second sweep attempts nothing");
+}
+
+async function t30_throwingVentureRefreshIsReportedNotPropagated() {
+  const fs = fakeFs({ files: { [V_GRAPH]: graph(3), [V_STAMP]: "oldHEAD" } });
+
+  const result = await refreshVentureGraphsIfStale(sweepDeps(fs, {
+    refreshVentureGraph: async () => { throw new Error("graphify exploded"); },
+  }));
+
+  assert.equal(result.rebuilt, 0, "T30: a thrown refresh is not reported as rebuilt");
+  assert.equal(result.errors.length, 1, "T30: thrown refresh is captured in errors");
+  assert.equal(result.errors[0].id, VENTURE.id, "T30: error is attributed to the venture");
+  assert.match(result.errors[0].reason, /graphify exploded/);
+  const stateWrite = fs.calls.find((c) => c.op === "writeFile" && c.file === STATE);
+  assert.ok(stateWrite, "T30: thrown attempt is still recorded for interval throttling");
+  ok("T30: a throwing refreshVentureGraph is reported in errors and does not propagate");
+}
+
 async function main() {
   assert.ok(BUILT_GRAPH, "exported BUILT_GRAPH exists");
   assert.ok(ACTIVE_GRAPH, "exported ACTIVE_GRAPH exists");
   assert.ok(STATE_FILE, "exported STATE_FILE exists");
   assert.equal(typeof MIN_REFRESH_INTERVAL_MS, "number", "exported MIN_REFRESH_INTERVAL_MS is numeric");
+  assert.equal(typeof VENTURE_REFRESH_MIN_INTERVAL_MS, "number", "exported VENTURE_REFRESH_MIN_INTERVAL_MS is numeric");
   assert.equal(typeof BUILD_TIMEOUT_MS, "number", "exported BUILD_TIMEOUT_MS is numeric");
 
   const tests = [
@@ -759,6 +913,13 @@ async function main() {
     t21_ventureGraphMustAlsoPassTheContentCheck,
     t22_ventureGitUnreadableIsNotTreatedAsClean,
     t23_contentCheckSamplesOnlyIdentifierShapedLabels,
+    t24_freshVentureGraphIsSkippedWithoutBuild,
+    t25_movedVentureHeadTriggersRebuild,
+    t26_missingGraphOrStampTriggersRebuild,
+    t27_dirtyVentureIsSkippedBeforeBuild,
+    t28_onlyOneStaleVentureIsRebuiltPerSweep,
+    t29_minimumIntervalPreventsRepeatedAttempts,
+    t30_throwingVentureRefreshIsReportedNotPropagated,
   ];
   for (const t of tests) {
     try {
