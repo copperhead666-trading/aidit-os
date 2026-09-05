@@ -83,6 +83,32 @@ function measuredOutcome(run) {
   return outcome && typeof outcome === "object" && !Array.isArray(outcome) ? outcome : null;
 }
 
+function runIdOf(record) {
+  return typeof (record && record.runId) === "string" && record.runId.trim() ? record.runId : null;
+}
+
+function isOutcomeRecord(record) {
+  return record && record.kind === "outcome";
+}
+
+function attachOutcomes(records) {
+  const outcomeByRunId = new Map();
+  for (const record of Array.isArray(records) ? records : []) {
+    const runId = runIdOf(record);
+    if (!isOutcomeRecord(record) || !runId) continue;
+    const outcome = measuredOutcome(record);
+    if (outcome) outcomeByRunId.set(runId, outcome);
+  }
+
+  return (Array.isArray(records) ? records : [])
+    .filter((record) => !isOutcomeRecord(record))
+    .map((record) => {
+      const runId = runIdOf(record);
+      if (!runId || !outcomeByRunId.has(runId)) return record;
+      return { ...record, outcome: outcomeByRunId.get(runId) };
+    });
+}
+
 function summarizeRuns(runs, opts = {}) {
   const timeoutMs = positiveInt(opts.timeoutMs, DEFAULT_TIMEOUT_MS);
   const item = blankCost();
@@ -90,7 +116,7 @@ function summarizeRuns(runs, opts = {}) {
   let promptTotal = 0;
   let promptCount = 0;
 
-  for (const run of Array.isArray(runs) ? runs : []) {
+  for (const run of attachOutcomes(runs)) {
     const durationMs = finiteNumber(run && run.durationMs);
     const ok = Boolean(run && run.ok === true);
     const timedOut = isTimedOut(run, timeoutMs);
@@ -125,7 +151,7 @@ function summarizeRuns(runs, opts = {}) {
 
 export function costPerLane(runs, opts = {}) {
   const byLane = new Map();
-  for (const run of Array.isArray(runs) ? runs : []) {
+  for (const run of attachOutcomes(runs)) {
     const lane = laneName(run);
     if (!byLane.has(lane)) byLane.set(lane, []);
     byLane.get(lane).push(run);
@@ -141,7 +167,7 @@ export function costPerLane(runs, opts = {}) {
 export function slowestRuns(runs, n = 10, opts = {}) {
   const timeoutMs = positiveInt(opts.timeoutMs, DEFAULT_TIMEOUT_MS);
   const limit = positiveInt(n, 10);
-  return (Array.isArray(runs) ? runs : [])
+  return attachOutcomes(runs)
     .map((run) => ({
       ts: run && run.ts,
       lane: laneName(run),
@@ -212,12 +238,13 @@ export async function buildCostReport(opts = {}) {
     const text = await _fs.readFile(usagePath, "utf8");
     const parsed = parseUsageLines(text);
     const runs = parsed.runs.filter((run) => withinWindow(run, fromMs, nowMs));
+    const measuredRuns = attachOutcomes(runs);
     const report = {
       generatedAt: new Date(nowMs).toISOString(),
       window: { from: new Date(fromMs).toISOString(), to: new Date(nowMs).toISOString(), days: windowDays },
-      totals: summarizeRuns(runs, { timeoutMs }),
-      lanes: costPerLane(runs, { timeoutMs }),
-      slowestRuns: slowestRuns(runs, slowest, { timeoutMs }),
+      totals: summarizeRuns(measuredRuns, { timeoutMs }),
+      lanes: costPerLane(measuredRuns, { timeoutMs }),
+      slowestRuns: slowestRuns(measuredRuns, slowest, { timeoutMs }),
       skippedLines: parsed.skipped,
     };
     return { ok: true, report, markdown: renderCostReport(report), error: null };

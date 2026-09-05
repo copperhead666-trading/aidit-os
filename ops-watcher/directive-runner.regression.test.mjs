@@ -2195,8 +2195,10 @@ await t("sweep execution cap: done then one failure still executes on the follow
 function makeExecDeps(overrides = {}) {
   const calls = {
     snapshot: 0, restore: 0, dispatch: 0, runVerify: 0, runFullSuite: 0,
-    stat: 0, appendEvidence: 0, guardLane: 0, recordOutcome: 0, git: 0, pm2: 0,
+    stat: 0, appendEvidence: 0, guardLane: 0, recordOutcome: 0, logLaneOutcome: 0, git: 0, pm2: 0,
   };
+  const laneOutcomes = [];
+  const dispatchOptions = [];
   let mutated = false;
   const statFile = async (file) => {
     calls.stat++;
@@ -2230,8 +2232,9 @@ function makeExecDeps(overrides = {}) {
       calls.restore++;
       return { ok: true, restored: (snap && snap.entries ? snap.entries.length : 0) };
     },
-    dispatchExecution: async (/* prompt */) => {
+    dispatchExecution: async (_prompt, opts = {}) => {
       calls.dispatch++;
+      dispatchOptions.push(opts);
       if (overrides.mutateOnDispatch !== false) mutated = true;
       return { ok: true, stdout: "implementation done", stderr: "" };
     },
@@ -2255,8 +2258,14 @@ function makeExecDeps(overrides = {}) {
       calls.appendEvidence++;
       return undefined;
     },
+    logLaneOutcome: async (entry) => {
+      calls.logLaneOutcome++;
+      laneOutcomes.push(entry);
+      if (overrides.logLaneOutcomeThrows) throw new Error("outcome logger boom");
+      return undefined;
+    },
   };
-  return { deps, calls, isMutated: () => mutated, setMutated: (v) => { mutated = v; } };
+  return { deps, calls, laneOutcomes, dispatchOptions, isMutated: () => mutated, setMutated: (v) => { mutated = v; } };
 }
 
 await t("buildExecutionPrompt contains identifier, every file, VERIFY, and the no-weaken-assertions hard stop; deterministic across two calls", () => {
@@ -2834,24 +2843,39 @@ await t("executeApprovedDirective: snapshot failure -> aborted, no dispatch", as
 });
 
 await t("executeApprovedDirective: happy path -> done, restore NOT called, one evidence line, filesChanged non-empty", async () => {
-  const { deps, calls } = makeExecDeps();
+  const { deps, calls, laneOutcomes, dispatchOptions } = makeExecDeps();
   const plan = parsePlan(goodPlan);
   const res = await executeApprovedDirective(issue(), plan, deps);
   assert.equal(res.outcome, "done");
   assert.ok(Array.isArray(res.filesChanged) && res.filesChanged.length > 0);
   assert.equal(calls.restore, 0);
   assert.equal(calls.appendEvidence, 1);
+  assert.equal(calls.logLaneOutcome, 1);
+  assert.ok(dispatchOptions[0].env.LANE_RUN_ID, "lane receives a run id through env");
+  assert.equal(laneOutcomes[0].runId, dispatchOptions[0].env.LANE_RUN_ID);
+  assert.deepEqual(laneOutcomes[0].outcome, {
+    verifyPassed: true,
+    filesChanged: 2,
+    filesPlanned: 2,
+    deliveredWhatWasAsked: true,
+  });
   assert.ok(typeof res.verifyTail === "string");
 });
 
 await t("executeApprovedDirective: verify red -> reverted verify-red, restoreFiles called with the snapshot", async () => {
-  const { deps, calls } = makeExecDeps({ verifyResult: { ok: false, stdout: "", stderr: "AssertionError" } });
+  const { deps, calls, laneOutcomes } = makeExecDeps({ verifyResult: { ok: false, stdout: "", stderr: "AssertionError" } });
   const plan = parsePlan(goodPlan);
   const res = await executeApprovedDirective(issue(), plan, deps);
   assert.equal(res.outcome, "reverted");
   assert.equal(res.reason, "verify-red");
   assert.equal(calls.restore, 1);
   assert.equal(calls.appendEvidence, 1);
+  assert.deepEqual(laneOutcomes[0].outcome, {
+    verifyPassed: false,
+    filesChanged: 2,
+    filesPlanned: 2,
+    deliveredWhatWasAsked: false,
+  });
 });
 
 await t("executeApprovedDirective: verify green but full suite red -> reverted full-suite-red, restoreFiles called", async () => {
@@ -2865,11 +2889,26 @@ await t("executeApprovedDirective: verify green but full suite red -> reverted f
 });
 
 await t("executeApprovedDirective: both green but files untouched -> no-op", async () => {
-  const { deps, calls } = makeExecDeps({ mutateOnDispatch: false });
+  const { deps, calls, laneOutcomes } = makeExecDeps({ mutateOnDispatch: false });
   const plan = parsePlan(goodPlan);
   const res = await executeApprovedDirective(issue(), plan, deps);
   assert.equal(res.outcome, "no-op");
   assert.equal(calls.restore, 0);
+  assert.equal(calls.appendEvidence, 1);
+  assert.deepEqual(laneOutcomes[0].outcome, {
+    verifyPassed: true,
+    filesChanged: 0,
+    filesPlanned: 2,
+    deliveredWhatWasAsked: false,
+  });
+});
+
+await t("executeApprovedDirective: outcome logger throwing does not change directive outcome", async () => {
+  const { deps, calls } = makeExecDeps({ logLaneOutcomeThrows: true });
+  const plan = parsePlan(goodPlan);
+  const res = await executeApprovedDirective(issue(), plan, deps);
+  assert.equal(res.outcome, "done");
+  assert.equal(calls.logLaneOutcome, 1);
   assert.equal(calls.appendEvidence, 1);
 });
 

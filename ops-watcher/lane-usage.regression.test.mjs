@@ -24,7 +24,7 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { logLaneUsage, readLaneHealth, stdioBytes, normalizeCliDetail, CLI_FIELD_MAX } from "./lane-usage.mjs";
+import { logLaneUsage, logLaneOutcome, readLaneHealth, stdioBytes, normalizeCliDetail, CLI_FIELD_MAX } from "./lane-usage.mjs";
 
 let passed = 0;
 let failed = 0;
@@ -58,6 +58,7 @@ async function testAppendsValidJsonLine() {
     assert.equal(obj.ok, true);
     assert.equal(obj.exitCode, 0);
     assert.equal(obj.durationMs, 150);
+    assert.equal(obj.runId, null);
     assert.ok(typeof obj.ts === "string" && obj.ts.length > 0, "ts is a non-empty ISO string");
     // ts should be a valid ISO-8601 timestamp
     const parsed = Date.parse(obj.ts);
@@ -445,6 +446,57 @@ async function testExplicitByteCountsWinOverStreams() {
   } catch (err) { bad(name, err); }
 }
 
+async function testRunIdPersisted() {
+  const name = "R1 logLaneUsage persists runId on dispatch records";
+  const file = await makeTempFile();
+  try {
+    await logLaneUsage({ lane: "corleone", ok: true, runId: "run-123", file });
+    const obj = JSON.parse((await fs.readFile(file, "utf8")).trim());
+    assert.equal(obj.runId, "run-123");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function testLogLaneOutcomeWritesNormalizedOutcome() {
+  const name = "R2 logLaneOutcome writes one normalized kind:outcome line";
+  const file = await makeTempFile();
+  try {
+    await logLaneOutcome({
+      lane: "corleone",
+      runId: "run-123",
+      outcome: {
+        verifyPassed: true,
+        filesChanged: 2.9,
+        filesPlanned: -1,
+        deliveredWhatWasAsked: false,
+      },
+      file,
+    });
+    const lines = (await fs.readFile(file, "utf8")).trim().split("\n");
+    assert.equal(lines.length, 1);
+    const obj = JSON.parse(lines[0]);
+    assert.equal(obj.kind, "outcome");
+    assert.equal(obj.lane, "corleone");
+    assert.equal(obj.runId, "run-123");
+    assert.deepEqual(obj.outcome, {
+      verifyPassed: true,
+      filesChanged: 2,
+      filesPlanned: null,
+      deliveredWhatWasAsked: false,
+    });
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function testLogLaneOutcomeWriteFailureDoesNotThrow() {
+  const name = "R3 logLaneOutcome write failure does not throw";
+  try {
+    const badFile = path.join(os.tmpdir(), "lane-outcome-test-nonexistent-dir-xyz", "sub", "usage.jsonl");
+    await logLaneOutcome({ lane: "corleone", runId: "run-123", outcome: { verifyPassed: false }, file: badFile });
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
 async function testRecordWithoutOutcomeKeepsShape() {
   const name = "O1 omitting outcome keeps the record shape unchanged";
   const file = await makeTempFile();
@@ -459,6 +511,7 @@ async function testRecordWithoutOutcomeKeepsShape() {
       "timedOut",
       "exitCode",
       "durationMs",
+      "runId",
       "turns",
       "stdoutBytes",
       "stderrBytes",
@@ -511,6 +564,9 @@ async function main() {
   await testExtraMetadataIncluded();
   await testNullFieldsStored();
   await testTimedOutPersisted();
+  await testRunIdPersisted();
+  await testLogLaneOutcomeWritesNormalizedOutcome();
+  await testLogLaneOutcomeWriteFailureDoesNotThrow();
   await testHealthCounts();
   await testHealthLegacyRecordsCountAsTimeout();
   await testHealthExplicitFlagWins();

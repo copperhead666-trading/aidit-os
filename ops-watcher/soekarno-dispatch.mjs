@@ -44,6 +44,7 @@
 //   node ops-watcher/soekarno-dispatch.mjs "<read-only question or review task>"
 
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs, { writeFileSync, unlinkSync, mkdtempSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -215,6 +216,9 @@ export async function dispatchSoekarno(prompt, deps = {}) {
   const _spawn = deps.spawnSync || spawnSync;
   const _log = deps.log || ((m) => process.stderr.write(m + "\n"));
   const timeoutMs = deps.timeoutMs || TIMEOUT_MS;
+  const runId = typeof deps.runId === "string" && deps.runId.trim()
+    ? deps.runId
+    : (typeof process.env.LANE_RUN_ID === "string" && process.env.LANE_RUN_ID.trim() ? process.env.LANE_RUN_ID : randomUUID());
 
   // guardLaneStart answers with `skip`, not `allowed`. Reading the wrong field
   // fails CLOSED — the lane silently never runs — which is exactly how this
@@ -226,6 +230,7 @@ export async function dispatchSoekarno(prompt, deps = {}) {
     _log(msg);
     await logLaneUsage({
       lane: "soekarno",
+      runId,
       promptLength: prompt.length,
       ok: false,
       exitCode: 3,
@@ -236,7 +241,7 @@ export async function dispatchSoekarno(prompt, deps = {}) {
       cli: null,
       extra: { skipped: true, reason },
     });
-    return { ok: false, skipped: true, reason, stdout: "", stderr: msg };
+    return { ok: false, skipped: true, reason, stdout: "", stderr: msg, runId };
   }
 
   if (hostIsThisMachine(SOEKARNO_HOST, deps)) {
@@ -249,6 +254,7 @@ export async function dispatchSoekarno(prompt, deps = {}) {
       await recordLaneOutcome("soekarno", { ok: false, stdout: "", stderr });
       await logLaneUsage({
         lane: "soekarno",
+        runId,
         promptLength: prompt.length,
         ok: false,
         exitCode: 2,
@@ -276,6 +282,7 @@ export async function dispatchSoekarno(prompt, deps = {}) {
       await recordLaneOutcome("soekarno", { ok: false, stdout: r.stdout || "", stderr: r.stderr || "", timedOut: true });
       await logLaneUsage({
         lane: "soekarno",
+        runId,
         promptLength: prompt.length,
         ok: false,
         timedOut: true,
@@ -295,6 +302,7 @@ export async function dispatchSoekarno(prompt, deps = {}) {
       await recordLaneOutcome("soekarno", { ok: false, stdout: "", stderr });
       await logLaneUsage({
         lane: "soekarno",
+        runId,
         promptLength: prompt.length,
         ok: false,
         exitCode: 1,
@@ -316,6 +324,7 @@ export async function dispatchSoekarno(prompt, deps = {}) {
       await recordLaneOutcome("soekarno", { ok: false, stdout: r.stdout || "", stderr: r.stderr || "" });
       await logLaneUsage({
         lane: "soekarno",
+        runId,
         promptLength: prompt.length,
         ok: false,
         exitCode: 1,
@@ -333,6 +342,7 @@ export async function dispatchSoekarno(prompt, deps = {}) {
     await recordLaneOutcome("soekarno", { ok, stdout: parsed.result, stderr: r.stderr || "" });
     await logLaneUsage({
       lane: "soekarno",
+      runId,
       promptLength: prompt.length,
       ok,
       exitCode,
@@ -365,6 +375,7 @@ export async function dispatchSoekarno(prompt, deps = {}) {
       await recordLaneOutcome("soekarno", { ok: false, stdout: "", stderr });
       await logLaneUsage({
         lane: "soekarno",
+        runId,
         promptLength: prompt.length,
         ok: false,
         exitCode: 2,
@@ -392,6 +403,7 @@ export async function dispatchSoekarno(prompt, deps = {}) {
       await recordLaneOutcome("soekarno", { ok: false, stdout: r.stdout || "", stderr: r.stderr || "", timedOut: true });
       await logLaneUsage({
         lane: "soekarno",
+        runId,
         promptLength: prompt.length,
         ok: false,
         timedOut: true,
@@ -411,6 +423,7 @@ export async function dispatchSoekarno(prompt, deps = {}) {
       await recordLaneOutcome("soekarno", { ok: false, stdout: "", stderr });
       await logLaneUsage({
         lane: "soekarno",
+        runId,
         promptLength: prompt.length,
         ok: false,
         exitCode: 1,
@@ -436,6 +449,7 @@ export async function dispatchSoekarno(prompt, deps = {}) {
       await recordLaneOutcome("soekarno", { ok: false, stdout: r.stdout || "", stderr: r.stderr || "" });
       await logLaneUsage({
         lane: "soekarno",
+        runId,
         promptLength: prompt.length,
         ok: false,
         exitCode: 1,
@@ -453,6 +467,7 @@ export async function dispatchSoekarno(prompt, deps = {}) {
     await recordLaneOutcome("soekarno", { ok, stdout: parsed.result, stderr: r.stderr || "" });
     await logLaneUsage({
       lane: "soekarno",
+      runId,
       promptLength: prompt.length,
       ok,
       exitCode,

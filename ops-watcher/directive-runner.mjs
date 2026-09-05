@@ -28,7 +28,7 @@ import { promises as fs, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   discoverPaperclipPort,
   httpGet,
@@ -96,6 +96,7 @@ import {
   releaseLock as releaseLockReal,
   isPidAliveReal,
 } from "./telegram-listener-daemon.mjs";
+import { logLaneOutcome as defaultLogLaneOutcome } from "./lane-usage.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -2598,13 +2599,14 @@ export function nodeCommandToArgv(cmd) {
 // Shared spawn-with-capture helper used by the default runVerify / runFullSuite
 // / dispatchExecution bindings. shell:false, windowsHide:true, a timeout, and
 // never throws. Returns { ok, stdout, stderr }.
-function spawnCapture(argv, { timeoutMs = EXECUTION_TIMEOUT_MS } = {}) {
+function spawnCapture(argv, { timeoutMs = EXECUTION_TIMEOUT_MS, env } = {}) {
   return new Promise((resolve) => {
     let stdout = "", stderr = "", timedOut = false, settled = false, child;
     const finish = (r) => { if (settled) return; settled = true; resolve(r); };
     try {
       child = spawn(process.execPath, argv, {
         cwd: REPO_ROOT,
+        env: env && typeof env === "object" ? { ...process.env, ...env } : process.env,
         stdio: ["ignore", "pipe", "pipe"],
         shell: false,
         windowsHide: true,
@@ -2635,8 +2637,8 @@ function spawnCapture(argv, { timeoutMs = EXECUTION_TIMEOUT_MS } = {}) {
 // windowsHide:true, 12-minute timeout, never throws. The free-form prompt is
 // one argv element.
 function makeDefaultDispatchExecution(wrapperRel) {
-  return function defaultDispatchExecution(prompt) {
-    return spawnCapture([wrapperRel, prompt]);
+  return function defaultDispatchExecution(prompt, opts = {}) {
+    return spawnCapture([wrapperRel, prompt], { env: opts.env });
   };
 }
 
@@ -2660,6 +2662,7 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
   const restoreFn = deps.restoreFiles || restoreFiles;
   const guardLaneFn = deps.guardLane || defaultGuardLaneStart;
   const recordOutcomeFn = deps.recordOutcome || defaultRecordLaneOutcome;
+  const logLaneOutcomeFn = deps.logLaneOutcome || defaultLogLaneOutcome;
   const statFileFn = deps.statFile || defaultStatFile;
   const resolveSpecialists = deps.resolveSpecialistsForPacket || resolveSpecialistsForPacket;
   // Resolved ONCE per execution. The registry decides which venture paths this
@@ -2670,6 +2673,9 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
   const log = deps.log || (() => {});
 
   let chosenLane = null;
+  let laneCalled = false;
+  let runId = null;
+  let finalLogged = false;
 
   async function emit(result) {
     try {
@@ -2690,6 +2696,42 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
     } catch {
       return { file, size: null, mtimeMs: null };
     }
+  }
+
+  async function countChangedFiles(files, before) {
+    const after = [];
+    for (const f of files) after.push(await statEntry(f));
+    const changed = [];
+    for (let i = 0; i < files.length; i++) {
+      const b = before[i], a = after[i];
+      if (!b || !a) continue;
+      if (b.size !== a.size || b.mtimeMs !== a.mtimeMs) changed.push(files[i]);
+    }
+    return { after, changed };
+  }
+
+  async function logFinalOutcome(result, detail = {}) {
+    if (!laneCalled || finalLogged) return;
+    finalLogged = true;
+    try {
+      await logLaneOutcomeFn({
+        lane: chosenLane,
+        runId,
+        outcome: {
+          verifyPassed: detail.verifyPassed === true,
+          filesChanged: Number.isFinite(detail.filesChanged) ? detail.filesChanged : 0,
+          filesPlanned: Number.isFinite(detail.filesPlanned) ? detail.filesPlanned : 0,
+          deliveredWhatWasAsked: result && result.outcome === "done",
+        },
+      });
+    } catch {
+      // Best-effort only. Correctness logging must never change the directive outcome.
+    }
+  }
+
+  async function emitMeasured(result, detail = {}) {
+    await logFinalOutcome(result, detail);
+    return emit(result);
   }
 
   try {
@@ -2763,7 +2805,9 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
     const specialists = await resolveSpecialistsForIssue(issue, resolveSpecialists, { log, specialistDeps: deps.specialistDeps });
     const prompt = buildExecutionPrompt(issue, plan, specialists, ventures);
     const dispatchFn = deps.dispatchExecution || makeDefaultDispatchExecution(lane && lane.wrapper);
-    const dispatch = await dispatchFn(prompt);
+    runId = randomUUID();
+    laneCalled = true;
+    const dispatch = await dispatchFn(prompt, { runId, env: { LANE_RUN_ID: runId } });
     await recordOutcomeFn(lane && lane.guardName, {
       ok: !!(dispatch && dispatch.ok),
       stdout: dispatch && dispatch.stdout,
@@ -2779,8 +2823,12 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
       const nowPosition = gitPositionFn(entry.venture, deps);
       const cmp = comparePositionFn(entry.position, nowPosition);
       if (!cmp.ok) {
+        const { changed } = await countChangedFiles(files, before);
         await restoreFn(snapshot, { _fs: deps._fs });
-        return emit({ outcome: "aborted", violations: cmp.violations, reason: "venture-git-write" });
+        return emitMeasured(
+          { outcome: "aborted", violations: cmp.violations, reason: "venture-git-write" },
+          { verifyPassed: false, filesChanged: changed.length, filesPlanned: files.length },
+        );
       }
     }
 
@@ -2788,40 +2836,48 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
     const runVerifyFn = deps.runVerify || (async (cmd) => spawnCapture(nodeCommandToArgv(cmd)));
     const verifyResult = await runVerifyFn(verify);
     if (!verifyResult || verifyResult.ok !== true) {
+      const { changed } = await countChangedFiles(files, before);
       await restoreFn(snapshot, { _fs: deps._fs });
-      return emit({ outcome: "reverted", reason: "verify-red" });
+      return emitMeasured(
+        { outcome: "reverted", reason: "verify-red" },
+        { verifyPassed: false, filesChanged: changed.length, filesPlanned: files.length },
+      );
     }
 
     // Verify stage B: the FULL suite.
     const runFullSuiteFn = deps.runFullSuite || (async () => spawnCapture(["ops-watcher/run-all-tests.mjs"]));
     const fullResult = await runFullSuiteFn();
     if (!fullResult || fullResult.ok !== true) {
+      const { changed } = await countChangedFiles(files, before);
       await restoreFn(snapshot, { _fs: deps._fs });
-      return emit({ outcome: "reverted", reason: "full-suite-red" });
+      return emitMeasured(
+        { outcome: "reverted", reason: "full-suite-red" },
+        { verifyPassed: false, filesChanged: changed.length, filesPlanned: files.length },
+      );
     }
 
     // 8. Both green but no listed file changed -> no-op. Do not claim work
     //    that did not happen.
-    const after = [];
-    for (const f of files) after.push(await statEntry(f));
-    const filesChanged = [];
-    for (let i = 0; i < files.length; i++) {
-      const b = before[i], a = after[i];
-      if (!b || !a) continue;
-      if (b.size !== a.size || b.mtimeMs !== a.mtimeMs) filesChanged.push(files[i]);
-    }
+    const { changed: filesChanged } = await countChangedFiles(files, before);
     if (filesChanged.length === 0) {
-      return emit({ outcome: "no-op" });
+      return emitMeasured(
+        { outcome: "no-op" },
+        { verifyPassed: true, filesChanged: 0, filesPlanned: files.length },
+      );
     }
 
     // 9. Done. Report the changed files and the verify tail.
     const verifyOut = String((verifyResult && verifyResult.stdout || "") + (verifyResult && verifyResult.stderr || ""));
     const verifyTail = verifyOut.slice(-400);
-    return emit({ outcome: "done", filesChanged, verifyTail });
+    return emitMeasured(
+      { outcome: "done", filesChanged, verifyTail },
+      { verifyPassed: true, filesChanged: filesChanged.length, filesPlanned: files.length },
+    );
   } catch (err) {
     // NEVER throws. An unexpected failure is reported as an error outcome with
     // one evidence line; the normal branches above cover the documented shapes.
-    return emit({ outcome: "error", reason: String((err && err.message) || err) });
+    const result = { outcome: "error", reason: String((err && err.message) || err) };
+    return emitMeasured(result, { verifyPassed: false, filesChanged: 0, filesPlanned: Array.isArray(plan?.files) ? plan.files.length : 0 });
   }
 }
 
