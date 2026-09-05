@@ -70,6 +70,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { httpGet } from "./watcher.mjs";
+import { SOEKARNO_HOST, hostIsThisMachine, resolveLocalClaude } from "./soekarno-dispatch.mjs";
 
 import { readLaneHealth } from "./lane-usage.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -91,18 +92,32 @@ const COOLDOWN_CAP_MS = 30 * 60_000;
 export const QUOTA_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6 hours
 const QUOTA_RETRY_GRACE_MS = 2 * 60 * 1000;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+const SOEKARNO_SSH_PROBE_CMD = ["ssh", "-o", "ConnectTimeout=8", "-o", "BatchMode=yes", SOEKARNO_HOST, "claude --version"];
+
 // Probe-key -> how to probe. `kind` selects the probe mechanism.
 export const LANE_PROBES = {
   ollama: { kind: "http", url: OLLAMA_TAGS_URL, label: "Ollama Cloud (L2 technical)" },
   nous: { kind: "spawn", cmd: ["hermes", "--version"], label: "Nous Free / hermes (L4 free-worker)" },
   kimi: { kind: "spawn", cmd: ["kimi", "--version"], label: "Kimi Code (L3 heavy-context)" },
   codex: { kind: "spawn", cmd: ["codex", "--version"], label: "Codex CLI (L6, CORLEONE)" },
-  // Probed THROUGH ssh on purpose: for this lane "available" means the Lenovo
-  // is reachable AND Claude is installed there. A local check would answer a
-  // question nobody asked.
+  // SOEKARNO used to be probed only through Tailscale SSH because it lived on a
+  // different Lenovo. After the ASUS-to-Lenovo cutover, the target can be this
+  // host; in that case the dispatcher runs local Claude directly, so the probe
+  // must ask that same local question instead of failing on this machine's SSH
+  // host-key state. Non-local targets keep the original SSH probe unchanged.
   claude: {
     kind: "spawn",
-    cmd: ["ssh", "-o", "ConnectTimeout=8", "-o", "BatchMode=yes", "WIN10@100.87.42.3", "claude --version"],
+    cmd: (deps = {}) => {
+      const _hostIsThisMachine = deps.hostIsThisMachine || hostIsThisMachine;
+      const _resolveLocalClaude = deps.resolveLocalClaude || resolveLocalClaude;
+      if (_hostIsThisMachine(SOEKARNO_HOST, deps)) {
+        const localClaude = _resolveLocalClaude(deps);
+        if (!localClaude) return null;
+        return [localClaude, "--version"];
+      }
+      return SOEKARNO_SSH_PROBE_CMD;
+    },
     label: "Claude Code on the Lenovo (L5, SOEKARNO)",
   },
 };
@@ -128,11 +143,11 @@ export function laneStringToProbeKey(laneStr) {
 }
 
 // ---- cheap spawn probe (real) ----
-export function runSpawnReal(cmd, { timeoutMs = 4000 } = {}) {
+export function runSpawnReal(cmd, { timeoutMs = 4000, shell = process.platform === "win32" } = {}) {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(cmd[0], cmd.slice(1), { stdio: ["ignore", "pipe", "pipe"], windowsHide: true, shell: process.platform === "win32" });
+      child = spawn(cmd[0], cmd.slice(1), { stdio: ["ignore", "pipe", "pipe"], windowsHide: true, shell });
     } catch (err) {
       return resolve({ ok: false, code: null, error: String(err && err.message), signal: "spawn-threw" });
     }
@@ -163,7 +178,19 @@ export async function probeLaneAvailability(lane, deps = {}) {
     return { lane: probeKey, available: true, probe: "http", signal: "ollama /api/tags reachable", models, reason: "ok" };
   }
   if (spec.kind === "spawn") {
-    const r = await _runSpawn(spec.cmd);
+    const cmd = typeof spec.cmd === "function" ? spec.cmd(deps) : spec.cmd;
+    if (!cmd) {
+      return {
+        lane: probeKey,
+        available: false,
+        probe: "spawn",
+        signal: "unresolved-local-claude",
+        reason: "local claude executable could not be resolved",
+        version: null,
+      };
+    }
+    const spawnOpts = probeKey === "claude" && cmd[0] !== "ssh" ? { shell: false, windowsHide: true } : undefined;
+    const r = await _runSpawn(cmd, spawnOpts);
     return {
       lane: probeKey,
       available: r.ok,
