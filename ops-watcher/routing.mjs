@@ -253,6 +253,34 @@ function registryModelForLane(lane, registry = {}) {
   return String(raw);
 }
 
+/**
+ * Did the CLI answer with a VERSION rather than a model?
+ *
+ * `--version` is the only cheap probe several of these lanes have, and some
+ * answer it with their own build number: "codex-cli 0.153.2",
+ * "2.1.261 (Claude Code)", "0.40.1". That says which binary is installed; it
+ * says nothing about which model the binary will call. Treating it as a model
+ * mismatch would manufacture a permanent false alarm.
+ */
+/** Model-looking tokens in a string: `glm-5.3:cloud`, `gpt-5.5`, `upstage/solar-pro4`. */
+export function modelTokens(text) {
+  const out = new Set();
+  for (const m of String(text || "").toLowerCase().matchAll(/[a-z][a-z0-9._-]*[:/][a-z0-9][a-z0-9._-]*/g)) out.add(m[0]);
+  for (const m of String(text || "").toLowerCase().matchAll(/\b[a-z]+-\d+(?:\.\d+)?\b/g)) out.add(m[0]);
+  return [...out];
+}
+
+export function reportsOnlyAVersion(reported) {
+  const s = String(reported || "").trim();
+  if (!s) return false;
+  // A model name IS allowed to look like a version — `gpt-5.4` is a model, and
+  // `gpt-5.5` against `gpt-5.4` is real drift, not an unreadable probe. So the
+  // test is: does the answer contain any model-looking token at all? Only when
+  // it contains none, and does contain a version number, is it version-only.
+  if (modelTokens(s).length > 0) return false;
+  return /\bv?\d+\.\d+(\.\d+)?\b/.test(s);
+}
+
 export function compareLaneModels(report, registry) {
   try {
     return (Array.isArray(report) ? report : []).map((r) => {
@@ -265,7 +293,21 @@ export function compareLaneModels(report, registry) {
       else {
         const a = normalizeModelText(registryModel);
         const b = normalizeModelText(reported);
-        verdict = a && b && (a.includes(b) || b.includes(a)) ? "match" : "drift";
+        // Compare by MODEL TOKEN, not whole string. Both sides carry extra
+        // words: the registry says "glm-5.3:cloud (primary); kimi ..." and
+        // `ollama list` answers with every model it holds. Substring matching
+        // called that drift when the recorded model was sitting right there in
+        // the answer.
+        const sharesAModelToken = modelTokens(registryModel).some((t) => modelTokens(reported).includes(t));
+        if (sharesAModelToken || (a && b && (a.includes(b) || b.includes(a)))) verdict = "match";
+        // A CLI that answers with its OWN version has not told us which MODEL it
+        // will use. Measured 2026-09-05: codex answers "codex-cli 0.153.2" while
+        // the registry says "gpt-5.5" — nothing has drifted, the probe simply
+        // cannot see the model. Calling that drift would build the same alarm
+        // that cried every hour about a healthy scheduled task, and an alarm
+        // that is always wrong teaches everyone to ignore the one that is right.
+        else if (reportsOnlyAVersion(reported)) verdict = "version-only";
+        else verdict = "drift";
       }
       return { lane, registry: registryModel, reported, verdict };
     });

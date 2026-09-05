@@ -27,6 +27,7 @@ import {
   laneFitness,
   compareLaneModels,
   laneModelReport,
+  reportsOnlyAVersion,
 } from "./routing.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1019,6 +1020,29 @@ async function fitness_fitDefaultStillDefaultOk() {
 }
 
 
+// A model name is allowed to look like a version. gpt-5.5 against gpt-5.4 is
+// real drift; codex-cli 0.153.2 against gpt-5.5 is a probe that cannot see the
+// model at all. Confusing the two would build a permanent false alarm, which is
+// the failure mode the steward scheduled-task alarm already taught us.
+function kol88_versionOnlyIsNotDrift() {
+  const name = "KOL-88: a version answer is version-only, and a model list containing the recorded model matches";
+  try {
+  assert.equal(reportsOnlyAVersion('codex-cli 0.153.2'), true, 'a CLI build number is not a model');
+  assert.equal(reportsOnlyAVersion('2.1.261 (Claude Code)'), true);
+  assert.equal(reportsOnlyAVersion('gpt-5.4'), false, 'a model that looks like a version is still a model');
+  assert.equal(reportsOnlyAVersion('glm-5.3:cloud'), false);
+  assert.equal(reportsOnlyAVersion(''), false);
+
+  const cmp = compareLaneModels(
+    [{ lane: 'CORLEONE', reported: 'codex-cli 0.153.2' }, { lane: 'HATTA', reported: 'glm-5.3:cloud, nomic-embed-text:latest' }],
+    { agents: { CORLEONE: { model_if_known: 'gpt-5.5' }, HATTA: { model_if_known: 'glm-5.3:cloud (primary); kimi fallback' } } },
+  );
+  assert.equal(cmp[0].verdict, 'version-only', 'a version answer is not drift');
+  assert.equal(cmp[1].verdict, 'match', 'the recorded model sitting inside a model list is a match');
+  ok(name);
+  } catch (err) { bad(name, err); }
+}
+
 async function main() {
   console.log("# ops-watcher PHASE-4 routing regression tests");
   await testLaneMapping();
@@ -1030,6 +1054,7 @@ async function main() {
   await testProbeUnprobeable();
   await kol88_compareLaneModelsVerdicts();
   await kol88_laneModelReportNeverThrowsWhenProbeFails();
+  kol88_versionOnlyIsNotDrift();
   await testCooldownBackoff();
   await testCooldownNeverTrustsProviderClock();
   await resolveLaneDefaultOk();
