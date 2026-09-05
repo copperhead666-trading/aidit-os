@@ -9,6 +9,7 @@
 //   node ops-watcher/sjahrir-dispatch.mjs "<prompt>"
 
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { logLaneUsage } from "./lane-usage.mjs";
@@ -105,6 +106,9 @@ export async function dispatchSjahrir(prompt, deps = {}) {
   const _spawn = deps.spawnSync || spawnSync;
   const _log = deps.log || ((m) => process.stderr.write(m + "\n"));
   const t0 = Date.now();
+  const runId = typeof deps.runId === "string" && deps.runId.trim()
+    ? deps.runId
+    : (typeof process.env.LANE_RUN_ID === "string" && process.env.LANE_RUN_ID.trim() ? process.env.LANE_RUN_ID : randomUUID());
   try {
     // `kimi` resolves to a native kimi.exe on this machine, so we spawn it
     // directly with shell:false (the safe default). shell:false passes the args
@@ -125,6 +129,7 @@ export async function dispatchSjahrir(prompt, deps = {}) {
       _log(msg);
       await logLaneUsage({
         lane: "sjahrir",
+        runId,
         promptLength: prompt.length,
         ok: false,
         exitCode: 3,
@@ -135,7 +140,7 @@ export async function dispatchSjahrir(prompt, deps = {}) {
         cli: null,
         extra: { skipped: true, reason },
       });
-      return { ok: false, skipped: true, reason, stdout: "", stderr: msg, exitCode: 3 };
+      return { ok: false, skipped: true, reason, stdout: "", stderr: msg, exitCode: 3, runId };
     }
 
     // WORKTREE ISOLATION. Each writing lane runs in its OWN git worktree, never in
@@ -181,6 +186,7 @@ export async function dispatchSjahrir(prompt, deps = {}) {
       await recordLaneOutcome("sjahrir", { ok: false, stdout, stderr, timedOut: true });
       await logLaneUsage({
         lane: "sjahrir",
+        runId,
         promptLength: prompt.length,
         ok: false,
         timedOut: true,
@@ -191,7 +197,7 @@ export async function dispatchSjahrir(prompt, deps = {}) {
         stderr,
         cli: parsed.cli,
       });
-      return { ok: false, timedOut: true, stdout: readable, stderr: stderr ? `${stderr}\n${msg}` : msg, exitCode: 1 };
+      return { ok: false, timedOut: true, stdout: readable, stderr: stderr ? `${stderr}\n${msg}` : msg, exitCode: 1, runId };
     }
     if (r.error) {
       const msg = `sjahrir-dispatch: failed to spawn kimi: ${r.error && r.error.message ? r.error.message : r.error}`;
@@ -199,6 +205,7 @@ export async function dispatchSjahrir(prompt, deps = {}) {
       await recordLaneOutcome("sjahrir", { ok: false, stdout, stderr });
       await logLaneUsage({
         lane: "sjahrir",
+        runId,
         promptLength: prompt.length,
         ok: false,
         exitCode: 1,
@@ -208,12 +215,13 @@ export async function dispatchSjahrir(prompt, deps = {}) {
         stderr: stderr ? `${stderr}\n${msg}` : msg,
         cli: null,
       });
-      return { ok: false, timedOut: false, stdout: readable, stderr: stderr ? `${stderr}\n${msg}` : msg, exitCode: 1 };
+      return { ok: false, timedOut: false, stdout: readable, stderr: stderr ? `${stderr}\n${msg}` : msg, exitCode: 1, runId };
     }
     const exitCode = typeof r.status === "number" ? r.status : 1;
     await recordLaneOutcome("sjahrir", { ok: exitCode === 0, stdout, stderr });
     await logLaneUsage({
       lane: "sjahrir",
+      runId,
       promptLength: prompt.length,
       ok: exitCode === 0,
       exitCode,
@@ -223,7 +231,7 @@ export async function dispatchSjahrir(prompt, deps = {}) {
       stderr,
       cli: parsed.cli,
     });
-    return { ok: exitCode === 0, timedOut: false, stdout: readable, stderr, exitCode };
+    return { ok: exitCode === 0, timedOut: false, stdout: readable, stderr, exitCode, runId };
   } catch (err) {
     // Never throw out of the wrapper: headless AHMAD calls this and a crash
     // is worse than a reported failure.
@@ -233,6 +241,7 @@ export async function dispatchSjahrir(prompt, deps = {}) {
     try {
       await logLaneUsage({
         lane: "sjahrir",
+        runId,
         promptLength: prompt.length,
         ok: false,
         exitCode: 1,
@@ -243,7 +252,7 @@ export async function dispatchSjahrir(prompt, deps = {}) {
         cli: null,
       });
     } catch { /* logging must never break the dispatch */ }
-    return { ok: false, timedOut: false, stdout: "", stderr: msg, exitCode: 1 };
+    return { ok: false, timedOut: false, stdout: "", stderr: msg, exitCode: 1, runId };
   }
 }
 

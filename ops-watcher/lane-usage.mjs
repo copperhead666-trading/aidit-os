@@ -134,6 +134,7 @@ function normalizeOutcome(outcome) {
  * @param {boolean} [opts.timedOut]   - true if the wrapper timeout fired.
  * @param {number|null} [opts.exitCode] - numeric exit code, or null.
  * @param {number|null} [opts.durationMs] - wall-clock duration in ms, or null.
+ * @param {string|null} [opts.runId] - correlation id for a dispatch run.
  * @param {number|null} [opts.turns]  - iterations/turns the run took, when the
  *                                      CLI or harness reports them. This is the
  *                                      field that separates "the lane is slow"
@@ -160,6 +161,7 @@ export async function logLaneUsage({
   timedOut,
   exitCode,
   durationMs,
+  runId,
   turns,
   stdout,
   stderr,
@@ -182,6 +184,7 @@ export async function logLaneUsage({
     timedOut: timedOut === true,
     exitCode: typeof exitCode === "number" ? exitCode : null,
     durationMs: typeof durationMs === "number" ? durationMs : null,
+    runId: typeof runId === "string" && runId.trim() ? runId : null,
     // ---- per-run detail; null when the lane cannot report it ----
     turns: nonNegativeInt(turns),
     stdoutBytes: nonNegativeInt(stdoutBytes) ?? stdioBytes(stdout),
@@ -195,6 +198,34 @@ export async function logLaneUsage({
     await fs.appendFile(target, JSON.stringify(record) + "\n", "utf8");
   } catch {
     // Silent no-op. Logging must never break the dispatch it's attached to.
+  }
+}
+
+/**
+ * Append ONE outcome JSON line (NDJSON) to the lane-usage log. Best-effort,
+ * never throws. Outcome is logged separately because directive verification is
+ * known only after the dispatch record has already been written.
+ *
+ * @param {object} opts
+ * @param {string} opts.lane
+ * @param {string|null} opts.runId
+ * @param {object} opts.outcome
+ * @param {string} [opts.file]
+ * @returns {Promise<void>}
+ */
+export async function logLaneOutcome({ lane, runId, outcome, file } = {}) {
+  const target = file || DEFAULT_FILE;
+  const record = {
+    ts: new Date().toISOString(),
+    lane,
+    runId: typeof runId === "string" && runId.trim() ? runId : null,
+    kind: "outcome",
+    outcome: normalizeOutcome(outcome),
+  };
+  try {
+    await fs.appendFile(target, JSON.stringify(record) + "\n", "utf8");
+  } catch {
+    // Silent no-op. Logging must never change directive execution.
   }
 }
 /**

@@ -34,6 +34,7 @@
 // before (shell defaults to false).
 
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -274,13 +275,17 @@ export async function dispatchCorleone(prompt, deps = {}) {
     return { ok: false, stdout: "", stderr: "", diagnostic, exitCode: 2 };
   }
 
+  const runId = typeof deps.runId === "string" && deps.runId.trim()
+    ? deps.runId
+    : (typeof process.env.LANE_RUN_ID === "string" && process.env.LANE_RUN_ID.trim() ? process.env.LANE_RUN_ID : randomUUID());
+
   const guard = await _guardLaneStart("corleone");
   if (guard.skip) {
     const reason = guard.reason || "unknown";
     const retryMinutes = Math.ceil(guard.remainingMs / 60000);
     const diagnostic = `corleone-dispatch: lane skipped (${reason}), retry in ${retryMinutes}m — no spawn attempted\n`;
-    await _logLaneUsage({ lane: "corleone", promptLength: prompt.length, ok: false, exitCode: 3, durationMs: 0, extra: { skipped: true, reason } });
-    return { ok: false, skipped: true, reason, stdout: "", stderr: "", diagnostic, exitCode: 3 };
+    await _logLaneUsage({ lane: "corleone", runId, promptLength: prompt.length, ok: false, exitCode: 3, durationMs: 0, extra: { skipped: true, reason } });
+    return { ok: false, skipped: true, reason, stdout: "", stderr: "", diagnostic, exitCode: 3, runId };
   }
 
   // `-s workspace-write` allows Codex to write files within the repo without
@@ -320,6 +325,7 @@ export async function dispatchCorleone(prompt, deps = {}) {
   const parsed = parseCodexExecJsonl(stdout, { effort });
   const usageDetail = {
     lane: "corleone",
+    runId,
     promptLength: prompt.length,
     durationMs,
     stdout,
@@ -333,7 +339,7 @@ export async function dispatchCorleone(prompt, deps = {}) {
     const diagnostic = `corleone-dispatch: codex timed out after ${timeoutMs}ms\n`;
     await _recordLaneOutcome("corleone", { ok: false, stdout, stderr, timedOut: true });
     await _logLaneUsage({ ...usageDetail, ok: false, timedOut: true, exitCode: 1 });
-    return { ok: false, stdout: parsed.readableStdout, stderr, timedOut: true, diagnostic, exitCode: 1, turns: parsed.turns, cli: parsed.cli };
+    return { ok: false, stdout: parsed.readableStdout, stderr, timedOut: true, diagnostic, exitCode: 1, turns: parsed.turns, cli: parsed.cli, runId };
   }
   if (r.error) {
     const err = r.error && r.error.message ? r.error.message : String(r.error);
@@ -341,13 +347,13 @@ export async function dispatchCorleone(prompt, deps = {}) {
     const diagnostic = `corleone-dispatch: failed to spawn codex: ${err}\n`;
     await _recordLaneOutcome("corleone", { ok: false, stdout, stderr: effectiveStderr });
     await _logLaneUsage({ ...usageDetail, ok: false, exitCode: 1, stderr: effectiveStderr });
-    return { ok: false, stdout: parsed.readableStdout, stderr: effectiveStderr, timedOut: false, diagnostic, exitCode: 1, turns: parsed.turns, cli: parsed.cli };
+    return { ok: false, stdout: parsed.readableStdout, stderr: effectiveStderr, timedOut: false, diagnostic, exitCode: 1, turns: parsed.turns, cli: parsed.cli, runId };
   }
 
   const exitCode = typeof r.status === "number" ? r.status : 1;
   await _recordLaneOutcome("corleone", { ok: exitCode === 0, stdout, stderr });
   await _logLaneUsage({ ...usageDetail, ok: exitCode === 0, exitCode });
-  return { ok: exitCode === 0, stdout: parsed.readableStdout, stderr, timedOut: false, exitCode, turns: parsed.turns, cli: parsed.cli };
+  return { ok: exitCode === 0, stdout: parsed.readableStdout, stderr, timedOut: false, exitCode, turns: parsed.turns, cli: parsed.cli, runId };
 }
 
 async function main() {

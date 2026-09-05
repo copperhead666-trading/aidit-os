@@ -18,6 +18,7 @@
 //   node ops-watcher/hatta-flash-dispatch.mjs "<prompt>"
 
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { logLaneUsage } from "./lane-usage.mjs";
@@ -36,6 +37,7 @@ async function main() {
     process.stderr.write('usage: node ops-watcher/hatta-flash-dispatch.mjs "<prompt>"\n');
     process.exit(2);
   }
+  const runId = typeof process.env.LANE_RUN_ID === "string" && process.env.LANE_RUN_ID.trim() ? process.env.LANE_RUN_ID : randomUUID();
 
   // Spawn `node hatta/harness.mjs "<prompt>"` with the child environment
   // overriding OLLAMA_MODEL_HATTA to the Flash model. We spread ...process.env
@@ -48,7 +50,7 @@ async function main() {
     const reason = guard.reason || "unknown";
     const retryMinutes = Math.ceil(guard.remainingMs / 60000);
     process.stderr.write(`hatta-flash-dispatch: lane skipped (${reason}), retry in ${retryMinutes}m — no spawn attempted\n`);
-    await logLaneUsage({ lane: "hatta-flash", promptLength: prompt.length, ok: false, exitCode: 3, durationMs: 0, extra: { skipped: true, reason } });
+    await logLaneUsage({ lane: "hatta-flash", runId, promptLength: prompt.length, ok: false, exitCode: 3, durationMs: 0, extra: { skipped: true, reason } });
     process.exit(3);
   }
 
@@ -70,18 +72,18 @@ async function main() {
     // spawnSync sets status=null + signal="SIGTERM" on timeout kill.
     process.stderr.write(`hatta-flash-dispatch: harness timed out after ${TIMEOUT_MS}ms\n`);
     await recordLaneOutcome("hatta-flash", { ok: false, stdout: r.stdout, stderr: r.stderr, timedOut: true });
-    await logLaneUsage({ lane: "hatta-flash", promptLength: prompt.length, ok: false, timedOut: true, exitCode: 1, durationMs });
+    await logLaneUsage({ lane: "hatta-flash", runId, promptLength: prompt.length, ok: false, timedOut: true, exitCode: 1, durationMs });
     process.exit(1);
   }
   if (r.error) {
     process.stderr.write(`hatta-flash-dispatch: failed to spawn harness: ${r.error && r.error.message ? r.error.message : r.error}\n`);
     await recordLaneOutcome("hatta-flash", { ok: false, stdout: r.stdout, stderr: r.stderr });
-    await logLaneUsage({ lane: "hatta-flash", promptLength: prompt.length, ok: false, exitCode: 1, durationMs });
+    await logLaneUsage({ lane: "hatta-flash", runId, promptLength: prompt.length, ok: false, exitCode: 1, durationMs });
     process.exit(1);
   }
   const exitCode = typeof r.status === "number" ? r.status : 1;
   await recordLaneOutcome("hatta-flash", { ok: exitCode === 0, stdout: r.stdout, stderr: r.stderr });
-  await logLaneUsage({ lane: "hatta-flash", promptLength: prompt.length, ok: exitCode === 0, exitCode, durationMs });
+  await logLaneUsage({ lane: "hatta-flash", runId, promptLength: prompt.length, ok: exitCode === 0, exitCode, durationMs });
   process.exit(exitCode);
 }
 

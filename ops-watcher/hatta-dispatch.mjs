@@ -19,6 +19,7 @@
 //   node ops-watcher/hatta-dispatch.mjs "<prompt>"
 
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fsSync from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -113,7 +114,7 @@ export function parseHarnessStdout(stdout) {
  *
  * @returns the exact object handed to logLaneUsage.
  */
-export function buildNormalExitUsage({ prompt, stdout, stderr, exitCode, durationMs }) {
+export function buildNormalExitUsage({ prompt, stdout, stderr, exitCode, durationMs, runId }) {
   const evidence = parseHarnessStdout(stdout);
   // "Reached MAX_ITERATIONS" is NOT a timeout, and the two must stay
   // distinguishable or one blind spot has simply been swapped for another: a
@@ -124,6 +125,7 @@ export function buildNormalExitUsage({ prompt, stdout, stderr, exitCode, duratio
   const timedOut = evidence?.timedOut === true;
   return {
     lane: "hatta",
+    runId: typeof runId === "string" && runId.trim() ? runId : null,
     promptLength: typeof prompt === "string" ? prompt.length : null,
     ok: exitCode === 0,
     timedOut,
@@ -150,6 +152,7 @@ async function main() {
     process.stderr.write('usage: node ops-watcher/hatta-dispatch.mjs "<prompt>"\n');
     process.exit(2);
   }
+  const runId = typeof process.env.LANE_RUN_ID === "string" && process.env.LANE_RUN_ID.trim() ? process.env.LANE_RUN_ID : randomUUID();
 
   // Spawn `node hatta/harness.mjs "<prompt>"` with a plain process.env passthrough
   // — NO OLLAMA_MODEL_HATTA override (unlike hatta-flash-dispatch.mjs). This means
@@ -162,7 +165,7 @@ async function main() {
     const reason = guard.reason || "unknown";
     const retryMinutes = Math.ceil(guard.remainingMs / 60000);
     process.stderr.write(`hatta-dispatch: lane skipped (${reason}), retry in ${retryMinutes}m — no spawn attempted\n`);
-    await logLaneUsage({ lane: "hatta", promptLength: prompt.length, ok: false, exitCode: 3, durationMs: 0, extra: { skipped: true, reason } });
+    await logLaneUsage({ lane: "hatta", runId, promptLength: prompt.length, ok: false, exitCode: 3, durationMs: 0, extra: { skipped: true, reason } });
     process.exit(3);
   }
 
@@ -223,13 +226,13 @@ async function main() {
       process.stderr.write(`hatta-dispatch: harness timed out after ${TIMEOUT_MS}ms — no evidence file to recover\n`);
     }
     await recordLaneOutcome("hatta", { ok: false, stdout: r.stdout, stderr: r.stderr, timedOut: true });
-    await logLaneUsage({ lane: "hatta", promptLength: prompt.length, ok: false, timedOut: true, exitCode: 1, durationMs });
+    await logLaneUsage({ lane: "hatta", runId, promptLength: prompt.length, ok: false, timedOut: true, exitCode: 1, durationMs });
     process.exit(1);
   }
   if (r.error) {
     process.stderr.write(`hatta-dispatch: failed to spawn harness: ${r.error && r.error.message ? r.error.message : r.error}\n`);
     await recordLaneOutcome("hatta", { ok: false, stdout: r.stdout, stderr: r.stderr });
-    await logLaneUsage({ lane: "hatta", promptLength: prompt.length, ok: false, exitCode: 1, durationMs });
+    await logLaneUsage({ lane: "hatta", runId, promptLength: prompt.length, ok: false, exitCode: 1, durationMs });
     process.exit(1);
   }
   const exitCode = typeof r.status === "number" ? r.status : 1;
@@ -246,7 +249,7 @@ async function main() {
   // 120s plus overhead, unmistakably the inner abort — and lane-usage.jsonl said
   // timedOut=0 for the lane. Under-reported in exactly the spot that was
   // supposed to have been fixed.
-  const usage = buildNormalExitUsage({ prompt, stdout: r.stdout, stderr: r.stderr, exitCode, durationMs });
+  const usage = buildNormalExitUsage({ prompt, stdout: r.stdout, stderr: r.stderr, exitCode, durationMs, runId });
   await recordLaneOutcome("hatta", { ok: exitCode === 0, stdout: r.stdout, stderr: r.stderr, timedOut: usage.timedOut });
   await logLaneUsage(usage);
   process.exit(exitCode);
