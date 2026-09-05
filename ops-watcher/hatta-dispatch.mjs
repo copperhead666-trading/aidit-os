@@ -186,6 +186,11 @@ async function main() {
   // prevents, behind a module everyone assumes is protecting them.
   const workspace = ensureLaneWorktree("hatta");
   if (!workspace.isolated) process.stderr.write(`hatta-dispatch: ${workspace.reason}\n`);
+  // Isolation is not the only thing worth saying out loud. A reused worktree
+  // may still hold an earlier run's files, and this lane's diff would then
+  // contain work nobody asked it to do. Nothing is cleaned here: those files
+  // are the only copy of work a lane already did.
+  if (workspace.dirty > 0) process.stderr.write(`hatta-dispatch: ${workspace.reason}\n`);
   // The harness jails to its OWN location, so the isolated tree only isolates
   // anything when the harness that runs is the one inside it.
   const harness = harnessScriptFor(workspace.path);

@@ -60,8 +60,25 @@ function git(args, { cwd = REPO_ROOT, _exec = execFileSync } = {}) {
 }
 
 /**
+ * How many uncommitted entries a worktree is carrying, as `git status
+ * --porcelain` counts them. Returns null — not 0 — when git cannot answer, so
+ * "no dirt" and "could not look" stay different facts.
+ */
+export function dirtyEntryCount(cwd, { _exec = execFileSync } = {}) {
+  try {
+    const out = git(["status", "--porcelain"], { cwd, _exec });
+    if (!out) return 0;
+    return out.split(/\r?\n/).filter((line) => line.trim()).length;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The worktree for `lane`, creating it if absent. Returns
- * { path, branch, created, reason }.
+ * { path, branch, created, dirty, reason }. `dirty` is the number of
+ * uncommitted entries in a REUSED worktree (0 when clean, null when git could
+ * not be asked), and 0 for one just created.
  *
  * NEVER THROWS. A dispatcher that cannot get an isolated tree must still be able
  * to run — degrading to the shared repo root is worse than isolation but far
@@ -80,12 +97,32 @@ export function ensureLaneWorktree(lane, deps = {}) {
     target = worktreePathFor(lane, { root });
     branch = branchNameFor(lane);
   } catch (err) {
-    return { path: repoRoot, branch: null, created: false, isolated: false, reason: `bad lane name: ${err.message}` };
+    return { path: repoRoot, branch: null, created: false, isolated: false, dirty: null, reason: `bad lane name: ${err.message}` };
   }
 
   try {
     if (_fs.existsSync(path.join(target, ".git"))) {
-      return { path: target, branch, created: false, isolated: true, reason: "existing worktree reused" };
+      // A reused worktree is not necessarily a clean one. A lane that timed out
+      // mid-edit leaves its files behind, and the next dispatch of the SAME lane
+      // starts on top of them — its diff then contains work nobody asked it to
+      // do. Measured on 2026-09-05: five of nine lane worktrees were dirty, one
+      // of them holding six files from a CORLEONE run that hit its 480s cap.
+      //
+      // Nothing is cleaned here on purpose: those leftovers are the only copy of
+      // work a lane already did, and deleting them to make a status line tidy is
+      // how real work disappears. The dirt is REPORTED instead, so the caller
+      // decides, and so it is visible in the log rather than inherited silently.
+      const dirty = dirtyEntryCount(target, { _exec });
+      return {
+        path: target,
+        branch,
+        created: false,
+        isolated: true,
+        dirty,
+        reason: dirty > 0
+          ? `existing worktree reused, and it is NOT clean: ${dirty} uncommitted entr${dirty === 1 ? "y" : "ies"} left by an earlier run`
+          : "existing worktree reused",
+      };
     }
     _fs.mkdirSync(root, { recursive: true });
 
@@ -93,7 +130,7 @@ export function ensureLaneWorktree(lane, deps = {}) {
     // branch may survive its worktree, and `git worktree add -b` on an existing
     // branch fails outright.
     git(["worktree", "add", "-B", branch, target, "HEAD"], { cwd: repoRoot, _exec });
-    return { path: target, branch, created: true, isolated: true, reason: "worktree created" };
+    return { path: target, branch, created: true, isolated: true, dirty: 0, reason: "worktree created" };
   } catch (err) {
     // Fall back to the shared root, and SAY SO. A silent fallback here would
     // recreate the exact bug this module exists to prevent, with a module in
@@ -103,6 +140,7 @@ export function ensureLaneWorktree(lane, deps = {}) {
       branch: null,
       created: false,
       isolated: false,
+      dirty: null,
       reason: `worktree unavailable, falling back to the shared repo root: ${err && err.message ? err.message : err}`,
     };
   }

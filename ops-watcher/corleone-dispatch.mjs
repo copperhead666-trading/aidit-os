@@ -311,6 +311,11 @@ export async function dispatchCorleone(prompt, deps = {}) {
   const workspace = (deps.ensureLaneWorktree || ensureLaneWorktree)("corleone");
   if (!workspace.isolated) process.stderr.write(`corleone-dispatch: ${workspace.reason}
 `);
+  // Isolation is not the only thing worth saying out loud. A reused worktree
+  // may still hold an earlier run's files, and this lane's diff would then
+  // contain work nobody asked it to do. Nothing is cleaned here: those files
+  // are the only copy of work a lane already did.
+  if (workspace.dirty > 0) process.stderr.write(`corleone-dispatch: ${workspace.reason}\n`);
   const t0 = now();
   const r = _spawnSync(file, args, {
     cwd: workspace.path,

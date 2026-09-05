@@ -161,6 +161,11 @@ export async function dispatchSjahrir(prompt, deps = {}) {
     const workspace = (deps.ensureLaneWorktree || ensureLaneWorktree)("sjahrir");
     if (!workspace.isolated) process.stderr.write(`sjahrir-dispatch: ${workspace.reason}
 `);
+    // Isolation is not the only thing worth saying out loud. A reused worktree
+    // may still hold an earlier run's files, and this lane's diff would then
+    // contain work nobody asked it to do. Nothing is cleaned here: those files
+    // are the only copy of work a lane already did.
+    if (workspace.dirty > 0) process.stderr.write(`sjahrir-dispatch: ${workspace.reason}\n`);
     const r = _spawn("kimi", buildKimiArgs(prompt), {
       cwd: workspace.path,
       windowsHide: true,

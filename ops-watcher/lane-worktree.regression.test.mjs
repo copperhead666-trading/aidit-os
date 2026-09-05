@@ -121,7 +121,37 @@ async function t4_reusesAnExistingWorktree() {
     const r = ensureLaneWorktree("sjahrir", { _fs: fs, _exec: ex.exec });
     assert.equal(r.isolated, true);
     assert.equal(r.created, false);
-    assert.equal(ex.calls.length, 0, "no git call at all when the tree is already there");
+    assert.equal(ex.calls.some((c) => c.args[0] === "worktree" && c.args[1] === "add"), false,
+      "an existing tree is never recreated");
+    // The one git call it MAY make is a read: how dirty is the tree it is about
+    // to hand over. Reused does not mean clean, and a lane that inherits another
+    // run's leftovers produces a diff containing work nobody asked it to do.
+    assert.deepEqual(ex.calls.map((c) => c.args.join(" ")), ["status --porcelain"],
+      "reuse asks exactly one read-only question and mutates nothing");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// A worktree handed over dirty is the E4 finding from the 2026-09-05 health
+// diagnosis: five of nine lane worktrees were carrying an earlier run's files.
+async function t4b_reuseReportsTheDirtItIsHandingOver() {
+  const name = "W4b a reused worktree reports how dirty it is, and an unanswerable git is not called clean";
+  try {
+    const fs = fakeFs({ exists: (p) => String(p).endsWith(".git") });
+    const dirty = fakeExec(() => [" M ops-watcher/routing.mjs", "?? scratch.txt", ""].join("\n"));
+    const r = ensureLaneWorktree("corleone", { _fs: fs, _exec: dirty.exec });
+    assert.equal(r.dirty, 2, "counts the uncommitted entries");
+    assert.match(r.reason, /NOT clean/, "the reason says it out loud");
+
+    const clean = fakeExec(() => "");
+    const r2 = ensureLaneWorktree("corleone", { _fs: fs, _exec: clean.exec });
+    assert.equal(r2.dirty, 0);
+    assert.equal(r2.reason, "existing worktree reused", "a clean tree gets no warning to ignore");
+
+    const broken = fakeExec(() => { throw new Error("fatal: not a git repository"); });
+    const r3 = ensureLaneWorktree("corleone", { _fs: fs, _exec: broken.exec });
+    assert.equal(r3.dirty, null, "could not look is not the same fact as no dirt");
+    assert.equal(r3.isolated, true, "an unanswerable status does not cost the lane its isolation");
     ok(name);
   } catch (err) { bad(name, err); }
 }
@@ -188,6 +218,7 @@ async function main() {
   await t2_laneNamesAreSanitised();
   await t3_createsTheWorktreeWhenAbsent();
   await t4_reusesAnExistingWorktree();
+  await t4b_reuseReportsTheDirtItIsHandingOver();
   await t5_fallbackIsReportedNotSilent();
   await t6_neverThrows();
   await t7_listParsesPorcelain();
