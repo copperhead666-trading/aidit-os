@@ -44,7 +44,7 @@
 //   node ops-watcher/soekarno-dispatch.mjs "<read-only question or review task>"
 
 import { spawnSync } from "node:child_process";
-import { writeFileSync, unlinkSync, mkdtempSync } from "node:fs";
+import fs, { writeFileSync, unlinkSync, mkdtempSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -147,6 +147,70 @@ export function buildSshArgs(host = SOEKARNO_HOST, remoteCommand = buildRemoteCo
   return [...SSH_OPTS, host, remoteCommand];
 }
 
+export function hostIsThisMachine(host, deps = {}) {
+  try {
+    if (typeof host !== "string") return false;
+    let hostPart = host.slice(host.lastIndexOf("@") + 1).trim();
+    if (!hostPart) return false;
+    if (hostPart.startsWith("[") && hostPart.endsWith("]")) hostPart = hostPart.slice(1, -1);
+    const normalized = hostPart.toLowerCase();
+    if (["localhost", "127.0.0.1", "::1"].includes(normalized)) return true;
+
+    const hostname = (deps.hostname || os.hostname)();
+    if (typeof hostname === "string" && hostname.trim().toLowerCase() === normalized) return true;
+
+    const interfaces = (deps.networkInterfaces || os.networkInterfaces)();
+    for (const entries of Object.values(interfaces || {})) {
+      if (!Array.isArray(entries)) continue;
+      for (const entry of entries) {
+        if (!entry || entry.internal) continue;
+        const family = entry.family;
+        if (family !== "IPv4" && family !== "IPv6" && family !== 4 && family !== 6) continue;
+        if (typeof entry.address === "string" && entry.address.toLowerCase() === normalized) return true;
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+export function resolveLocalClaude(deps = {}) {
+  try {
+    if (process.platform !== "win32") return "claude";
+    const _fs = deps._fs || fs;
+    const dirs = Array.isArray(deps.pathDirs) ? deps.pathDirs : (process.env.PATH || "").split(path.delimiter);
+    for (const dir of dirs) {
+      if (!dir) continue;
+      const cmd = path.join(dir, "claude.cmd");
+      let txt;
+      try { txt = _fs.readFileSync(cmd, "utf8"); } catch { continue; }
+      const quoted = txt.match(/"([^"]*node_modules[\\/][^"]*claude\.exe)"/i);
+      if (!quoted) continue;
+      const base = dir.endsWith(path.sep) ? dir : `${dir}${path.sep}`;
+      const entry = quoted[1].replace(/%dp0%/ig, base);
+      try { _fs.accessSync(entry); } catch { continue; }
+      return path.resolve(entry);
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function buildLocalClaudeArgs(prompt) {
+  return [
+    "-p",
+    prompt,
+    "--output-format",
+    "json",
+    "--allowedTools",
+    ...SOEKARNO_ALLOWED_TOOLS,
+    "--append-system-prompt",
+    SOEKARNO_SYSTEM_PROMPT,
+  ];
+}
+
 export async function dispatchSoekarno(prompt, deps = {}) {
   const _spawn = deps.spawnSync || spawnSync;
   const _log = deps.log || ((m) => process.stderr.write(m + "\n"));
@@ -173,6 +237,113 @@ export async function dispatchSoekarno(prompt, deps = {}) {
       extra: { skipped: true, reason },
     });
     return { ok: false, skipped: true, reason, stdout: "", stderr: msg };
+  }
+
+  if (hostIsThisMachine(SOEKARNO_HOST, deps)) {
+    const started = Date.now();
+    const localClaude = resolveLocalClaude(deps);
+    if (!localClaude) {
+      const durationMs = Date.now() - started;
+      const stderr = "local claude executable could not be resolved";
+      _log(`soekarno-dispatch: could not resolve local claude: ${stderr}`);
+      await recordLaneOutcome("soekarno", { ok: false, stdout: "", stderr });
+      await logLaneUsage({
+        lane: "soekarno",
+        promptLength: prompt.length,
+        ok: false,
+        exitCode: 2,
+        durationMs,
+        turns: null,
+        stdout: "",
+        stderr,
+        cli: null,
+        extra: { transport: "local" },
+      });
+      return { ok: false, stdout: "", stderr, timedOut: false };
+    }
+
+    const r = _spawn(localClaude, buildLocalClaudeArgs(prompt), {
+      encoding: "utf8",
+      timeout: timeoutMs,
+      shell: false,
+      windowsHide: true,
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    const durationMs = Date.now() - started;
+
+    if (r.error && r.error.code === "ETIMEDOUT") {
+      _log(`soekarno-dispatch: timed out after ${timeoutMs}ms`);
+      await recordLaneOutcome("soekarno", { ok: false, stdout: r.stdout || "", stderr: r.stderr || "", timedOut: true });
+      await logLaneUsage({
+        lane: "soekarno",
+        promptLength: prompt.length,
+        ok: false,
+        timedOut: true,
+        exitCode: 1,
+        durationMs,
+        turns: null,
+        stdout: r.stdout,
+        stderr: r.stderr,
+        cli: null,
+        extra: { transport: "local" },
+      });
+      return { ok: false, stdout: r.stdout || "", stderr: r.stderr || "", timedOut: true };
+    }
+    if (r.error) {
+      const stderr = r.error.message || String(r.error);
+      _log(`soekarno-dispatch: failed to run local claude: ${stderr}`);
+      await recordLaneOutcome("soekarno", { ok: false, stdout: "", stderr });
+      await logLaneUsage({
+        lane: "soekarno",
+        promptLength: prompt.length,
+        ok: false,
+        exitCode: 1,
+        durationMs,
+        turns: null,
+        stdout: "",
+        stderr,
+        cli: null,
+        extra: { transport: "local" },
+      });
+      return { ok: false, stdout: "", stderr, timedOut: false };
+    }
+
+    const exitCode = typeof r.status === "number" ? r.status : 1;
+    const parsed = parseClaudeJson(r.stdout || "");
+    if (!parsed.ok) {
+      const msg = `soekarno-dispatch: claude did not return a JSON result (${parsed.error}); refusing to treat raw output as the answer`;
+      _log(msg);
+      await recordLaneOutcome("soekarno", { ok: false, stdout: r.stdout || "", stderr: r.stderr || "" });
+      await logLaneUsage({
+        lane: "soekarno",
+        promptLength: prompt.length,
+        ok: false,
+        exitCode: 1,
+        durationMs,
+        turns: null,
+        stdout: r.stdout,
+        stderr: r.stderr,
+        cli: null,
+        extra: { transport: "local", invalidJson: true, parseError: parsed.error },
+      });
+      return { ok: false, stdout: "", stderr: msg, rawStdout: r.stdout || "", parseError: true, timedOut: false, exitCode: 1 };
+    }
+
+    const ok = exitCode === 0 && !parsed.isError;
+    await recordLaneOutcome("soekarno", { ok, stdout: parsed.result, stderr: r.stderr || "" });
+    await logLaneUsage({
+      lane: "soekarno",
+      promptLength: prompt.length,
+      ok,
+      exitCode,
+      durationMs,
+      turns: parsed.turns,
+      stdout: r.stdout,
+      stderr: r.stderr,
+      cli: parsed.cli,
+      extra: { transport: "local" },
+    });
+    return { ok, stdout: parsed.result, stderr: r.stderr || "", timedOut: false, exitCode, turns: parsed.turns, cli: parsed.cli };
   }
 
   const dir = deps.tmpDir || mkdtempSync(path.join(os.tmpdir(), "soekarno-"));
@@ -202,6 +373,7 @@ export async function dispatchSoekarno(prompt, deps = {}) {
         stdout: "",
         stderr,
         cli: null,
+        extra: { transport: "ssh" },
       });
       return { ok: false, stdout: "", stderr, timedOut: false };
     }
@@ -229,6 +401,7 @@ export async function dispatchSoekarno(prompt, deps = {}) {
         stdout: r.stdout,
         stderr: r.stderr,
         cli: null,
+        extra: { transport: "ssh" },
       });
       return { ok: false, stdout: r.stdout || "", stderr: r.stderr || "", timedOut: true };
     }
@@ -246,6 +419,7 @@ export async function dispatchSoekarno(prompt, deps = {}) {
         stdout: "",
         stderr,
         cli: null,
+        extra: { transport: "ssh" },
       });
       return { ok: false, stdout: "", stderr, timedOut: false };
     }
@@ -270,7 +444,7 @@ export async function dispatchSoekarno(prompt, deps = {}) {
         stdout: r.stdout,
         stderr: r.stderr,
         cli: null,
-        extra: { invalidJson: true, parseError: parsed.error },
+        extra: { transport: "ssh", invalidJson: true, parseError: parsed.error },
       });
       return { ok: false, stdout: "", stderr: msg, rawStdout: r.stdout || "", parseError: true, timedOut: false, exitCode: 1 };
     }
@@ -287,6 +461,7 @@ export async function dispatchSoekarno(prompt, deps = {}) {
       stdout: r.stdout,
       stderr: r.stderr,
       cli: parsed.cli,
+      extra: { transport: "ssh" },
     });
     return { ok, stdout: parsed.result, stderr: r.stderr || "", timedOut: false, exitCode, turns: parsed.turns, cli: parsed.cli };
   } finally {
