@@ -99,11 +99,16 @@ export function parseEscalationActionsFromComments(comments) {
   for (const c of comments) {
     const body = typeof c?.body === "string" ? c.body : "";
     if (!body.trimStart().startsWith(ESCALATION_ACTIONS_MARKER)) continue;
+    // The NEWEST declaration decides, even when it is broken. Reading past a
+    // malformed one would let a re-escalation silently inherit the previous
+    // round's buttons — the card would then offer an action this escalation
+    // never declared, which is the failure mode E2 exists to remove. A broken
+    // declaration falls back to the default card instead, and the caller logs.
     const json = body.slice(body.indexOf(ESCALATION_ACTIONS_MARKER) + ESCALATION_ACTIONS_MARKER.length).trim();
     let parsed;
-    try { parsed = JSON.parse(json); } catch { continue; }
+    try { parsed = JSON.parse(json); } catch { return null; }
     const v = validateEscalationActions(parsed && parsed.escalation_actions);
-    if (v.ok) return v.actions;
+    return v.ok ? v.actions : null;
   }
   return null;
 }
@@ -141,7 +146,10 @@ export function pendingEditRequest(comments, cardMessageId) {
     try { parsed = JSON.parse(json); } catch { continue; }
     const req = parsed && parsed.edit_requested;
     if (!req || typeof req !== "object") continue;
-    if (cardMessageId != null && req.message_id != null && String(req.message_id) !== String(cardMessageId)) continue;
+    // A request must name the card it came from before it can claim a reply.
+    // Matching a request with no message_id against every card would turn the
+    // owner's next reply to ANY card into a plan revision on this issue.
+    if (cardMessageId != null && String(req.message_id ?? "") !== String(cardMessageId)) continue;
     return req;
   }
   return null;

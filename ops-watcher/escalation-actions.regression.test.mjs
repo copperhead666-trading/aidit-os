@@ -74,13 +74,24 @@ await t("E2: a non-boolean flag is refused rather than coerced", () => {
   assert.match(v.reasons[0], /allow_accept/);
 });
 
-await t("E2: the newest declaration wins, and a broken one is skipped", () => {
+await t("E2: the newest declaration wins, and a broken one never inherits the last round's buttons", () => {
   const good = buildEscalationActionsCommentBody({ allow_accept: true, allow_edit: true });
   const older = buildEscalationActionsCommentBody({ allow_accept: true, allow_edit: false });
   // Paperclip returns comments NEWEST FIRST.
   assert.equal(parseEscalationActionsFromComments([comment(good), comment(older)]).allow_edit, true);
-  assert.equal(parseEscalationActionsFromComments([comment(`${ESCALATION_ACTIONS_MARKER} {not json`), comment(older)]).allow_edit, false);
+  // A malformed NEWEST declaration falls back to the default card rather than
+  // reading past it: inheriting the previous round's flags would offer an
+  // action this escalation never declared.
+  assert.equal(parseEscalationActionsFromComments([comment(`${ESCALATION_ACTIONS_MARKER} {not json`), comment(older)]), null);
   assert.equal(parseEscalationActionsFromComments([comment("just a comment")]), null);
+});
+
+await t("E2 edit: a request with NO message_id cannot claim a reply to a known card", () => {
+  // Otherwise the owner's next reply to any card at all becomes a plan revision
+  // on this issue.
+  const anonymous = comment(`${EDIT_REQUESTED_MARKER} ${JSON.stringify({ edit_requested: { short_id: "KOL-70", at: "2026-09-05T00:00:00.000Z" } })}`);
+  assert.equal(pendingEditRequest([anonymous], 4242), null, "a known card id must be matched, not assumed");
+  assert.ok(pendingEditRequest([anonymous], null), "with no card id in hand, the newest request still stands");
 });
 
 // --- the card ----------------------------------------------------------------
