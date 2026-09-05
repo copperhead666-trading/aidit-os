@@ -170,10 +170,30 @@ export function runSpawnReal(cmd, { timeoutMs = 4000, shell = process.platform =
       return resolve({ ok: false, code: null, error: String(err && err.message), signal: "spawn-threw" });
     }
     let out = "";
-    const timer = setTimeout(() => { try { child.kill("SIGTERM"); } catch { /* */ } }, timeoutMs);
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; try { child.kill("SIGTERM"); } catch { /* */ } }, timeoutMs);
     child.stdout.on("data", (d) => (out += d.toString()));
     child.on("error", (err) => { clearTimeout(timer); resolve({ ok: false, code: null, error: String(err && err.code || err && err.message), signal: "spawn-error" }); });
-    child.on("close", (code) => { clearTimeout(timer); resolve({ ok: code === 0, code, error: null, signal: code === 0 ? "binary-responsive" : `exit_${code}`, version: out.trim() }); });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      const version = out.trim();
+      // A binary that PRINTED its version answered the only question this probe
+      // asks, even if it was still shutting down when the timer killed it.
+      // Measured 2026-09-05: `kimi --version` printed "0.40.1" and then took
+      // 5.2s to exit against a 4s cap, so SJAHRIR was reported DOWN with
+      // signal exit_null while its CLI was working perfectly. Calling a lane
+      // dead because it exits slowly costs the whole lane, and a system that
+      // loses a lane for that reason ends up leaning on one lane — which is the
+      // failure the owner asked to stop.
+      //
+      // Only an answer counts. A kill with no output stays a failure, because
+      // that is what a genuinely hung binary looks like.
+      if (code !== 0 && timedOut && version) {
+        resolve({ ok: true, code, error: null, signal: "binary-responsive-slow", version, timedOut: true });
+        return;
+      }
+      resolve({ ok: code === 0, code, error: null, signal: code === 0 ? "binary-responsive" : `exit_${code}`, version, timedOut });
+    });
   });
 }
 

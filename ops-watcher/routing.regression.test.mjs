@@ -25,6 +25,7 @@ import {
   QUOTA_COOLDOWN_MS,
   quotaReasonExcerpt,
   laneFitness,
+  runSpawnReal,
   compareLaneModels,
   laneModelReport,
   reportsOnlyAVersion,
@@ -1043,6 +1044,41 @@ function kol88_versionOnlyIsNotDrift() {
   } catch (err) { bad(name, err); }
 }
 
+// A lane that PRINTED its version answered the only question the probe asks.
+// Measured 2026-09-05: `kimi --version` printed 0.40.1 and then took 5.2s to
+// exit against a 4s cap, so SJAHRIR was reported DOWN while its CLI worked.
+// Losing a lane to a slow exit is how a fleet ends up leaning on one lane.
+async function probe_slowBinaryThatAnsweredIsNotDown() {
+  const name = "a binary that printed its version before the timeout killed it is responsive, not down";
+  try {
+    const answered = await runSpawnReal(
+      [process.execPath, "-e", "console.log('9.9.9'); setTimeout(()=>{}, 10000);"],
+      { timeoutMs: 400, shell: false },
+    );
+    assert.equal(answered.ok, true, "an answer counts even when the exit did not arrive in time");
+    assert.equal(answered.signal, "binary-responsive-slow", "and the slowness stays visible in the signal");
+    assert.equal(answered.version, "9.9.9");
+    assert.equal(answered.timedOut, true);
+
+    // A kill with NO output is what a genuinely hung binary looks like, and
+    // that must still be a failure or the probe stops meaning anything.
+    const silent = await runSpawnReal(
+      [process.execPath, "-e", "setTimeout(()=>{}, 10000);"],
+      { timeoutMs: 400, shell: false },
+    );
+    assert.equal(silent.ok, false, "silence under the timeout is still a failure");
+    assert.equal(silent.version, "");
+
+    const clean = await runSpawnReal(
+      [process.execPath, "-e", "console.log('1.2.3');"],
+      { timeoutMs: 8000, shell: false },
+    );
+    assert.equal(clean.ok, true);
+    assert.equal(clean.signal, "binary-responsive", "a normal exit keeps the plain signal");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
 async function main() {
   console.log("# ops-watcher PHASE-4 routing regression tests");
   await testLaneMapping();
@@ -1052,6 +1088,7 @@ async function main() {
   await testProbeClaudeRemoteHostKeepsSshProbe();
   await testProbeClaudeLocalUnresolvableDoesNotFallbackToSsh();
   await testProbeUnprobeable();
+  await probe_slowBinaryThatAnsweredIsNotDown();
   await kol88_compareLaneModelsVerdicts();
   await kol88_laneModelReportNeverThrowsWhenProbeFails();
   kol88_versionOnlyIsNotDrift();
