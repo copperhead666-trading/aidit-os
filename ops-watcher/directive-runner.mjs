@@ -2299,7 +2299,10 @@ export function ventureHeadCommit(venture, deps = {}) {
   }
 }
 
-function activeGraphAnchorsForFiles(files, deps = {}) {
+// Exported for the venture-routing regression test: the routing branch below is
+// where a venture file silently lost its anchors, and testing it through
+// buildExecutionPrompt would need a real venture checkout to read.
+export function activeGraphAnchorsForFiles(files, deps = {}) {
   if (!files.length) return new Map();
 
   // Route first. When a plan touches a venture, that venture's files are
@@ -2311,15 +2314,45 @@ function activeGraphAnchorsForFiles(files, deps = {}) {
     if (routes.size > 1 || (routes.size === 1 && !routes.has("aidit"))) {
       const merged = new Map();
       for (const route of routes.values()) {
-        const sub = activeGraphAnchorsForFiles(route.files, {
+        // W8's content check reads the files the graph describes, so a VENTURE
+        // route must read them in the VENTURE's tree. Measured on the first
+        // real venture graph (caveman-trading-os, 4,263 nodes, stamp matching
+        // its HEAD): with sourceRoot left at the Aidit OS root, every sampled
+        // symbol resolved to a path that does not exist here, the check saw
+        // nothing to confirm, and the route emitted no anchors at all — the
+        // freshness call answered `fresh:true` only when handed the venture
+        // root by hand.
+        const routeSourceRoot = route.venture?.repoPath
+          ? path.join(deps.repoRoot || REPO_ROOT, String(route.venture.repoPath))
+          : (deps.sourceRoot || deps.repoRoot || REPO_ROOT);
+        // A venture graph describes files by paths relative to the VENTURE
+        // root (`src/caveman_outcomes/engine.py`), while a plan names them
+        // relative to Aidit OS (`ventures/caveman-trading-os/src/...`). Nothing
+        // ever matched, so a venture file could not receive an anchor at all —
+        // invisible until the first venture graph existed to be read. The
+        // prefix comes off for the lookup and goes back on for the caller.
+        const base = route.venture?.repoPath
+          ? String(route.venture.repoPath).replace(/\\/g, "/").replace(/\/+$/, "")
+          : "";
+        const lookupFiles = base
+          ? route.files.map((f) => (f === base ? f : f.startsWith(`${base}/`) ? f.slice(base.length + 1) : f))
+          : route.files;
+        const sub = activeGraphAnchorsForFiles(lookupFiles, {
           ...deps,
           singleGraph: true,
           ventures: [],
           graphFile: route.graphFile,
+          sourceRoot: routeSourceRoot,
           ...(route.stampFile ? { stampFile: route.stampFile } : {}),
           ...(route.repoCommit !== undefined ? { repoCommit: route.repoCommit } : {}),
         });
-        for (const [k, v] of sub) merged.set(k, v);
+        if (!merged.sourceByFile) merged.sourceByFile = new Map();
+        const routeGraphLabel = path.relative(deps.repoRoot || REPO_ROOT, route.graphFile).replace(/\\/g, "/");
+        for (const [k, v] of sub) {
+          const key = base && !k.startsWith(`${base}/`) ? `${base}/${k}` : k;
+          merged.set(key, v);
+          if (v.length) merged.sourceByFile.set(key, routeGraphLabel);
+        }
       }
       return merged;
     }
@@ -2456,9 +2489,12 @@ function activeGraphAnchorsForFiles(files, deps = {}) {
 function formatExecutionFileLine(file, graphAnchors) {
   const normalized = normalizeGraphRepoPath(file);
   const anchors = graphAnchors.get(normalized) || [];
-  return anchors.length
-    ? `- ${file} (KG anchors from graphify-out/active/graph.json: ${anchors.join("; ")})`
-    : `- ${file}`;
+  if (!anchors.length) return `- ${file}`;
+  // Name the graph the anchors ACTUALLY came from. A venture file is answered
+  // by that venture's own graph, and telling the lane it came from the Aidit OS
+  // graph would be a false citation on the one line it is meant to trust.
+  const source = (graphAnchors.sourceByFile && graphAnchors.sourceByFile.get(normalized)) || "graphify-out/active/graph.json";
+  return `- ${file} (KG anchors from ${source}: ${anchors.join("; ")})`;
 }
 
 // Side-effect-free. Returns the implementation prompt for the lane. Contains, in

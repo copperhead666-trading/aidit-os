@@ -46,6 +46,7 @@ import {
   recordExecutionFailure,
   clearExecutionFailures,
   executionCapReached,
+  activeGraphAnchorsForFiles,
   graphFreshnessWithContent,
   setGraphContentVerifier,
   clearGraphContentCache,
@@ -2326,6 +2327,54 @@ await t("E2: a revised plan posted after an approval leaves the issue awaiting, 
   assert.equal(res.executed, 0);
   assert.equal(res.approved.length, 0, "the approval no longer applies to the newest plan");
   assert.equal(res.awaitingApproval.some((a) => a.identifier === "KOL-95"), true, "it is his decision again");
+});
+
+// =====================================================================
+// A VENTURE FILE MUST ACTUALLY RECEIVE ITS VENTURE'S ANCHORS.
+//
+// Found the day the first venture graph existed (caveman-trading-os, 4,263
+// nodes, stamped at its own HEAD, content check 10/10): the plan names a file
+// as ventures/<id>/src/x.py while the venture graph describes it as src/x.py,
+// so nothing matched and the file line came back bare. The content check made
+// it worse by reading the venture's files under the Aidit OS root, where they
+// do not exist.
+// =====================================================================
+
+await t("a venture file gets anchors from its OWN graph, and the citation says so", async () => {
+  const ventures = [{ id: "demo-venture", status: "active", repoPath: "ventures/demo-venture" }];
+  // The venture graph speaks in VENTURE-relative paths.
+  const graph = {
+    nodes: [
+      { id: "fn:resolveBar", label: "resolveBar", type: "function", source_file: "src/engine.py", source_location: "src/engine.py:42" },
+    ],
+    edges: [],
+  };
+  const seenSourceRoots = [];
+  const anchors = activeGraphAnchorsForFiles(["ventures/demo-venture/src/engine.py"], {
+    ventures,
+    planText: "resolveBar",
+    readText: (p) => (String(p).endsWith(".stamp") ? "venturehead" : JSON.stringify(graph)),
+    repoCommit: "aiditoshead",
+    ventureHeadCommit: () => "venturehead",
+    verifyContent: (_g, deps) => {
+      seenSourceRoots.push(String(deps.sourceRoot || "").replace(/\\/g, "/"));
+      return { verified: true, checked: 1, skipped: 0, mismatches: [], reason: "stubbed" };
+    },
+    contentCache: new Map(),
+  });
+
+  const key = "ventures/demo-venture/src/engine.py";
+  assert.ok(anchors.get(key) && anchors.get(key).length, `the venture file must carry anchors, got ${JSON.stringify([...anchors])}`);
+  assert.match(anchors.get(key)[0], /resolveBar/);
+  assert.ok(
+    seenSourceRoots.some((r) => r.endsWith("ventures/demo-venture")),
+    `the content check must read the VENTURE tree, saw ${JSON.stringify(seenSourceRoots)}`,
+  );
+  assert.match(
+    String(anchors.sourceByFile && anchors.sourceByFile.get(key)),
+    /ventures\/demo-venture\/graph\.json$/,
+    "the citation names the venture's own graph, not the Aidit OS one",
+  );
 });
 
 // =====================================================================
