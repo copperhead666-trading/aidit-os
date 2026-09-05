@@ -53,6 +53,7 @@ function stagedFiles() {
       cwd: REPO_ROOT,
       encoding: "utf8",
       maxBuffer: 32 * 1024 * 1024,
+      windowsHide: true,
     })
       .split("\0")
       .filter(Boolean);

@@ -62,7 +62,7 @@ export const ALLOWED_EMPTY_FILES = Object.freeze({
  */
 export function findEmptyTrackedFiles({ root = REPO_ROOT, listFiles, statSize } = {}) {
   const list = listFiles || (() =>
-    execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 })
+    execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024, windowsHide: true })
       .split("\0")
       .filter(Boolean));
   const size = statSize || ((rel) => {

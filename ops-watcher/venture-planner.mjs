@@ -110,7 +110,7 @@ export async function stampGraphCommit(commit, deps = {}) {
 export async function currentRepoCommit(deps = {}) {
   if (typeof deps.repoCommit === "function") return deps.repoCommit(deps);
   const cwd = nonBlank(deps.cwd) || nonBlank(deps.repoPath) || MODULE_DIR;
-  const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd });
+  const { stdout } = await execFileAsync("git", ["rev-parse", "HEAD"], { cwd, windowsHide: true });
   return nonBlank(stdout);
 }
 

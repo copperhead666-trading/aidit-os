@@ -67,6 +67,7 @@ async function runShimInSandbox(shim, daemon) {
       cwd: dir,
       encoding: "utf8",
       timeout: 30_000,
+      windowsHide: true,
     });
     return stdout;
   } finally {

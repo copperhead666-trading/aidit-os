@@ -268,7 +268,7 @@ async function runGitignoreCoverage() {
     let ignored = false;
     let matchedPattern = null;
     try {
-      const r = await execFileAsync("git", ["check-ignore", "-v", rel], { cwd: ROOT });
+      const r = await execFileAsync("git", ["check-ignore", "-v", rel], { cwd: ROOT, windowsHide: true });
       ignored = true;
       matchedPattern = r.stdout.trim();
     } catch {
@@ -468,6 +468,7 @@ async function runAdversarialGuardTest() {
       cwd: ROOT,
       maxBuffer: 1024 * 1024,
       timeout: 30_000,
+      windowsHide: true,
     });
     return { ok: true, stdout: r.stdout, exitCode: 0, summaryLine: extractSummary(r.stdout) };
   } catch (err) {

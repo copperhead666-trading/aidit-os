@@ -56,7 +56,7 @@ export function branchNameFor(lane) {
 }
 
 function git(args, { cwd = REPO_ROOT, _exec = execFileSync } = {}) {
-  return String(_exec("git", args, { cwd, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 })).trim();
+  return String(_exec("git", args, { cwd, encoding: "utf8", maxBuffer: 32 * 1024 * 1024, windowsHide: true })).trim();
 }
 
 /**

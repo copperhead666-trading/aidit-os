@@ -28,6 +28,7 @@ function hooksDir() {
   const out = execFileSync("git", ["rev-parse", "--git-common-dir"], {
     cwd: REPO_ROOT,
     encoding: "utf8",
+    windowsHide: true,
   }).trim();
   return path.resolve(REPO_ROOT, out, "hooks");
 }

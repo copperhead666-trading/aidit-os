@@ -690,7 +690,7 @@ async function testCockpitUsesTokenLoadingShim() {
     // failure with the cockpit simply never coming up. `node --check` parses
     // the file without executing it, so this cannot start a second cockpit on
     // a port that is already in use.
-    const parsed = spawnSync(process.execPath, ["--check", shimPath], { encoding: "utf8" });
+    const parsed = spawnSync(process.execPath, ["--check", shimPath], { encoding: "utf8", windowsHide: true });
     assert.equal(
       parsed.status,
       0,

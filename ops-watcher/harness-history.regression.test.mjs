@@ -389,6 +389,7 @@ await t("H11 default MAX_ITERATIONS agrees with the outer budget over per-call t
   const runProbe = async (env) => {
     const { stdout } = await execFileAsync(process.execPath, ["--input-type=module", "--eval", probe], {
       env: { ...process.env, ...env },
+      windowsHide: true,
     });
     return JSON.parse(stdout.trim().split("\n").at(-1));
   };
