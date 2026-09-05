@@ -183,6 +183,67 @@ should clear once the directive gets a plan.
 
 ---
 
+## 2b. Orchestrate this. Do not solo it.
+
+The owner has asked twice for orchestration, and every commit so far has been by
+SOEKARNO's own hand. Some of that was correct — verification and correcting a
+mutation that failed to fire is verification work, and that stays here. Writing
+twelve items alone is not.
+
+### Measured lane shapes, this session — dispatch on evidence, not preference
+
+| lane | n | ok | wasted time | what it is actually good for |
+|---|---|---|---|---|
+| CORLEONE (codex) | 153 | 71% | 36% | The only lane with real multi-file delivery. p50 270s; at `--effort low` one sample ran 101s |
+| HATTA (ollama glm-5.3:cloud) | 69 | 55% | 57% | Small anchored single-file edits. `MAX_ITERATIONS = 4` is derived from 480s/120s and is correct — do not raise it |
+| SJAHRIR (kimi) | 5 | 20% | 92% | Analysis and review, not implementation. Three 480s timeouts on ~450-line file pairs |
+| GIBRAN (hermes/nous, free) | — | — | — | VERDICT review only. Free tier, dispatch lightly, truncates list-shaped answers |
+
+`ok` means exit 0 and nothing more: two runs that TIMED OUT delivered usable
+work, and CORLEONE once reported success having delivered 2 of 7 requested
+guards.
+
+### Rules that came from things that went wrong
+
+- **One writer per file, always.** Give each lane an isolated worktree —
+  `lane-worktree.mjs` exists now and `git worktree list` shows real trees.
+- **W1 and W8 touch the same file.** Serialize them. Everything else in §2 is
+  file-disjoint and can run in parallel.
+- **CORLEONE has failed three consecutive times on `directive-runner.mjs`** —
+  regexes over issue text instead of the graph, then 1 of 4 constraints, then
+  nothing at all. Do not send it there a fourth time on trust: quote the lock
+  shape from `test-runner.mjs` verbatim in the packet and name it
+  non-negotiable, or keep that file here.
+- **Never dispatch an open-ended multi-edit task.** Pre-compute the exact
+  content and dispatch a copy-and-verify task instead; an open-ended one has
+  already produced pure deliberation and zero edits.
+- **A double quote in a packet truncates it.** A 4,565-character packet arrived
+  as 2,353, cut at an embedded quote, and a lane then acted on the fragment —
+  which reads exactly like a lane ignoring instructions it never received.
+- **Verification does not get delegated.** Fast-forward, run the suite here,
+  read the changed code, run one real dispatch. Every real correction this
+  session came from that and none from reading a report.
+
+### A dispatch plan that fits these constraints
+
+```
+parallel   W2  headless audit          mechanical and wide       HATTA, per file, anchored
+           W3  telegram-notify         one file, small           CORLEONE --effort low
+           W4  telegram-listener       one file, small           CORLEONE --effort low
+           W9  soekarno-dispatch       one branch                HATTA
+           W5b venture-gate test       one file                  CORLEONE
+serialize  W1  directive-runner lock   highest consequence       here, or CORLEONE with the
+                                                                 lock shape quoted verbatim
+           W8  reader content check    same file as W1           after W1 lands
+           W5a anchor symbol filter    same file as W1           after W8 lands
+later      W6, W7  four actions + brief gate, several producers  scope tightly, one file each
+           W10, W11  new files                                   parallel, any lane
+```
+
+Report once when the run is done, not per item.
+
+---
+
 ## 3. Approved in direction, deliberately not started
 
 **INTAKE BRIEF** — `docs/prd/intake-brief.md`. A gate that makes AHMAD ask before
