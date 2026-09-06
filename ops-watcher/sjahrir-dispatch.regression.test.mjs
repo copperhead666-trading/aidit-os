@@ -7,7 +7,7 @@
 //   node ops-watcher/sjahrir-dispatch.regression.test.mjs
 
 import assert from "node:assert/strict";
-import { buildKimiArgs, parseKimiStream } from "./sjahrir-dispatch.mjs";
+import { buildKimiArgs, dispatchSjahrir, parseKimiStream } from "./sjahrir-dispatch.mjs";
 import { mergeRufloLaneEnv } from "./ruflo-lane-context.mjs";
 
 let passed = 0;
@@ -33,6 +33,46 @@ function run(name, fn) {
   } catch (err) {
     bad(name, err);
   }
+}
+
+async function runAsync(name, fn) {
+  try {
+    await fn();
+    ok(name);
+  } catch (err) {
+    bad(name, err);
+  }
+}
+
+function makeDispatchDeps(spawnResult, overrides = {}) {
+  const calls = [];
+  const usage = [];
+  const outcomes = [];
+  const worktrees = [];
+  return {
+    calls,
+    usage,
+    outcomes,
+    worktrees,
+    spawnSync: (file, args, options) => {
+      calls.push({ file, args, options });
+      return spawnResult;
+    },
+    log: () => {},
+    guardLaneStart: async () => ({ skip: false }),
+    recordLaneOutcome: async (lane, outcome) => { outcomes.push({ lane, outcome }); },
+    logLaneUsage: async (record) => { usage.push(record); },
+    sourceRepoForPrompt: async () => ({ sourceRepo: null, ventureId: null, reason: "not venture work" }),
+    ensureLaneWorktree: (lane, options = {}) => {
+      worktrees.push({ lane, options });
+      return { path: `D:/tmp/lane-${lane}`, isolated: true, dirty: 0, reason: "test worktree" };
+    },
+    now: (() => {
+      let t = 1000;
+      return () => { t += 25; return t; };
+    })(),
+    ...overrides,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -231,6 +271,41 @@ run("T7: parseKimiStream — never throws on hostile input", () => {
     assert.doesNotThrow(() => { r = parseKimiStream(hostile); }, `T7: ${String(hostile).slice(0, 30)}... must not throw`);
     assert.ok(r && "turns" in r && "cli" in r && "text" in r, "T7: always returns a complete { turns, cli, text } record");
   }
+});
+
+await runAsync("T8: venture prompts pass sourceRepo into ensureLaneWorktree", async () => {
+  const sourceRepo = "D:/ventures/caveman-trading-os";
+  const deps = makeDispatchDeps({ status: 0, stdout: JSON.stringify({ type: "assistant", content: "ok" }), stderr: "" }, {
+    sourceRepoForPrompt: async () => ({
+      sourceRepo,
+      ventureId: "caveman-trading-os",
+      reason: "venture caveman-trading-os repository selected",
+    }),
+  });
+  await dispatchSjahrir("VENTURE_ID: caveman-trading-os\nwork", deps);
+
+  assert.equal(deps.worktrees.length, 1, "one worktree request");
+  assert.deepEqual(deps.worktrees[0].options, { sourceRepo });
+});
+
+await runAsync("T9: plain prompts do not add a sourceRepo key to worktree options", async () => {
+  const deps = makeDispatchDeps({ status: 0, stdout: JSON.stringify({ type: "assistant", content: "ok" }), stderr: "" });
+  await dispatchSjahrir("plain Aidit OS work", deps);
+
+  assert.equal(deps.worktrees.length, 1, "one worktree request");
+  assert.equal(Object.prototype.hasOwnProperty.call(deps.worktrees[0].options, "sourceRepo"), false);
+});
+
+await runAsync("T10: source resolver failure falls back to Aidit OS and still spawns", async () => {
+  const deps = makeDispatchDeps({ status: 0, stdout: JSON.stringify({ type: "assistant", content: "ok" }), stderr: "" }, {
+    sourceRepoForPrompt: async () => { throw new Error("resolver down"); },
+  });
+  const result = await dispatchSjahrir("VENTURE_ID: caveman-trading-os\nwork", deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(deps.calls.length, 1, "Kimi still spawns");
+  assert.equal(deps.calls[0].options.cwd, "D:/tmp/lane-sjahrir");
+  assert.equal(Object.prototype.hasOwnProperty.call(deps.worktrees[0].options, "sourceRepo"), false);
 });
 
 // ---------------------------------------------------------------------------

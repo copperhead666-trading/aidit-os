@@ -16,6 +16,7 @@ import { logLaneUsage } from "./lane-usage.mjs";
 import { ensureLaneWorktree } from "./lane-worktree.mjs";
 import { guardLaneStart, recordLaneOutcome } from "./lane-guard.mjs";
 import { mergeRufloLaneEnv, withRufloLanePrelude } from "./ruflo-lane-context.mjs";
+import { sourceRepoForPrompt } from "./lane-source-repo.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -106,7 +107,14 @@ export function parseKimiStream(raw) {
 export async function dispatchSjahrir(prompt, deps = {}) {
   const _spawn = deps.spawnSync || spawnSync;
   const _log = deps.log || ((m) => process.stderr.write(m + "\n"));
-  const t0 = Date.now();
+  const _guardLaneStart = deps.guardLaneStart || guardLaneStart;
+  const _recordLaneOutcome = deps.recordLaneOutcome || recordLaneOutcome;
+  const _logLaneUsage = deps.logLaneUsage || logLaneUsage;
+  const _ensureLaneWorktree = deps.ensureLaneWorktree || ensureLaneWorktree;
+  const _sourceRepoForPrompt = deps.sourceRepoForPrompt || sourceRepoForPrompt;
+  const now = deps.now || Date.now;
+  const timeoutMs = deps.timeoutMs || TIMEOUT_MS;
+  const t0 = now();
   const runId = typeof deps.runId === "string" && deps.runId.trim()
     ? deps.runId
     : (typeof process.env.LANE_RUN_ID === "string" && process.env.LANE_RUN_ID.trim() ? process.env.LANE_RUN_ID : randomUUID());
@@ -122,13 +130,13 @@ export async function dispatchSjahrir(prompt, deps = {}) {
     // .exe case. If `kimi` ever becomes a .cmd shim in the future, the right fix
     // is the same bypass-the-shim approach used in corleone-dispatch.mjs (spawn
     // node on the underlying entry script with shell:false), NOT shell:true.
-    const guard = await guardLaneStart("sjahrir");
+    const guard = await _guardLaneStart("sjahrir");
     if (guard.skip) {
       const reason = guard.reason || "unknown";
       const retryMinutes = Math.ceil(guard.remainingMs / 60000);
       const msg = `sjahrir-dispatch: lane skipped (${reason}), retry in ${retryMinutes}m — no spawn attempted`;
       _log(msg);
-      await logLaneUsage({
+      await _logLaneUsage({
         lane: "sjahrir",
         runId,
         promptLength: prompt.length,
@@ -159,7 +167,18 @@ export async function dispatchSjahrir(prompt, deps = {}) {
     // the shared root with isolated:false and a reason, which is logged rather
     // than swallowed — a silent fallback would rebuild the exact bug this
     // prevents, behind a module everyone assumes is protecting them.
-    const workspace = (deps.ensureLaneWorktree || ensureLaneWorktree)("sjahrir");
+    let source;
+    try {
+      source = await _sourceRepoForPrompt(prompt);
+    } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      source = { sourceRepo: null, ventureId: null, reason: `source repo resolver failed; treating as not venture work: ${msg}` };
+      process.stderr.write(`sjahrir-dispatch: ${source.reason}\n`);
+    }
+    if (!source || typeof source !== "object") source = { sourceRepo: null, ventureId: null, reason: "not venture work" };
+    const workspace = _ensureLaneWorktree("sjahrir", source.sourceRepo ? { sourceRepo: source.sourceRepo } : {});
+    if (source.sourceRepo) process.stderr.write(`sjahrir-dispatch: ${source.reason}; worktree ${workspace.path}\n`);
+    else if (source.ventureId) process.stderr.write(`sjahrir-dispatch: ${source.reason}; continuing in Aidit OS\n`);
     if (!workspace.isolated) process.stderr.write(`sjahrir-dispatch: ${workspace.reason}
 `);
     // Isolation is not the only thing worth saying out loud. A reused worktree
@@ -167,15 +186,15 @@ export async function dispatchSjahrir(prompt, deps = {}) {
     // contain work nobody asked it to do. Nothing is cleaned here: those files
     // are the only copy of work a lane already did.
     if (workspace.dirty > 0) process.stderr.write(`sjahrir-dispatch: ${workspace.reason}\n`);
-    const r = _spawn("kimi", buildKimiArgs(prompt, { budgetMs: TIMEOUT_MS }), {
+    const r = _spawn("kimi", buildKimiArgs(prompt, { budgetMs: timeoutMs }), {
       cwd: workspace.path,
       windowsHide: true,
-      timeout: TIMEOUT_MS,
+      timeout: timeoutMs,
       encoding: "utf8",
       maxBuffer: 16 * 1024 * 1024,
       env: mergeRufloLaneEnv(process.env),
     });
-    const durationMs = Date.now() - t0;
+    const durationMs = now() - t0;
     const stdout = typeof r.stdout === "string" ? r.stdout : "";
     const stderr = typeof r.stderr === "string" ? r.stderr : "";
     const parsed = parseKimiStream(stdout);
@@ -188,10 +207,10 @@ export async function dispatchSjahrir(prompt, deps = {}) {
 
     if (r.signal === "SIGTERM" && r.status === null) {
       // spawnSync sets status=null + signal="SIGTERM" on timeout kill.
-      const msg = `sjahrir-dispatch: kimi timed out after ${TIMEOUT_MS}ms`;
+      const msg = `sjahrir-dispatch: kimi timed out after ${timeoutMs}ms`;
       _log(msg);
-      await recordLaneOutcome("sjahrir", { ok: false, stdout, stderr, timedOut: true });
-      await logLaneUsage({
+      await _recordLaneOutcome("sjahrir", { ok: false, stdout, stderr, timedOut: true });
+      await _logLaneUsage({
         lane: "sjahrir",
         runId,
         promptLength: prompt.length,
@@ -209,8 +228,8 @@ export async function dispatchSjahrir(prompt, deps = {}) {
     if (r.error) {
       const msg = `sjahrir-dispatch: failed to spawn kimi: ${r.error && r.error.message ? r.error.message : r.error}`;
       _log(msg);
-      await recordLaneOutcome("sjahrir", { ok: false, stdout, stderr });
-      await logLaneUsage({
+      await _recordLaneOutcome("sjahrir", { ok: false, stdout, stderr });
+      await _logLaneUsage({
         lane: "sjahrir",
         runId,
         promptLength: prompt.length,
@@ -225,8 +244,8 @@ export async function dispatchSjahrir(prompt, deps = {}) {
       return { ok: false, timedOut: false, stdout: readable, stderr: stderr ? `${stderr}\n${msg}` : msg, exitCode: 1, runId };
     }
     const exitCode = typeof r.status === "number" ? r.status : 1;
-    await recordLaneOutcome("sjahrir", { ok: exitCode === 0, stdout, stderr });
-    await logLaneUsage({
+    await _recordLaneOutcome("sjahrir", { ok: exitCode === 0, stdout, stderr });
+    await _logLaneUsage({
       lane: "sjahrir",
       runId,
       promptLength: prompt.length,
@@ -244,15 +263,15 @@ export async function dispatchSjahrir(prompt, deps = {}) {
     // is worse than a reported failure.
     const msg = `sjahrir-dispatch: unexpected failure: ${err && err.message ? err.message : err}`;
     _log(msg);
-    try { await recordLaneOutcome("sjahrir", { ok: false, stdout: "", stderr: msg }); } catch { /* guard must not break the lane either */ }
+    try { await _recordLaneOutcome("sjahrir", { ok: false, stdout: "", stderr: msg }); } catch { /* guard must not break the lane either */ }
     try {
-      await logLaneUsage({
+      await _logLaneUsage({
         lane: "sjahrir",
         runId,
         promptLength: prompt.length,
         ok: false,
         exitCode: 1,
-        durationMs: Date.now() - t0,
+        durationMs: now() - t0,
         turns: null,
         stdout: "",
         stderr: msg,
