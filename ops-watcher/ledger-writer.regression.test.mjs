@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 
 import { KINDS } from "./ledger-schema.mjs";
+import { foldDirectives } from "./projections.mjs";
 import {
   TELEGRAM_SENT_MARKER,
   commentsOldestFirst,
@@ -439,6 +440,70 @@ async function t16_nonDirectiveIssuesDoNotWritePlanEvents() {
   ok("T16: issues without DIRECTIVE label do not write plan posted/refused events");
 }
 
+async function t17_directiveResultCommentWritesCompletionEventOnce() {
+  const entries = [{
+    issue: issue(),
+    comments: [
+      comment("c-result", "DIRECTIVE RESULT (2026-09-06T12:00:00.000Z): directive telah dikerjakan dan diverifikasi.", "2026-09-06T12:00:00.000Z"),
+      comment("c-empty", "", "2026-09-06T12:01:00.000Z"),
+      comment("c-null", null, "2026-09-06T12:01:30.000Z"),
+    ],
+  }];
+  const h = harness({ entries });
+
+  const first = await runLedgerWriterOnce(h.deps);
+  const second = await runLedgerWriterOnce(h.deps);
+  const appended = h.appendedBatches[0] || [];
+  const completionEvents = appended.filter((ev) => ev.kind === KINDS.DIRECTIVE_COMPLETED);
+
+  assert.equal(first.ok, true);
+  assert.equal(first.appended, 2, "directive.created plus one completion event");
+  assert.equal(first.unclassified, 2, "empty and null bodies are skipped without throwing");
+  assert.equal(completionEvents.length, 1, "exactly one directive.completed event is emitted");
+  assert.equal(completionEvents[0].ts, "2026-09-06T12:00:00.000Z");
+  assert.equal(completionEvents[0].data.issueId, "iss-1");
+  assert.equal(completionEvents[0].data.identifier, "KOL-1");
+  assert.equal(completionEvents[0].data.commentId, "c-result");
+  assert.equal(completionEvents[0].data.marker, "DIRECTIVE RESULT");
+  assert.equal(second.appended, 0, "second sweep does not emit a duplicate completion event");
+  ok("T17: DIRECTIVE RESULT comment writes one completion event, twice-run safe, malformed bodies skipped");
+}
+
+async function t18_nonDirectiveIssuesDoNotWriteCompletionEvents() {
+  const entries = [{
+    issue: issue({ labels: [], id: "iss-no-directive", identifier: "KOL-NODIR" }),
+    comments: [
+      comment("c-result-no-label", "DIRECTIVE RESULT (2026-09-06T12:00:00.000Z): ignored", "2026-09-06T12:00:00.000Z"),
+    ],
+  }];
+  const h = harness({ entries });
+
+  const result = await runLedgerWriterOnce(h.deps);
+
+  assert.equal(result.appended, 0);
+  assert.equal(result.derived, 0);
+  assert.equal(h.appendedBatches.length, 0);
+  ok("T18: issues without DIRECTIVE label do not write completion events");
+}
+
+async function t19_planPostedWithoutCompletionIsStillNotDone() {
+  const events = [
+    event({
+      kind: KINDS.DIRECTIVE_CREATED,
+      data: { issueId: "iss-1", identifier: "KOL-1", labels: ["DIRECTIVE"], status: "todo", title: "OWNER DIRECTIVE: ship it" },
+    }),
+    event({
+      seq: 2,
+      kind: KINDS.DIRECTIVE_PLAN_POSTED,
+      data: { issueId: "iss-1", identifier: "KOL-1" },
+      ts: "2026-09-03T01:05:00.000Z",
+    }),
+  ];
+  const folded = foldDirectives(events, { now: "2026-09-03T02:00:00.000Z" });
+  assert.notEqual(folded.get("KOL-1").state, "done", "plan_posted alone never folds to done");
+  ok("T19: directive with plan_posted but no completion is still NOT done");
+}
+
 async function main() {
   console.log("# ledger-writer regression tests");
   const tests = [
@@ -458,6 +523,9 @@ async function main() {
     t14_legacyListResultShapesStillReadIssues,
     t15_directivePlanCommentsWritePlanEventsOnce,
     t16_nonDirectiveIssuesDoNotWritePlanEvents,
+    t17_directiveResultCommentWritesCompletionEventOnce,
+    t18_nonDirectiveIssuesDoNotWriteCompletionEvents,
+    t19_planPostedWithoutCompletionIsStillNotDone,
   ];
 
   for (const test of tests) {

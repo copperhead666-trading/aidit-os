@@ -24,6 +24,7 @@ import {
   PLAN_MARKER,
   REFUSED_MARKER,
   REJECTED_MARKER,
+  RESULT_MARKER,
 } from "./directive-runner.mjs";
 import {
   discoverPaperclipPort as defaultDiscoverPaperclipPort,
@@ -64,6 +65,14 @@ const DIRECTIVE_PLAN_MARKERS = Object.freeze([
   { prefix: REJECTED_MARKER, skip: true },
   { prefix: REFUSED_MARKER, kind: KINDS.DIRECTIVE_PLAN_REFUSED },
   { prefix: PLAN_MARKER, kind: KINDS.DIRECTIVE_PLAN_POSTED },
+]);
+
+// RESULT_MARKER ("DIRECTIVE RESULT") shares no prefix with any plan marker
+// ("DIRECTIVE PLAN", "DIRECTIVE PLAN APPROVED", "DIRECTIVE PLAN REJECTED",
+// "PLAN_REFUSED"), so no longest-first ordering trap exists here. Imported,
+// not retyped, for the same reason as the plan markers.
+const DIRECTIVE_COMPLETION_MARKERS = Object.freeze([
+  { prefix: RESULT_MARKER, kind: KINDS.DIRECTIVE_COMPLETED },
 ]);
 
 function toIso(value) {
@@ -161,6 +170,16 @@ export function classifyComment(comment) {
       kind: directivePlan.kind,
       actor: "system",
       marker: directivePlan.prefix,
+      data: {},
+    };
+  }
+
+  const directiveCompletion = DIRECTIVE_COMPLETION_MARKERS.find((entry) => trimmed.startsWith(entry.prefix));
+  if (directiveCompletion) {
+    return {
+      kind: directiveCompletion.kind,
+      actor: "system",
+      marker: directiveCompletion.prefix,
       data: {},
     };
   }
@@ -334,7 +353,8 @@ export function deriveEventsForIssue(entry, folded = new Map(), summary = null) 
       }
       if (
         (classified.kind === KINDS.DIRECTIVE_PLAN_POSTED ||
-          classified.kind === KINDS.DIRECTIVE_PLAN_REFUSED) &&
+          classified.kind === KINDS.DIRECTIVE_PLAN_REFUSED ||
+          classified.kind === KINDS.DIRECTIVE_COMPLETED) &&
         !hasDirectiveLabel(issue)
       ) {
         continue;
@@ -360,7 +380,8 @@ export function deriveEventsForIssue(entry, folded = new Map(), summary = null) 
           marker: classified.marker,
           ...classified.data,
           ...(classified.kind === KINDS.DIRECTIVE_PLAN_POSTED ||
-          classified.kind === KINDS.DIRECTIVE_PLAN_REFUSED
+          classified.kind === KINDS.DIRECTIVE_PLAN_REFUSED ||
+          classified.kind === KINDS.DIRECTIVE_COMPLETED
             ? { identifier: subject }
             : {}),
           commentId,
