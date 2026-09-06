@@ -422,6 +422,23 @@ export async function attemptRepair(fault, deps = {}) {
 function buildEscalationMessage(fault) {
   const name = (fault && fault.name) || "unknown";
   const kind = (fault && fault.kind) || "unknown";
+  const stuck = fault && fault.stuckUnhealable;
+  if (stuck && Number.isFinite(stuck.count)) {
+    // Unhealable-by-rollback escalation: the scoped suite is green, so the
+    // live data — not the code — is what is broken. Say which step, since
+    // when, how many attempts, and WHY auto-repair cannot help, or the owner
+    // reads it once and ignores it.
+    const since = Number.isFinite(stuck.firstNotReproducibleMs)
+      ? new Date(stuck.firstNotReproducibleMs).toISOString()
+      : "(tidak diketahui)";
+    return [
+      `SELF-REPAIR: step ${name} (${kind}) gagal berulang dan TIDAK BISA diperbaiki otomatis.`,
+      `${stuck.count}x percobaan perbaikan semuanya "not-reproducible": suite regresi hijau, jadi yang rusak adalah data hidup, bukan kode — rollback tidak akan pernah menyentuh akar masalah.`,
+      `Tidak tersembuhkan sejak ${since}.`,
+      `Bukti: ops-watcher/self-repair-log.jsonl.`,
+      `Perlu keputusan/penanganan manual. Sampai itu terjadi self-repair berhenti mencoba step ini.`,
+    ].join(" ");
+  }
   return [
     `SELF-REPAIR gagal memperbaiki step ${name} secara otomatis (${kind}).`,
     `Percobaan terakhir dikembalikan ke kondisi semula (rollback berhasil).`,

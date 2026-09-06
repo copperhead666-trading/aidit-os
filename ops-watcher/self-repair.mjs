@@ -12,7 +12,11 @@
 //    in as step 14. It runs the detector, then for at most
 //    MAX_REPAIRS_PER_SWEEP repairable faults delegates to the actuator's
 //    attemptRepair (snapshot/rollback + two-stage verification), and escalates
-//    to the owner only when an attempt ended `reverted`. It NEVER runs more
+//    to the owner when an attempt ended `reverted`, or when a step keeps
+//    coming back `not-reproducible` past NOT_REPRODUCIBLE_ESCALATE_AFTER
+//    attempts (unhealable by rollback: the suite is green, the live data is
+//    broken) — once, then it stops trying until the step recovers. It NEVER
+//    runs more
 //    often than SCAN_MIN_INTERVAL_MS, never dispatches more than the per-sweep
 //    cap, and always resolves (never throws) so it can never wedge the
 //    heartbeat.
@@ -46,6 +50,18 @@ export const STATE_FILE = path.join(__dirname, "self-repair-state.json");
 export const EVIDENCE_LOG_FILE = path.join(__dirname, "self-repair-log.jsonl");
 export const CONSECUTIVE_FAILURES_TO_ACT = 3;
 export const REPAIR_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+// A fault whose repair attempts keep returning `not-reproducible` — the scoped
+// suite is green, so snapshot/rollback can never touch the real cause (the
+// live data, not the code) — is unhealable by this actuator. After this many
+// not-reproducible attempts for the SAME step, escalate to the owner exactly
+// once and stop attempting/escalating until the step recovers. The value is 3
+// because attempts are cooldown-limited to one per REPAIR_COOLDOWN_MS (6h) per
+// step, so three attempts mean the fault has been persistently unhealable for
+// at least ~12 hours — long enough to outlast transient live-data blips, short
+// enough that the owner hears within a day. It also matches the
+// CONSECUTIVE_FAILURES_TO_ACT convention used elsewhere in this module.
+export const NOT_REPRODUCIBLE_ESCALATE_AFTER = 3;
 
 // Bounded --once sweep bounds. See the file header for the rationale.
 // SCAN_MIN_INTERVAL_MS: the minimum gap between two attempt-sweeps. A sweep
@@ -216,6 +232,22 @@ export function shouldAttemptRepair(state, stepName, nowMs, cooldownMs = REPAIR_
   }
 }
 
+// Stuck-fault bookkeeping (persisted in self-repair-state.json under `stuck`).
+// An entry accumulates while a step's repair attempts keep returning
+// `not-reproducible`; once `escalatedMs` is set the step is left alone — no
+// more attempts, no more escalations — until it recovers (a `repaired`/
+// `reverted` outcome, or simply vanishing from the fault list) clears the
+// entry. This is what distinguishes "gagal 10 kali" from "gagal 300 kali":
+// consecutiveFailures caps at the sweep window, this counter does not.
+function stuckMapOf(state) {
+  return state && state.stuck && typeof state.stuck === "object" ? state.stuck : {};
+}
+
+function stuckEscalated(stuck, stepName) {
+  const entry = stuck && stuck[stepName];
+  return !!(entry && typeof entry === "object" && Number.isFinite(entry.escalatedMs));
+}
+
 export async function appendEvidence(entry, deps = {}) {
   const appendFile = deps.appendFile || fs.appendFile;
   const file = deps.file || EVIDENCE_LOG_FILE;
@@ -274,6 +306,10 @@ function markFirstSeenFaults(state, faults, nowMs) {
 
 function blockedByFor({ scope, state, name, nowMs, kind, cooldownMs }) {
   if (!scope) return "envelope";
+  // Already escalated as unhealable: leave it alone until it recovers. This is
+  // a hard stop, not a cooldown — retrying would only re-prove what three
+  // attempts already proved and retrain the owner to ignore alarms.
+  if (stuckEscalated(stuckMapOf(state), name)) return "escalated";
   if (!shouldAttemptRepair(state, name, nowMs, cooldownMs)) return "cooldown";
   if (kind === "lane-quota") return kind;
   return null;
@@ -363,6 +399,28 @@ export async function runSelfRepairOnce(deps = {}) {
 
   const nowMs = now();
 
+  // Read-modify-write helpers on a FRESH state-file read. Required for the
+  // stuck-fault bookkeeping: attemptRepair (recordAttempt) and escalate
+  // (lastAlertedMs) both rewrite this file between and during sweeps, so any
+  // update that starts from a stale in-memory copy would silently drop their
+  // writes. Best-effort, never throw — bookkeeping must never break a sweep.
+  async function readStateFresh() {
+    try {
+      const raw = await readFile(stateFile, "utf8");
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  async function writeStateFresh(next) {
+    try {
+      await writeFile(stateFile, JSON.stringify(next, null, 2) + "\n", "utf8");
+    } catch {
+      // Bookkeeping is best-effort; the sweep result is still authoritative.
+    }
+  }
+
   // 1. Cooldown gate: read the state file. If the last attempt-scan ran less
   //    than SCAN_MIN_INTERVAL_MS ago, skip the whole sweep — no scan, no
   //    dispatch — and tell the operator when the next run is eligible.
@@ -403,16 +461,54 @@ export async function runSelfRepairOnce(deps = {}) {
 
   const faults = scanResult && Array.isArray(scanResult.faults) ? scanResult.faults : [];
 
+  // 3b. Stuck-fault bookkeeping. `stuck` persists the not-reproducible attempt
+  //     count across sweeps (unlike consecutiveFailures, which caps at the
+  //     sweep window). Two jobs here:
+  //       - RECOVERY: a stuck step that no longer appears among the currently
+  //         faulting steps has recovered; clear its record so a future failure
+  //         earns a fresh count and a fresh voice.
+  //       - GATING: a stuck step already escalated to the owner is skipped in
+  //         the loop below — no repair attempt, no re-escalation — until that
+  //         recovery clears it.
+  let stuckNow = stuckMapOf(state);
+  const faultNamesNow = new Set(faults.map((f) => f && f.name).filter(Boolean));
+  const recoveredSteps = Object.keys(stuckNow).filter((name) => !faultNamesNow.has(name));
+  if (recoveredSteps.length > 0) {
+    const fresh = await readStateFresh();
+    const nextStuck = { ...stuckMapOf(fresh) };
+    let clearedAny = false;
+    for (const name of recoveredSteps) {
+      if (nextStuck[name]) {
+        delete nextStuck[name];
+        clearedAny = true;
+        try { log(`self-repair: ${name} recovered — cleared stuck record`); } catch { /* observational */ }
+      }
+    }
+    if (clearedAny) {
+      await writeStateFresh({ ...fresh, stuck: nextStuck });
+      stuckNow = nextStuck;
+    }
+  }
+
   // 4. For at most MAX_REPAIRS_PER_SWEEP repairable faults, delegate to the
   //    actuator's attemptRepair. Faults the detector already blocked
-  //    (envelope / cooldown / lane-quota) are repairable:false and are never
-  //    handed to attemptRepair — they are logged and left for the next sweep.
+  //    (envelope / escalated / cooldown / lane-quota) are repairable:false and
+  //    are never handed to attemptRepair — they are logged and left alone.
   const outcomes = [];
   let attemptsMade = 0;
   for (const fault of faults) {
     if (!fault || fault.repairable !== true) {
       const blockedBy = (fault && fault.blockedBy) || "none";
       try { log(`self-repair: skipping ${fault ? fault.name : "unknown"} (blockedBy=${blockedBy})`); } catch { /* observational */ }
+      continue;
+    }
+    if (stuckEscalated(stuckNow, fault.name)) {
+      // Escalated as unhealable in an earlier sweep and the step has not
+      // recovered. Do not burn another lane call re-proving it, and do not
+      // re-alert — an alarm that repeats with nothing actionable teaches the
+      // owner to ignore alarms. The recovery pass above lifts this once the
+      // step is healthy again.
+      try { log(`self-repair: skipping ${fault.name} (escalated to owner, awaiting manual handling)`); } catch { /* observational */ }
       continue;
     }
     if (attemptsMade >= MAX_REPAIRS_PER_SWEEP) {
@@ -452,6 +548,43 @@ export async function runSelfRepairOnce(deps = {}) {
       } catch {
         // Evidence is best-effort.
       }
+    } else if (outcome === "not-reproducible") {
+      // The scoped suite is green while the live step keeps failing, so
+      // snapshot/rollback can never touch the real cause (the live data, not
+      // the code). Count the outcome per step in the state file's `stuck`
+      // map; past NOT_REPRODUCIBLE_ESCALATE_AFTER, escalate to the owner once
+      // and stop attempting until the step recovers. A throwing escalate (or
+      // an alert the delivery layer reports as failed) does NOT stamp
+      // escalatedMs, so a later attempt can retry the alert — matching the
+      // actuator's retry-an-undelivered-escalation rule.
+      const fresh = await readStateFresh();
+      const stuck = { ...stuckMapOf(fresh) };
+      const prev = stuck[fault.name] && typeof stuck[fault.name] === "object" ? stuck[fault.name] : {};
+      const count = (Number.isFinite(prev.count) ? prev.count : 0) + 1;
+      const firstNotReproducibleMs = Number.isFinite(prev.firstNotReproducibleMs) ? prev.firstNotReproducibleMs : nowMs;
+      const entry = { ...prev, count, firstNotReproducibleMs };
+      if (!Number.isFinite(prev.escalatedMs) && count >= NOT_REPRODUCIBLE_ESCALATE_AFTER) {
+        let delivered = false;
+        try {
+          const escalation = await escalate(
+            { ...fault, stuckUnhealable: { count, firstNotReproducibleMs, escalatedMs: nowMs } },
+            outcomes,
+            deps,
+          );
+          delivered = !escalation || escalation.alerted !== false;
+        } catch (err) {
+          try { log(`self-repair: escalate threw for ${fault.name} — ${err && err.message ? err.message : String(err)}`); } catch { /* observational */ }
+        }
+        if (delivered) {
+          entry.escalatedMs = nowMs;
+          try { log(`self-repair: ${fault.name} unhealable (not-reproducible x${count}) — escalated to owner, stopping auto-repair until it recovers`); } catch { /* observational */ }
+        }
+      } else {
+        try { log(`self-repair: ${fault.name} not reproducible (attempt ${count} of ${NOT_REPRODUCIBLE_ESCALATE_AFTER} before escalation)`); } catch { /* observational */ }
+      }
+      stuck[fault.name] = entry;
+      await writeStateFresh({ ...fresh, stuck });
+      stuckNow = stuck;
     }
   }
 
