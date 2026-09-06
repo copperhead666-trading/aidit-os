@@ -251,9 +251,24 @@ function getStatuslineData() {
   // intelligence and an empty promo row (the memo cache that keeps the row
   // populated across CLI hiccups is only ever written from a SUCCESSFUL
   // delegation, so it could never get seeded on Windows either).
+  // The `npx --prefer-offline @claude-flow/cli` fallback is GONE, and this is
+  // why. execSync's `timeout` kills its immediate child — on Windows that is
+  // cmd.exe — and never the grandchild npx spawns. So every render that
+  // outran the 8s budget left a ~92 MB node process alive forever with a dead
+  // parent. Measured on this machine 2026-09-06: 32 such orphans, 3.0 GB, all
+  // running `hooks statusline --json`, enough to exhaust a 10 GB laptop and
+  // start killing unrelated background work.
+  //
+  // It leaked on EVERY render here, not occasionally: resolveCliBinCandidates()
+  // finds nothing installed on this machine, so npx was the only path taken.
+  //
+  // To get the rich status bar back WITHOUT the leak, install the CLI locally
+  // (any path resolveCliBinCandidates checks). Then the fast candidate is a
+  // direct node spawn whose timeout actually kills what it started. Until then
+  // the local fallback renders — less detail, no leak. A status bar is not
+  // worth three gigabytes.
   const cmds = resolveCliBinCandidates()
-    .map((bin) => '"' + process.execPath + '" "' + bin + '" hooks statusline --json')
-    .concat(['npx --prefer-offline @claude-flow/cli hooks statusline --json']);
+    .map((bin) => '"' + process.execPath + '" "' + bin + '" hooks statusline --json');
   for (const cmd of cmds) {
     try {
       const raw = execSync(
