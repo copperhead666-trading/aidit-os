@@ -405,6 +405,33 @@ function lineSegments(content) {
   return segments;
 }
 
+function normalizeLineEndings(content) {
+  return String(content).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+function countOccurrences(content, search) {
+  return content.split(search).length - 1;
+}
+
+function detectOriginalLineEnding(content) {
+  const crlf = content.match(/\r\n/g)?.length || 0;
+  const lf = content.match(/(?<!\r)\n/g)?.length || 0;
+  const cr = content.match(/\r(?!\n)/g)?.length || 0;
+  const styles = [crlf > 0, lf > 0, cr > 0].filter(Boolean).length;
+
+  if (styles > 1) {
+    return { ok: false, error: "edit_file: file has mixed line endings; refusing to guess original style" };
+  }
+  if (cr > 0) {
+    return { ok: false, error: "edit_file: file has unsupported CR line endings; refusing to guess original style" };
+  }
+  return { ok: true, eol: crlf > 0 ? "\r\n" : "\n" };
+}
+
+function restoreOriginalLineEnding(content, eol) {
+  return eol === "\n" ? content : content.replace(/\n/g, eol);
+}
+
 function clampedInteger(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.trunc(parsed) : fallback;
@@ -486,11 +513,28 @@ export async function editFileTool(args, evidence) {
 
   try {
     const content = await fs.readFile(resolved.resolved, "utf8");
-    const occurrences = content.split(search).length - 1;
-    if (occurrences === 0) return { ok: false, error: "edit_file: search text not found" };
-    if (occurrences > 1) return { ok: false, error: `edit_file: search text is not unique (${occurrences} occurrences)` };
+    const replace = String(args?.replace ?? "");
+    const occurrences = countOccurrences(content, search);
+    const normalizedContent = normalizeLineEndings(content);
+    const normalizedSearch = normalizeLineEndings(search);
+    const normalizedOccurrences = countOccurrences(normalizedContent, normalizedSearch);
 
-    const updated = content.replace(search, String(args?.replace ?? ""));
+    if (normalizedOccurrences === 0) {
+      return { ok: false, error: "edit_file: search text not found after line-ending normalization" };
+    }
+    if (occurrences > 1) return { ok: false, error: `edit_file: search text is not unique (${occurrences} occurrences)` };
+    if (normalizedOccurrences > 1) {
+      return {
+        ok: false,
+        error: `edit_file: search text is not unique after line-ending normalization (${normalizedOccurrences} occurrences)`,
+      };
+    }
+
+    const lineEnding = detectOriginalLineEnding(content);
+    if (!lineEnding.ok) return { ok: false, error: lineEnding.error };
+
+    const normalizedUpdated = normalizedContent.replace(normalizedSearch, normalizeLineEndings(replace));
+    const updated = restoreOriginalLineEnding(normalizedUpdated, lineEnding.eol);
     await fs.writeFile(resolved.resolved, updated, "utf8");
     const rel = relativeToWorkspace(resolved.resolved);
     evidence.filesWritten.push(rel);

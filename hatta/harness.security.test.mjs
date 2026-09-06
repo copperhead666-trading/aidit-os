@@ -356,10 +356,129 @@ add("edit_file refuses missing search and leaves disk unchanged", async () => {
     const result = await editFileTool({ path: rel, search: "delta", replace: "changed" }, evidence);
 
     expectBlocked(result, "missing edit_file search");
-    assert.equal(result.error, "edit_file: search text not found");
+    assert.equal(result.error, "edit_file: search text not found after line-ending normalization");
     assert.equal(await fs.readFile(abs, "utf8"), original);
     assert.deepEqual(evidence.filesWritten, []);
   });
+});
+
+add("edit_file matches LF search text in CRLF file and preserves CRLF", async () => {
+  const original = "alpha\r\nKEEP-BEFORE\r\nneedle\r\nKEEP-AFTER\r\nomega\r\n";
+  await withTempWorkspaceFile("edit-crlf-search-lf", original, async (rel, abs) => {
+    const evidence = makeEvidence();
+    const result = await editFileTool({
+      path: rel,
+      search: "KEEP-BEFORE\nneedle\nKEEP-AFTER",
+      replace: "KEEP-BEFORE\nreplacement\nKEEP-AFTER",
+    }, evidence);
+    const updated = await fs.readFile(abs, "utf8");
+    const expected = "alpha\r\nKEEP-BEFORE\r\nreplacement\r\nKEEP-AFTER\r\nomega\r\n";
+
+    assert.equal(result.ok, true);
+    assert.equal(result.bytes, Buffer.byteLength(expected, "utf8"));
+    assert.equal(result.replaced, 1);
+    assert.equal(updated, expected);
+    assert.deepEqual(evidence.filesWritten, [path.relative(WORKSPACE_ROOT, abs)]);
+  });
+});
+
+add("edit_file keeps LF file LF after normalized multi-line edit", async () => {
+  const original = "alpha\nKEEP-BEFORE\nneedle\nKEEP-AFTER\nomega\n";
+  await withTempWorkspaceFile("edit-lf-search-lf", original, async (rel, abs) => {
+    const evidence = makeEvidence();
+    const result = await editFileTool({
+      path: rel,
+      search: "KEEP-BEFORE\nneedle\nKEEP-AFTER",
+      replace: "KEEP-BEFORE\nreplacement\nKEEP-AFTER",
+    }, evidence);
+    const updated = await fs.readFile(abs, "utf8");
+    const expected = "alpha\nKEEP-BEFORE\nreplacement\nKEEP-AFTER\nomega\n";
+
+    assert.equal(result.ok, true);
+    assert.equal(result.bytes, Buffer.byteLength(expected, "utf8"));
+    assert.equal(result.replaced, 1);
+    assert.equal(updated, expected);
+  });
+});
+
+add("edit_file still accepts CRLF search text in CRLF file", async () => {
+  const original = "alpha\r\nKEEP-BEFORE\r\nneedle\r\nKEEP-AFTER\r\nomega\r\n";
+  await withTempWorkspaceFile("edit-crlf-search-crlf", original, async (rel, abs) => {
+    const evidence = makeEvidence();
+    const result = await editFileTool({
+      path: rel,
+      search: "KEEP-BEFORE\r\nneedle\r\nKEEP-AFTER",
+      replace: "KEEP-BEFORE\r\nreplacement\r\nKEEP-AFTER",
+    }, evidence);
+    const updated = await fs.readFile(abs, "utf8");
+    const expected = "alpha\r\nKEEP-BEFORE\r\nreplacement\r\nKEEP-AFTER\r\nomega\r\n";
+
+    assert.equal(result.ok, true);
+    assert.equal(result.bytes, Buffer.byteLength(expected, "utf8"));
+    assert.equal(result.replaced, 1);
+    assert.equal(updated, expected);
+  });
+});
+
+add("edit_file refuses non-unique search after line-ending normalization", async () => {
+  const original = "one\r\nneedle\r\ntwo\r\nneedle\r\n";
+  await withTempWorkspaceFile("edit-normalized-duplicate", original, async (rel, abs) => {
+    const evidence = makeEvidence();
+    const result = await editFileTool({ path: rel, search: "needle\n", replace: "changed\n" }, evidence);
+
+    expectBlocked(result, "normalized duplicate edit_file search");
+    assert.equal(result.error, "edit_file: search text is not unique after line-ending normalization (2 occurrences)");
+    assert.equal(await fs.readFile(abs, "utf8"), original);
+    assert.deepEqual(evidence.filesWritten, []);
+  });
+});
+
+add("edit_file refuses non-unique search across different line-ending styles", async () => {
+  const original = "one\r\nneedle\r\nx\r\ntwo\nneedle\nx\n";
+  await withTempWorkspaceFile("edit-mixed-normalized-duplicate", original, async (rel, abs) => {
+    const evidence = makeEvidence();
+    const result = await editFileTool({ path: rel, search: "needle\nx\n", replace: "changed\nx\n" }, evidence);
+
+    expectBlocked(result, "mixed normalized duplicate edit_file search");
+    assert.equal(result.error, "edit_file: search text is not unique after line-ending normalization (2 occurrences)");
+    assert.equal(await fs.readFile(abs, "utf8"), original);
+    assert.deepEqual(evidence.filesWritten, []);
+  });
+});
+
+add("edit_file missing search message says normalized text is absent", async () => {
+  const original = "alpha\r\nbeta\r\ngamma\r\n";
+  await withTempWorkspaceFile("edit-normalized-missing", original, async (rel, abs) => {
+    const evidence = makeEvidence();
+    const result = await editFileTool({ path: rel, search: "delta\n", replace: "changed\n" }, evidence);
+
+    expectBlocked(result, "normalized missing edit_file search");
+    assert.equal(result.error, "edit_file: search text not found after line-ending normalization");
+    assert.equal(await fs.readFile(abs, "utf8"), original);
+    assert.deepEqual(evidence.filesWritten, []);
+  });
+});
+
+add("edit_file refuses to edit mixed line-ending files instead of guessing", async () => {
+  const original = "alpha\r\nneedle\nomega\r\n";
+  await withTempWorkspaceFile("edit-mixed-eol", original, async (rel, abs) => {
+    const evidence = makeEvidence();
+    const result = await editFileTool({ path: rel, search: "needle", replace: "changed" }, evidence);
+
+    expectBlocked(result, "mixed line-ending edit_file search");
+    assert.equal(result.error, "edit_file: file has mixed line endings; refusing to guess original style");
+    assert.equal(await fs.readFile(abs, "utf8"), original);
+    assert.deepEqual(evidence.filesWritten, []);
+  });
+});
+
+add("edit_file read failures are returned instead of thrown", async () => {
+  const evidence = makeEvidence();
+  const result = await editFileTool({ path: "hatta/workspace", search: "needle", replace: "changed" }, evidence);
+
+  expectBlocked(result, "unreadable edit_file path");
+  assert.match(result.error, /^edit_file failed:/);
+  assert.deepEqual(evidence.filesWritten, []);
 });
 
 add("edit_file refuses empty search text", async () => {
