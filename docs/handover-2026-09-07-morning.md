@@ -247,3 +247,72 @@ pernah menyangkut keputusan pemilik, ia terbit dari cacat alat.
   papan dan mematikan pemantauan semalaman. KOL-94 masih berlabel
   `OWNER_REQUIRED` sehingga runner tidak akan menyentuh `merge-steward.mjs`, jadi
   paparannya terbatas.
+
+---
+
+## Tambahan setelah bagian di atas ditulis
+
+Empat perbaikan lagi mendarat, semuanya diverifikasi sendiri sebelum merge.
+
+### 7. Ledger bukan pekerjaan lane (`e648591`)
+
+Konsekuensi dari perubahan saya sendiri, ditutup di malam yang sama.
+`dirtyEntryCount` kini mengembalikan `{ work, runtimeState }` dengan daftar path
+eksplisit — bukan pola seperti "apa pun di bawah `state/`", karena pola akan
+diam-diam memaafkan berkas masa depan yang justru pekerjaan. Berkas tak terlacak
+tak pernah masuk daftar: lane yang menulis berkas baru sudah bekerja, apa pun
+namanya. 27/27.
+
+Satu detail parsing yang layak diingat: helper `git()` memangkas seluruh output
+porcelain, sehingga baris **pertama** kehilangan spasi depannya dan hanya membawa
+satu karakter status, sementara baris berikutnya membawa dua. Parser pertama
+menuntut tepat dua, jadi baris pertama tidak pernah cocok — dan baris pertama
+itulah yang membawa `state/ledger.jsonl`.
+
+### 8. Steward tidak lagi meloloskan token hidup (`7071315`)
+
+`TELEGRAM_TOKEN=`, `API_KEY=`, `db_password:` semuanya tertembak sekarang.
+Sebelumnya steward melaporkan "no secret shaped literals found" di atas baris yang
+membawa token asli.
+
+**Yang ditukar, dan saya sebut sendiri di pesan commit-nya, bukan dibiarkan
+ditemukan orang lain nanti:** lane melepas batas kiri regex — persis yang packet
+larang — sehingga `monkey` dan `keystone` kini ikut tertembak. Merge yang
+diblokir berisik lebih baik daripada token yang disembunyikan diam-diam, jadi
+tetap digabungkan, dan perbaikannya sudah dikirim ke SJAHRIR bersama sha git
+KOL-92/94.
+
+### 9. Retraksi tidak lagi menutup ulang yang ia cabut (`d1d0e5a`)
+
+`classifyDirective` mencari `RESULT_MARKER` sebagai substring di mana pun, jadi
+komentar yang sekadar mengutip laporan ikut menutup directive. Itu menggigit saya
+langsung semalam: komentar pencabutan harus dilucuti huruf demi huruf menjadi
+`D-I-R-E-C-T-I-V-E R-E-S-U-L-T` supaya koreksinya bertahan. Sekarang penandanya
+harus membuka komentar. Diukur dengan teks pencabutan yang sebenarnya: ia
+terklasifikasi `new`, laporan asli tetap `done`, dan laporan di balik baris
+kosong tetap `done`. 205/205.
+
+### 10. Dua saudara penanda yang sama (packet terkirim)
+
+Lane menemukan dan melaporkannya tanpa mengubahnya, yang benar.
+`REFUSED_MARKER` dan `DISPATCH_MARKER` masih diuji dengan cara lama di fungsi
+yang sama. `REFUSED_MARKER` yang gawat: `rejected` dikembalikan sebelum penghitung
+percobaan dilihat sama sekali, jadi komentar yang sekadar mengutip penolakan akan
+mengubur directive selamanya tanpa jalan pulang yang jelas.
+
+---
+
+## Status ujian langsung perbaikan executor
+
+Sweep pukul 17:19:57 berjalan di bawah kode baru (merge-nya 17:00:48) dan
+menghasilkan `DIRECTIVE NO-OP` yang jujur, bukan laporan selesai palsu.
+
+Saya tidak menyebutnya bukti. No-op juga akan muncul kalau lane memang tidak
+menyentuh berkasnya sama sekali, dan catatan eksekusi untuk KOL-81 tidak sampai ke
+`ops-watcher/events.jsonl` — nol baris di sana — jadi tidak ada rekaman apakah
+mtime berubah pada run itu. Yang terbukti: loop berjalan, tidak menutup apa pun
+secara palsu, dan `noOpComment` menyala.
+
+Satu risiko yang saya periksa dan ternyata aman: KOL-81 berada di plafon percobaan
+dengan `executionFailures.count = 2`, tetapi `capReportedAt` sudah terisi, jadi
+plafon itu tidak akan mengeskalasi ulang ke pemilik semalam.
