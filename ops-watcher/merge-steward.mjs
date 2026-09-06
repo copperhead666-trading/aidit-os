@@ -188,17 +188,53 @@ export function checkTestsAccompanyBehaviour(input) {
 export function checkSecretShapedLiterals(input) {
   try {
     const addedLines = values(input, "addedLines").map((line) => String(line || ""));
-    const longLiteral = /(["'`])([A-Za-z0-9+/=]{32,}|[a-fA-F0-9]{32,})\1/;
-    const prefixed = /(["'`])?(ghp_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|pcp_[A-Za-z0-9_]{20,})(["'`])?/;
-    const assignedSecretName = /(\w*(?:token|secret|key|password)\w*)\s*[=:]\s*(["'`])?([A-Za-z0-9+/=]{32,}|[a-fA-F0-9]{32,}|ghp_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|pcp_[A-Za-z0-9_]{20,})/i;
+    // An identifier is segmented by "_", "-", "." and by camelCase
+    // transitions (a lowercase letter directly followed by an uppercase
+    // one). A credential keyword counts only as a whole segment or as the
+    // whole identifier, never as a substring: "apiKey" and "db_password"
+    // match, "monkey", "keystone" and "tokenisation" do not.
+    const identifierRun = /[A-Za-z0-9][A-Za-z0-9_.\-]*/g;
+    const segmentSplit = /[_\-.]+|(?<=[a-z])(?=[A-Z])/;
+    const keywordSegment = /^(?:token|secret|key|password)$/i;
+    // ghp_/sk-/pcp_ prefixes mark a credential wherever they appear.
+    const prefixed = /(?<![A-Za-z0-9])(ghp_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|pcp_[A-Za-z0-9_]{20,})/;
+    // A long value: 32+ chars of the literal classes the check always used.
+    // Hex is a subset of [A-Za-z0-9+/=], so a hex run is consumed by the
+    // first alternative and never reaches the second.
+    const longValue = /[A-Za-z0-9+/=]{32,}|[a-fA-F0-9]{32,}/;
+    // Rule 3 scans unquoted runs: "/" is excluded so the segments of a file
+    // path or URL cannot merge into a fake 32+ char literal
+    // ("watcher/some/.../names" is a path, not a credential).
+    const longRuns = /[A-Za-z0-9+=]{32,}/g;
+    // A git object id is exactly 40 (sha-1) or 64 (sha-256) hex chars, or
+    // an abbreviation of 7 to 12. Length-anchored, not "roughly that long":
+    // a 41- or 48-char run is not a revision.
+    const gitRevision = /^[a-fA-F0-9]{7,12}$|^[a-fA-F0-9]{40}$|^[a-fA-F0-9]{64}$/;
+    const isHexRun = (run) => /^[a-fA-F0-9]+$/.test(run);
     const findings = [];
+
+    const hasSecretSegmentName = (text) => {
+      for (const match of text.matchAll(identifierRun)) {
+        const run = match[0];
+        if (!/[A-Za-z]/.test(run)) continue;
+        if (run.split(segmentSplit).some((seg) => keywordSegment.test(seg))) return true;
+      }
+      return false;
+    };
 
     for (const line of addedLines) {
       if (!line.startsWith("+")) continue;
       const body = line.slice(1);
       const trimmed = body.trim();
       if (trimmed.startsWith("//") || trimmed.startsWith("/*") || trimmed.startsWith("*") || trimmed.startsWith("#")) continue;
-      if (assignedSecretName.test(body) || prefixed.test(body) || longLiteral.test(body)) {
+      const named = hasSecretSegmentName(body);
+      const runs = body.match(longRuns) || [];
+      // Rule 1 beats rule 2: a secret-shaped name with a long value is a
+      // credential even when the value is exactly a git revision length.
+      const flagged = prefixed.test(body)
+        || (named && longValue.test(body))
+        || (!named && runs.some((run) => !isHexRun(run) && !gitRevision.test(run)));
+      if (flagged) {
         findings.push(trimmed.slice(0, 120));
       }
     }
