@@ -20,6 +20,12 @@ import {
   foldDirectives as defaultFoldDirectives,
 } from "./projections.mjs";
 import {
+  APPROVED_MARKER,
+  PLAN_MARKER,
+  REFUSED_MARKER,
+  REJECTED_MARKER,
+} from "./directive-runner.mjs";
+import {
   discoverPaperclipPort as defaultDiscoverPaperclipPort,
   httpGet as defaultHttpGet,
   resolvePaperclipToken as defaultResolvePaperclipToken,
@@ -51,6 +57,13 @@ const DECISION_MARKERS = Object.freeze([
   { prefix: "OWNER DEFERRED via Telegram", kind: KINDS.DECISION_DEFERRED },
   { prefix: "OWNER MENGESKALASI ke AHMAD via Telegram", kind: KINDS.DECISION_ESCALATED },
   { prefix: "OWNER ESCALATED via Telegram", kind: KINDS.DECISION_ESCALATED },
+]);
+
+const DIRECTIVE_PLAN_MARKERS = Object.freeze([
+  { prefix: APPROVED_MARKER, skip: true },
+  { prefix: REJECTED_MARKER, skip: true },
+  { prefix: REFUSED_MARKER, kind: KINDS.DIRECTIVE_PLAN_REFUSED },
+  { prefix: PLAN_MARKER, kind: KINDS.DIRECTIVE_PLAN_POSTED },
 ]);
 
 function toIso(value) {
@@ -138,6 +151,17 @@ export function classifyComment(comment) {
       actor: "owner",
       marker: decision.prefix,
       data: { via: "telegram" },
+    };
+  }
+
+  const directivePlan = DIRECTIVE_PLAN_MARKERS.find((entry) => trimmed.startsWith(entry.prefix));
+  if (directivePlan) {
+    if (directivePlan.skip) return { skip: true };
+    return {
+      kind: directivePlan.kind,
+      actor: "system",
+      marker: directivePlan.prefix,
+      data: {},
     };
   }
 
@@ -293,6 +317,9 @@ export function deriveEventsForIssue(entry, folded = new Map(), summary = null) 
       const commentId = comment?.id == null ? null : String(comment.id);
       const commentTs = toIso(comment?.createdAt || comment?.created_at || comment?.updatedAt || comment?.updated_at);
       const classified = classifyComment(comment);
+      if (classified?.skip) {
+        continue;
+      }
       if (!classified) {
         summary.unclassified += 1;
         summary.unclassifiedDetails.push({
@@ -303,6 +330,13 @@ export function deriveEventsForIssue(entry, folded = new Map(), summary = null) 
           reason: "comment did not match a known ledger kind",
           excerpt: excerpt(comment?.body),
         });
+        continue;
+      }
+      if (
+        (classified.kind === KINDS.DIRECTIVE_PLAN_POSTED ||
+          classified.kind === KINDS.DIRECTIVE_PLAN_REFUSED) &&
+        !hasDirectiveLabel(issue)
+      ) {
         continue;
       }
       if (!commentId || !commentTs) {
@@ -325,6 +359,10 @@ export function deriveEventsForIssue(entry, folded = new Map(), summary = null) 
         data: {
           marker: classified.marker,
           ...classified.data,
+          ...(classified.kind === KINDS.DIRECTIVE_PLAN_POSTED ||
+          classified.kind === KINDS.DIRECTIVE_PLAN_REFUSED
+            ? { identifier: subject }
+            : {}),
           commentId,
           issueId,
           boardTimestamp: commentTs,

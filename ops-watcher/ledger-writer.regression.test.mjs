@@ -382,6 +382,63 @@ async function t14_legacyListResultShapesStillReadIssues() {
   ok("T14: legacy list result shapes still read issues");
 }
 
+async function t15_directivePlanCommentsWritePlanEventsOnce() {
+  const entries = [{
+    issue: issue(),
+    comments: [
+      comment("c-plan", "DIRECTIVE PLAN (2026-09-06T11:16:12.894Z):\nOBJECTIVE: reconcile ledger", "2026-09-06T11:16:12.894Z"),
+      comment("c-approved-trap", "DIRECTIVE PLAN APPROVED (2026-09-06T11:17:00.000Z): approved", "2026-09-06T11:17:00.000Z"),
+      comment("c-rejected-trap", "DIRECTIVE PLAN REJECTED (2026-09-06T11:17:30.000Z): rejected", "2026-09-06T11:17:30.000Z"),
+      comment("c-refused", "PLAN_REFUSED (2026-09-06T11:18:15.603Z): plan refused", "2026-09-06T11:18:15.603Z"),
+      comment("c-empty", "", "2026-09-06T11:19:00.000Z"),
+      comment("c-null", null, "2026-09-06T11:19:30.000Z"),
+    ],
+  }];
+  const h = harness({ entries });
+
+  const first = await runLedgerWriterOnce(h.deps);
+  const second = await runLedgerWriterOnce(h.deps);
+  const appended = h.appendedBatches[0] || [];
+  const planEvents = appended.filter((ev) => ev.kind === KINDS.DIRECTIVE_PLAN_POSTED);
+  const refusedEvents = appended.filter((ev) => ev.kind === KINDS.DIRECTIVE_PLAN_REFUSED);
+
+  assert.equal(first.ok, true);
+  assert.equal(first.appended, 3, "directive.created plus posted and refused plan events");
+  assert.equal(first.unclassified, 2, "empty and null bodies are skipped without throwing");
+  assert.equal(planEvents.length, 1, "one directive.plan_posted event is emitted");
+  assert.equal(refusedEvents.length, 1, "one directive.plan_refused event is emitted");
+  assert.equal(planEvents[0].ts, "2026-09-06T11:16:12.894Z");
+  assert.equal(planEvents[0].data.issueId, "iss-1");
+  assert.equal(planEvents[0].data.identifier, "KOL-1");
+  assert.equal(planEvents[0].data.commentId, "c-plan");
+  assert.equal(refusedEvents[0].ts, "2026-09-06T11:18:15.603Z");
+  assert.equal(refusedEvents[0].data.issueId, "iss-1");
+  assert.equal(refusedEvents[0].data.identifier, "KOL-1");
+  assert.equal(refusedEvents[0].data.commentId, "c-refused");
+  assert.equal(planEvents.filter((ev) => /^DIRECTIVE PLAN APPROVED/.test(ev.shadow || "")).length, 0);
+  assert.equal(planEvents.filter((ev) => /^DIRECTIVE PLAN REJECTED/.test(ev.shadow || "")).length, 0);
+  assert.equal(second.appended, 0, "second sweep does not emit duplicate plan events");
+  ok("T15: directive plan comments write posted/refused events once and avoid approval traps");
+}
+
+async function t16_nonDirectiveIssuesDoNotWritePlanEvents() {
+  const entries = [{
+    issue: issue({ labels: [], id: "iss-no-directive", identifier: "KOL-NODIR" }),
+    comments: [
+      comment("c-plan-no-label", "DIRECTIVE PLAN (2026-09-06T11:16:12.894Z):\nOBJECTIVE: ignored", "2026-09-06T11:16:12.894Z"),
+      comment("c-refused-no-label", "PLAN_REFUSED (2026-09-06T11:18:15.603Z): ignored", "2026-09-06T11:18:15.603Z"),
+    ],
+  }];
+  const h = harness({ entries });
+
+  const result = await runLedgerWriterOnce(h.deps);
+
+  assert.equal(result.appended, 0);
+  assert.equal(result.derived, 0);
+  assert.equal(h.appendedBatches.length, 0);
+  ok("T16: issues without DIRECTIVE label do not write plan posted/refused events");
+}
+
 async function main() {
   console.log("# ledger-writer regression tests");
   const tests = [
@@ -399,6 +456,8 @@ async function main() {
     t12_networkErrorListResultIsAnErrorNotAnEmptyBoard,
     t13_legitimateEmptyIssueListStillSucceeds,
     t14_legacyListResultShapesStillReadIssues,
+    t15_directivePlanCommentsWritePlanEventsOnce,
+    t16_nonDirectiveIssuesDoNotWritePlanEvents,
   ];
 
   for (const test of tests) {
