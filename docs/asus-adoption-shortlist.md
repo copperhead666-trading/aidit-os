@@ -80,3 +80,43 @@
 The shortlist proposes adding 10 skills. At roughly 100 discovery tokens per skill, that is about 1,000 extra tokens per session.
 
 That is acceptable only because each entry maps to named Aidit OS work. It is also the ceiling: adding the rest of the plausible orchestration, review, testing, monitoring, security, Node, Python, graph, and browser families would quickly turn into dozens of skills and thousands of permanent discovery tokens per session. Do not expand this list without a specific backlog item that the Lenovo cannot already handle.
+
+## 5. ROUTING GAPS MEASURED 2026-09-06
+
+Specialist routing was probed directly against `resolveSpecialistsForPacket`.
+Eleven task classes exist and resolve correctly:
+
+```
+redesign the cockpit for a phone      -> frontend-design   design-ui-designer, design-ux-architect
+API returns 500 under load            -> backend-api       engineering-backend-architect, engineering-api-platform-engineer
+review this schema for slow queries   -> database-storage  engineering-database-optimizer, engineering-database-reliability-engineer
+```
+
+Two domains that the backlog already contains resolve to nothing:
+
+```
+CCTV that reads transactions and flags security alerts  -> taskClass null, no specialist
+a voice assistant that answers in Indonesian            -> taskClass null, no specialist
+```
+
+Both are named backlog items, so this is a real gap and not a hypothetical one.
+Neither gets a task class here, deliberately. The owner's matriculation rule is
+that a venture is grounded in research, then data, then an adoptable GitHub
+repository, then implementation, then testing. A task class invented before the
+adoption step would route work to a specialist file nobody has written, which is
+the failure this document's COST section already warns about, in a worse form:
+not an unused skill, but a live route to nothing.
+
+What each needs before it earns a class:
+
+- **Voice.** The owner named `openjarvis` as the existing repository and wants it
+  answering in Bahasa Indonesia. The adoption -- what it depends on, what runs
+  locally, what the Indonesian path costs -- is a lane's job, not the
+  integrator's. The owner stated this explicitly: "suruh siapa untuk installasi
+  jangan kamu ya."
+- **CCTV.** No candidate repository has been identified yet. Reading store
+  transactions, employee movement and security alerts from camera feeds is three
+  different problems, and they may not share one adoption.
+
+Write the class and the specialist file in the same change as the adoption, so
+the route and its destination land together or not at all.
