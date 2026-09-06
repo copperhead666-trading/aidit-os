@@ -1204,7 +1204,7 @@ function testRealStepListIncludesMergeSteward() {
   try {
     const step = HEARTBEAT_STEPS.find((s) => s.name === "merge-steward");
     assert.ok(step, "merge-steward step exists in the real heartbeat pipeline");
-    assert.deepEqual(step.argv, ["ops-watcher/merge-steward.mjs", "--once"], "merge-steward argv is the mandated --once invocation");
+    assert.deepEqual(step.argv, ["ops-watcher/merge-steward.mjs", "--once", "--no-suite"], "merge-steward argv is the mandated --once --no-suite invocation");
     ok(name);
   } catch (err) { bad(name, err); }
 }
