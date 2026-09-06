@@ -94,3 +94,38 @@ Slugs drop the division prefix, and an ampersand in a name is **removed**, not
 expanded. `Secrets & Credential Hygiene Engineer` becomes
 `secrets-credential-hygiene-engineer`, not `secrets-and-credential-...`. A
 slugifier that expands `&` to `and` silently fails to find it.
+
+## Which lane suits which shape of task — measured 2026-09-06/07
+
+Not a preference. These are the runs, and they were consistent enough to route
+on.
+
+**CORLEONE (codex) is the lane for wide-read work.** It produced adoption survey
+C -- six upstream files against six of ours, four structured sections, a file and
+line number on both sides of every claim -- in ONE turn. It also landed the
+five-file refusal-honouring change with tests in one run. Codex batches its
+reads; a task whose cost is "open twelve files and hold them together" fits it
+and almost nothing else here.
+
+**HATTA is the lane for narrow edits.** On `kimi-k2.7-code:cloud` it landed a
+one-regex fix in 32 turns and an orchestration survey in 26. Given the same
+knowledge survey that CORLEONE finished in one turn, it spent all forty tool
+calls and wrote nothing. The ceiling is 40 (`HATTA_MAX_ITER`, hard 40); reading
+twelve files and writing a report does not fit inside it, and no model choice
+changes that arithmetic.
+
+**SJAHRIR (kimi CLI) is the lane for multi-rule implementation with tests.** It
+landed the content-hash executor fix, the runtime-state split and the steward
+false-alarm work, each several hundred lines with new tests. Its wall is time,
+not tool calls: 480s, and three runs this week had the code written and the suite
+green when it hit.
+
+The practical rule: **count the files a packet must OPEN before choosing a lane.**
+Over about six, send it to CORLEONE. Under three with tests, HATTA. In between,
+or where the work is one module and a test file, SJAHRIR.
+
+Two quota facts that go with this. SJAHRIR's kimi CLI has a five-hour window and
+returns `403 ... 5-hour usage limit`; the dispatcher refuses without spawning and
+says how many minutes remain. HATTA's kimi runs through Ollama and is a
+DIFFERENT pool -- measured 2026-09-07, the Ollama endpoint answered 200 in 2.4s
+while the CLI was rate-limited. The two lanes do not fail together.
