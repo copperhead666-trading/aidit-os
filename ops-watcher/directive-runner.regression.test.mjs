@@ -432,6 +432,14 @@ await t("classifyDirective covers new, awaiting-approval, approved, rejected, do
   assert.equal(cls.state, "stalled");
 });
 
+await t("classifyDirective requires RESULT_MARKER at the start of the trimmed comment body", () => {
+  assert.equal(classifyDirective(issue(), [c(`${RESULT_MARKER}\nsecond line`)], { now: NOW }).state, "done");
+  assert.equal(classifyDirective(issue(), [c(`  ${RESULT_MARKER}: done`)], { now: NOW }).state, "done");
+  assert.equal(classifyDirective(issue(), [c(`prefix ${RESULT_MARKER}: not at start`)], { now: NOW }).state, "new");
+  assert.equal(classifyDirective(issue(), [c(`DIRECTIVE RESULT extra`)], { now: NOW }).state, "done");
+  assert.equal(classifyDirective(issue({ status: "done" }), [c(`Some plain text`)], { now: NOW }).state, "done");
+});
+
 await t("classifyDirective keeps ordinary plan approval approved when no execution-cap report is between them", () => {
   const planAt = "2026-09-01T09:00:00.000Z";
   const approvalAt = "2026-09-01T09:30:00.000Z";

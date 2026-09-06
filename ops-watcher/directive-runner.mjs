@@ -438,7 +438,7 @@ export function classifyDirective(issue, comments, { now = Date.now, stalledAfte
   const status = String(issue?.status || "").toLowerCase();
   const isDirective = hasLabel(issue, "DIRECTIVE");
 
-  if (status === "done" || cmts.some((c) => bodyOf(c).includes(RESULT_MARKER))) {
+  if (status === "done" || cmts.some((c) => bodyOf(c).trim().startsWith(RESULT_MARKER))) {
     return { state: "done", reason: status === "done" ? "status done" : "result marker present", lastCommentAt };
   }
   if (!isDirective) return { state: "ignored", reason: "missing DIRECTIVE label", lastCommentAt };
