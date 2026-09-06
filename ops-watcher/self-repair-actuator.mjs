@@ -47,13 +47,18 @@ export const BACKUP_DIR = path.join(__dirname, ".self-repair-backups");
 // Repair lane registry. Each entry maps a lane name to the node-wrapper relay
 // a real dispatch spawns through (`wrapper`, repo-relative) and the lane-guard
 // identity (`guardName`) used by guardLaneStart / recordLaneOutcome. The
-// default lane is CORLEONE; a drill may select HATTA when CORLEONE is
-// quota-blocked, because a real end-to-end repair must run on whichever lane is
-// actually alive.
+// default lane is CORLEONE; a drill may select any writing lane that has a
+// wrapper. GIBRAN is honest review-only metadata: review-runner.mjs calls hermes
+// directly, so there is no node wrapper for directive/self-repair execution.
+// SOEKARNO is registered so read-only AHMAD tasks can name it, but self-repair
+// never sends it write work because soekarno-dispatch.mjs exposes only Read.
 // =====================================================================
 export const REPAIR_LANES = {
-  corleone: { wrapper: "ops-watcher/corleone-dispatch.mjs", guardName: "corleone" },
-  hatta:    { wrapper: "ops-watcher/hatta-dispatch.mjs",    guardName: "hatta" },
+  corleone: { wrapper: "ops-watcher/corleone-dispatch.mjs", guardName: "corleone", role: "heavy-implementation" },
+  hatta:    { wrapper: "ops-watcher/hatta-dispatch.mjs",    guardName: "hatta",    role: "small-edits" },
+  sjahrir:  { wrapper: "ops-watcher/sjahrir-dispatch.mjs",  guardName: "sjahrir",  role: "analysis-large-context" },
+  gibran:   { wrapper: null,                                guardName: "gibran",   role: "review-only", reviewOnly: true },
+  soekarno: { wrapper: "ops-watcher/soekarno-dispatch.mjs", guardName: "soekarno", role: "read-only", readOnly: true },
 };
 export const DEFAULT_REPAIR_LANE = "corleone";
 
@@ -343,9 +348,12 @@ export async function attemptRepair(fault, deps = {}) {
     await writeStateRaw(fresh, { writeFile: deps.writeFile, stateFile });
   }
 
-  // (0) Unknown lane: reject before doing anything else.
+  // (0) Unknown or non-writing lane: reject before doing anything else.
   if (!lane) {
     return emit({ outcome: "refused", reason: "unknown-lane" });
+  }
+  if (!lane.wrapper || lane.readOnly) {
+    return emit({ outcome: "refused", reason: lane.readOnly ? "lane-read-only" : "lane-review-only" });
   }
 
   // (a) Envelope: deny-listed / unscoped step.
@@ -547,8 +555,11 @@ export function evaluateDrillChecks({
 // restore failed.
 // =====================================================================
 async function runDrill({ dry, lane }) {
-  if (!REPAIR_LANES[lane]) {
-    console.error(`unknown lane: ${lane} (valid: ${Object.keys(REPAIR_LANES).join(", ")})`);
+  if (!REPAIR_LANES[lane] || !REPAIR_LANES[lane].wrapper || REPAIR_LANES[lane].readOnly) {
+    const valid = Object.entries(REPAIR_LANES)
+      .filter(([, entry]) => entry.wrapper && !entry.readOnly)
+      .map(([key]) => key);
+    console.error(`unknown writable lane: ${lane} (valid: ${valid.join(", ")})`);
     return 1;
   }
 
