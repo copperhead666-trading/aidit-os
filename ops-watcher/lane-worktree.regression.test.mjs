@@ -45,13 +45,20 @@ function fakeFs({ exists = () => false } = {}) {
 
 function fakeExec(handler) {
   const calls = [];
+  const exec = (cmd, args, options = {}) => {
+    calls.push({ cmd, args: [...args], cwd: options.cwd });
+    return handler ? handler(args, options) : "";
+  };
   return {
     calls,
-    exec: (cmd, args) => {
-      calls.push({ cmd, args: [...args] });
-      return handler ? handler(args) : "";
-    },
+    exec,
   };
+}
+
+function assertGitCallIsSafe(call, expectedCwd) {
+  assert.equal(call.cmd, "git");
+  assert.equal(call.args[0], "-c", "git call starts with a per-command config override");
+  assert.equal(call.args[1], `safe.directory=${expectedCwd}`, "git trusts only the cwd it is about to inspect");
 }
 
 async function t1_eachLaneGetsItsOwnPathAndBranch() {
@@ -102,13 +109,14 @@ async function t3_createsTheWorktreeWhenAbsent() {
     assert.equal(r.isolated, true);
     assert.equal(r.created, true);
     assert.equal(r.branch, "lane/corleone");
-    const add = ex.calls.find((c) => c.args[0] === "worktree" && c.args[1] === "add");
+    const add = ex.calls.find((c) => c.args.slice(2, 4).join(" ") === "worktree add");
     assert.ok(add, "git worktree add was called");
     // -B, not -b: the branch can outlive its directory, and plain -b fails on an
     // existing branch, so a re-run after someone deleted the folder by hand
     // would break.
-    assert.equal(add.args[2], "-B", "uses -B so a re-run after a manual delete still works");
-    assert.equal(add.args[3], "lane/corleone");
+    assertGitCallIsSafe(add, REPO_ROOT);
+    assert.equal(add.args[4], "-B", "uses -B so a re-run after a manual delete still works");
+    assert.equal(add.args[5], "lane/corleone");
     ok(name);
   } catch (err) { bad(name, err); }
 }
@@ -126,8 +134,9 @@ async function t4_reusesAnExistingWorktree() {
     // The one git call it MAY make is a read: how dirty is the tree it is about
     // to hand over. Reused does not mean clean, and a lane that inherits another
     // run's leftovers produces a diff containing work nobody asked it to do.
-    assert.deepEqual(ex.calls.map((c) => c.args.join(" ")), ["status --porcelain"],
+    assert.deepEqual(ex.calls.map((c) => c.args.slice(2).join(" ")), ["status --porcelain"],
       "reuse asks exactly one read-only question and mutates nothing");
+    assertGitCallIsSafe(ex.calls[0], worktreePathFor("sjahrir"));
     ok(name);
   } catch (err) { bad(name, err); }
 }

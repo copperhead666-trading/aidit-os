@@ -790,8 +790,8 @@ export function validateCommand(command, args) {
   return policy(commandArgs);
 }
 
-function makeSafeExecEnv(command) {
-  const env = { ...process.env };
+function makeSafeExecEnv(command, baseEnv = process.env) {
+  const env = { ...baseEnv };
   for (const key of [
     "NODE_OPTIONS",
     "BUN_OPTIONS",
@@ -802,9 +802,17 @@ function makeSafeExecEnv(command) {
     "GCM_INTERACTIVE",
     "npm_config_script_shell",
   ]) delete env[key];
+  for (const key of Object.keys(env)) {
+    if (/^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/i.test(key)) delete env[key];
+  }
   env.GIT_TERMINAL_PROMPT = "0";
   env.GIT_CONFIG_NOSYSTEM = "1";
   env.GIT_CONFIG_GLOBAL = path.join(WORKSPACE_ROOT, "hatta", ".harness-empty-gitconfig");
+  if (command === "git") {
+    env.GIT_CONFIG_COUNT = "1";
+    env.GIT_CONFIG_KEY_0 = "safe.directory";
+    env.GIT_CONFIG_VALUE_0 = WORKSPACE_ROOT;
+  }
   env.GIT_PAGER = "cat";
   env.PAGER = "cat";
   env.HUSKY = "0";
@@ -812,16 +820,16 @@ function makeSafeExecEnv(command) {
   return env;
 }
 
-function buildExecPlan(command, args) {
+export function buildExecPlan(command, args, { env = process.env } = {}) {
   if (command === "git") {
     const subcmd = args[0] === "--no-pager" ? args[1] : args[0];
     const rest = args[0] === "--no-pager" ? args.slice(2) : args.slice(1);
     const forced = ["--no-pager", subcmd];
     if (["diff", "log", "show"].includes(subcmd)) forced.push("--no-ext-diff", "--no-textconv");
-    return { command, args: [...forced, ...rest], env: makeSafeExecEnv(command) };
+    return { command, args: [...forced, ...rest], env: makeSafeExecEnv(command, env) };
   }
-  if (command === "rg") return { command, args: [...RG_FORCED_ARGS, ...args], env: makeSafeExecEnv(command) };
-  return { command, args, env: makeSafeExecEnv(command) };
+  if (command === "rg") return { command, args: [...RG_FORCED_ARGS, ...args], env: makeSafeExecEnv(command, env) };
+  return { command, args, env: makeSafeExecEnv(command, env) };
 }
 async function runCommandTool(args) {
   const command = String(args?.command ?? "");

@@ -12,6 +12,7 @@ import {
   validateCommand,
   resolveWorkspacePath,
   protectedWorkspacePathReason,
+  buildExecPlan,
   editFileTool,
   HARNESS_EVIDENCE_PATH,
   handleTerminationSignal,
@@ -255,6 +256,20 @@ mustAllowCommand("allow node --test on workspace test", "node", ["--test", "hatt
 mustAllowCommand("allow npm run test policy shape", "npm", ["run", "test"]);
 mustAllowCommand("allow bun test on workspace test only", "bun", ["test", "hatta/harness.security.test.mjs"]);
 mustAllowCommand("allow echo text even if it contains rm as harmless data", "echo", ["please", "rm", "nothing"]);
+
+add("git exec plan trusts the HATTA workspace without exposing git -c to the model", () => {
+  const inherited = {
+    ...process.env,
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "alias.pwn",
+    GIT_CONFIG_VALUE_0: "!powershell -enc AAAA",
+  };
+  const plan = buildExecPlan("git", ["status", "--short"], { env: inherited });
+  assert.deepEqual(plan.args, ["--no-pager", "status", "--short"]);
+  assert.equal(plan.env.GIT_CONFIG_COUNT, "1");
+  assert.equal(plan.env.GIT_CONFIG_KEY_0, "safe.directory");
+  assert.equal(plan.env.GIT_CONFIG_VALUE_0, WORKSPACE_ROOT);
+});
 
 // ---------------------------------------------------------------------------
 // F1/F4/F5/F7: git must be a read-only subcommand policy, not a git allowlist.
