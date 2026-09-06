@@ -1,166 +1,35 @@
 // ops-watcher/gbrain-curator.mjs
-// Single-sweep GBrain curator for canonical FounderOS-Aidit sources.
-// Ingests the five canonical source files that ops-watcher/ahmad-context-retrieval.mjs
-// expects to find indexed in GBrain (by slug), but only when the source file's mtime
-// is newer than the last successful ingestion recorded in a small local state file.
+// Single-sweep G-Brain curator for knowledge/store/notes/*.md.
 //
-//   node ops-watcher/gbrain-curator.mjs --once
-//
-// This is intentionally read-only with respect to Paperclip and Telegram. It only
-// spawns `gbrain capture --file ... --slug ... --type concept --json` for stale or
-// never-ingested canonical files. `capture --file` is used instead of `gbrain put`
-// because `put` routes through stdin and has a documented ~45KB pipe-buffer limit on
-// Windows; `capture` reads the file directly.
-//
-// The five slugs and their relative source paths are duplicated here (not imported)
-// because ahmad-context-retrieval.mjs defines KNOWN_CANONICAL_SOURCES as an internal
-// `const`. Keeping this copy identical to that map is critical: the retrieval side's
-// inferCanonicalPath/freshness-check logic depends on these exact slugs.
+// It no longer calls a missing `gbrain` CLI. The local engine is
+// ops-watcher/gbrain.mjs, which chunks markdown, embeds with Ollama, and writes
+// knowledge/store/.gbrain/index.json.
 
-import { promises as fs, readFileSync as defaultReadFileSync } from "node:fs";
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
-import os from "node:os";
+import {
+  buildGbrainIndex,
+  DEFAULT_NOTES_DIR,
+  GBRAIN_INDEX_FILE,
+  listMarkdownNoteFiles,
+} from "./gbrain.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
 
-// Mirrors the KNOWN_CANONICAL_SOURCES map in ahmad-context-retrieval.mjs.
-// DO NOT change slugs here without changing the read-side map there.
-const KNOWN_CANONICAL_SOURCES = new Map([
-  ["agent-registry", "config/agent-registry.json"],
-  ["canonical-decision-ledger", "config/decision-ledger.json"],
-  ["paperclip-endpoint", "config/paperclip-endpoint.json"],
-  ["master-canonical-backlog", "handoffs/sjahrir/MASTER-CANONICAL-BACKLOG.json"],
-  ["canonical-role-map", "handoffs/sjahrir/CANONICAL-ROLE-MAP.json"],
-]);
-
 const DEFAULT_STATE_FILE = path.join(__dirname, "gbrain-curator-state.json");
-export const CAPTURE_TIMEOUT_MS = 300000;
 export const BACKOFF_MS = 6 * 60 * 60 * 1000;
-export const GBRAIN_LOCK_FILE = path.join(os.homedir(), ".gbrain", "brain.pglite", ".gbrain-lock", "lock");
-export const PROJECTION_MAX_BYTES = 60000;
-export function projectAgentRegistry(rawText) {
-  const source = JSON.parse(rawText);
-  const projection = {
-    projection_note: "Proyeksi ringkas dari config/agent-registry.json (sumber asli 181KB, terlalu besar untuk di-embed). Bagian naratif/historis dihilangkan; hanya metadata dan roster agen yang disertakan.",
-    source_path: "config/agent-registry.json",
-  };
-  for (const key of [
-    "schema_version",
-    "workspace",
-    "last_updated_at",
-    "canonical_boundary_note",
-    "note",
-    "agents",
-    "retired_reference_only",
-    "external_agents_not_owned_by_this_registry",
-  ]) {
-    if (Object.prototype.hasOwnProperty.call(source, key)) {
-      projection[key] = source[key];
-    }
-  }
-  return JSON.stringify(projection, null, 2);
+
+function rootRel(file) {
+  const rel = path.relative(ROOT, path.resolve(file));
+  return rel.startsWith("..") || path.isAbsolute(rel) ? path.resolve(file) : rel.split(path.sep).join("/");
 }
 
-// Distilling projection for config/decision-ledger.json. The canonical ledger grew
-// past the raw-file capture path (47KB after 24 legacy records were merged) and every
-// capture since has failed. Like projectAgentRegistry, this keeps only the fields that
-// GBrain needs to reason about owner decisions and drops the heavy provenance/notes/
-// monetary/temporal/dependency/migration-bookkeeping payload.
-//
-// Two rules (mirrored from the agent-registry projection and enforced below):
-//   1. A projection must never be the reason a capture fails — if the input does not
-//      parse, return it unchanged instead of throwing.
-//   2. Never summarise or reword a `statement`. The statement is copied verbatim; it is
-//      the owner's own words and a paraphrase in the knowledge graph would be worse than
-//      an absent record.
-export function projectDecisionLedger(rawText) {
-  let source;
-  try {
-    source = JSON.parse(rawText);
-  } catch {
-    // Rule 1: never be the reason a capture fails. Return the raw text unchanged so the
-    // caller can decide what to do with it (it will simply be sent on as-is).
-    return rawText;
-  }
-  const projection = {
-    projection_note: "Proyeksi ringkas dari config/decision-ledger.json (sumber asli ~47KB setelah penggabungan legacy ledger). Field berat — provenance, notes, source, monetary_values, temporal, dependencies, serta bookkeeping migrasi (imported_from / migrated_from / migrated_at) — dihilangkan. Per record hanya id, type, status, domain, statement (verbatim, tidak dparafrasekan), dan canonical yang disertakan; di tingkat atas hanya scope dan merged_legacy_ledger_at. Pernyataan (statement) adalah kata-kata owner sendiri dan disalin apa adanya.",
-    source_path: "config/decision-ledger.json",
-  };
-  for (const key of ["scope", "merged_legacy_ledger_at"]) {
-    if (Object.prototype.hasOwnProperty.call(source, key)) {
-      projection[key] = source[key];
-    }
-  }
-  // Per-record keep list. The statement field is copied by reference, never reworded.
-  const RECORD_KEYS = ["id", "type", "status", "domain", "statement", "canonical"];
-  if (Array.isArray(source.records)) {
-    projection.records = source.records.map((rec) => {
-      const out = {};
-      if (rec && typeof rec === "object") {
-        for (const key of RECORD_KEYS) {
-          if (Object.prototype.hasOwnProperty.call(rec, key)) {
-            out[key] = rec[key];
-          }
-        }
-      }
-      return out;
-    });
-  }
-  return JSON.stringify(projection, null, 2);
+function resolveFromRoot(file) {
+  return path.isAbsolute(file) ? file : path.resolve(ROOT, file);
 }
 
-export const SOURCE_PROJECTIONS = new Map([
-  ["agent-registry", projectAgentRegistry],
-  ["canonical-decision-ledger", projectDecisionLedger],
-]);
-
-async function defaultReadSource(file) {
-  return fs.readFile(file, "utf8");
-}
-
-async function defaultWriteTemp(slug, text) {
-  const tempFile = path.join(os.tmpdir(), "gbrain-curator-" + slug + ".json");
-  await fs.writeFile(tempFile, text, "utf8");
-  return tempFile;
-}
-
-function defaultIsPidAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    if (err && err.code === "EPERM") return true;
-    return false;
-  }
-}
-
-export function readGbrainLockHolder(lockFile, { readFileSync = defaultReadFileSync, isPidAlive = defaultIsPidAlive } = {}) {
-  let raw;
-  try {
-    raw = readFileSync(lockFile, "utf8");
-  } catch {
-    return null;
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== "object" || typeof parsed.pid !== "number" || !isPidAlive(parsed.pid)) {
-    return null;
-  }
-  return { pid: parsed.pid, command: parsed.command };
-}
-
-// ---- State-file persistence (mirrors telegram-listener.mjs) ----
-// defaultReadState returns { ok, value?, code?, message? }. ok=false with
-// code "ENOENT" means the file simply does not exist yet (first run) — caller
-// treats that as an empty state with no warning. Any OTHER read failure (corrupt
-// JSON, permission error) is surfaced so the caller can WARN.
 export async function defaultReadState(file) {
   try {
     return { ok: true, value: JSON.parse(await fs.readFile(file, "utf8")) };
@@ -169,8 +38,6 @@ export async function defaultReadState(file) {
   }
 }
 
-// defaultWriteState returns { ok, code?, message? }. A failure here means the
-// next run may re-ingest files that have not actually changed.
 export async function defaultWriteState(file, obj) {
   try {
     await fs.writeFile(file, JSON.stringify(obj, null, 2), "utf8");
@@ -180,125 +47,46 @@ export async function defaultWriteState(file, obj) {
   }
 }
 
-// Spawn `gbrain capture --file <sourceFile> --slug <slug> --type concept --json`
-// and return a normalized { ok, slug, error? } result. ok=true only when the
-// process exits 0 AND the JSON stdout does not itself contain an error field.
-function terminateTimedOutCapture(child, { platform = process.platform, spawnFn = spawn } = {}) {
-  if (platform === "win32" && child && child.pid) {
-    try {
-      const killer = spawnFn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
-        stdio: "ignore",
-        windowsHide: true,
-      });
-      if (killer && typeof killer.on === "function") killer.on("error", () => {});
-      return;
-    } catch {
-      // Fall through to the ordinary kill attempt below.
-    }
+async function resolveNoteFiles(deps) {
+  if (Array.isArray(deps.noteFiles)) return deps.noteFiles.map(resolveFromRoot);
+  if (deps.sources && typeof deps.sources.values === "function") {
+    return [...deps.sources.values()].map(resolveFromRoot);
   }
-  try { child.kill("SIGTERM"); } catch { /* ignore */ }
+  return listMarkdownNoteFiles(deps.notesDir || DEFAULT_NOTES_DIR, deps);
 }
 
-export function runCaptureReal(sourceFile, slug, { timeoutMs = CAPTURE_TIMEOUT_MS, spawnFn = spawn, platform = process.platform } = {}) {
-  return new Promise((resolve) => {
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    let child;
-    try {
-      child = spawnFn("gbrain", ["capture", "--file", sourceFile, "--slug", slug, "--type", "concept", "--json"], {
-        cwd: ROOT,
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-      });
-    } catch (err) {
-      resolve({ ok: false, slug, error: String(err && err.message ? err.message : err) });
-      return;
-    }
-    const timer = setTimeout(() => {
-      timedOut = true;
-      terminateTimedOutCapture(child, { platform, spawnFn });
-    }, timeoutMs);
-    child.stdout.on("data", (d) => { stdout += d.toString(); });
-    child.stderr.on("data", (d) => { stderr += d.toString(); });
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      resolve({ ok: false, slug, error: String(err && err.message ? err.message : err) });
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (code !== 0 || timedOut) {
-        resolve({
-          ok: false,
-          slug,
-          error: timedOut
-            ? `gbrain capture timed out after ${timeoutMs}ms`
-            : `gbrain capture exited ${code}: ${stderr || stdout || "(no output)"}`,
-        });
-        return;
-      }
-      let parsed;
-      try {
-        parsed = JSON.parse(stdout);
-      } catch (err) {
-        resolve({ ok: false, slug, error: `failed to parse gbrain JSON: ${err && err.message ? err.message : err}` });
-        return;
-      }
-      if (parsed && parsed.error) {
-        resolve({ ok: false, slug, error: String(parsed.error) });
-        return;
-      }
-      resolve({ ok: true, slug, data: parsed });
-    });
-  });
+function priorMtime(state, rel) {
+  const noteMtimes = state && typeof state.noteMtimes === "object" ? state.noteMtimes : {};
+  const value = noteMtimes[rel] ?? state?.[rel];
+  return Number.isFinite(value) ? value : null;
 }
 
-function resolveSourceFile(relPath) {
-  return path.resolve(ROOT, relPath);
+function buildSignature(files) {
+  return files
+    .map((file) => `${file.rel}:${file.mtimeMs}`)
+    .sort()
+    .join("|");
 }
 
-function rootRel(relPath) {
-  const full = resolveSourceFile(relPath);
-  const rel = path.relative(ROOT, full);
-  if (rel.startsWith("..") || path.isAbsolute(rel)) return relPath;
-  return rel;
+function failureActive(state, signature, startedAt) {
+  const failure = state && typeof state.__indexFailure === "object" ? state.__indexFailure : null;
+  return Boolean(
+    failure &&
+    failure.count >= 3 &&
+    failure.signature === signature &&
+    startedAt - failure.lastAttemptMs < BACKOFF_MS
+  );
 }
 
-// Core single sweep. All real I/O is dependency-injected.
-// deps: {
-//   sources (Map<slug, relPath>),
-//   statFile (async (path) => fs.Stats),
-//   runCapture (async (sourceFile, slug) => { ok, slug, error? }),
-//   stateFile (string),
-//   readState (async (file) => { ok, value?, code?, message? }),
-//   writeState (async (file, obj) => { ok, code?, message? }),
-//   readGbrainLockHolder (fn),
-//   lockFile (string),
-//   readFileSync (fn),
-//   isPidAlive (fn),
-//   readSource (async (path) => string),
-//   writeTemp (async (slug, text) => tempPath),
-//   sourceProjections (Map<slug, fn>),
-//   projectionMaxBytes (number),
-//   log (fn),
-//   now (fn)
-// }
 export async function runGbrainCuratorOnce(deps = {}) {
   const {
-    sources = KNOWN_CANONICAL_SOURCES,
+    notesDir = DEFAULT_NOTES_DIR,
+    indexFile = GBRAIN_INDEX_FILE,
     statFile = fs.stat,
-    runCapture = runCaptureReal,
+    buildIndex = buildGbrainIndex,
     stateFile = DEFAULT_STATE_FILE,
     readState = defaultReadState,
     writeState = defaultWriteState,
-    readGbrainLockHolder: checkLock = readGbrainLockHolder,
-    lockFile = GBRAIN_LOCK_FILE,
-    readFileSync = defaultReadFileSync,
-    isPidAlive = defaultIsPidAlive,
-    readSource = defaultReadSource,
-    writeTemp = defaultWriteTemp,
-    sourceProjections = SOURCE_PROJECTIONS,
-    projectionMaxBytes = PROJECTION_MAX_BYTES,
     log = (m) => console.log(m),
     now = Date.now,
   } = deps;
@@ -313,157 +101,121 @@ export async function runGbrainCuratorOnce(deps = {}) {
     state = sr.value;
   } else if (!sr.ok && sr.code !== "ENOENT") {
     stateReadReset = true;
-    log(`gbrain-curator: WARN state file read failed (code=${sr.code || "?"}, msg=${String(sr.message || "").slice(0, 120)}) — resetting freshness state; all sources will be re-evaluated`);
+    log(`gbrain-curator: WARN state file read failed (code=${sr.code || "?"}, msg=${String(sr.message || "").slice(0, 120)}) - resetting freshness state; all notes will be re-evaluated`);
   }
 
-  const nextState = { ...state };
-  if (nextState.__failures && typeof nextState.__failures === "object") {
-    nextState.__failures = { ...nextState.__failures };
-  }
+  const noteFiles = await resolveNoteFiles({ ...deps, notesDir });
+  const existing = [];
   const results = [];
-  let failuresChanged = false;
 
-  for (const [slug, relPath] of sources.entries()) {
-    const sourceFile = resolveSourceFile(relPath);
-    const displayPath = rootRel(relPath);
-
+  for (const file of noteFiles) {
+    const rel = rootRel(file);
     let st;
     try {
-      st = await statFile(sourceFile);
+      st = await statFile(file);
     } catch (err) {
-      if (err && err.code === "ENOENT") {
-        const reason = `source file not found: ${displayPath}`;
-        log(`gbrain-curator: SKIP ${slug} — ${reason}`);
-        results.push({ slug, sourceFile: displayPath, outcome: "skipped-missing", reason });
-        continue;
-      }
-      const reason = `stat failed (${err && err.code || "?"}: ${err && err.message || err})`;
-      log(`gbrain-curator: SKIP ${slug} — ${reason}`);
-      results.push({ slug, sourceFile: displayPath, outcome: "skipped-missing", reason });
+      const reason = err && err.code === "ENOENT"
+        ? `note file not found: ${rel}`
+        : `stat failed (${err && err.code || "?"}: ${err && err.message || err})`;
+      log(`gbrain-curator: SKIP ${rel} - ${reason}`);
+      results.push({ sourceFile: rel, outcome: "skipped-missing", reason });
       continue;
     }
-
-    const recorded = state[slug];
-    const currentMtime = st.mtimeMs;
-    if (Number.isFinite(recorded) && recorded >= currentMtime) {
-      log(`gbrain-curator: SKIP ${slug} — up to date (mtimeMs=${currentMtime})`);
-      results.push({ slug, sourceFile: displayPath, outcome: "up-to-date" });
-      continue;
-    }
-
-    const failures = state.__failures && typeof state.__failures === "object" ? state.__failures : {};
-    const failure = failures[slug];
-
-    if (
-      failure &&
-      typeof failure === "object" &&
-      failure.count >= 3 &&
-      failure.mtimeMs === currentMtime &&
-      startedAt - failure.lastAttemptMs < BACKOFF_MS
-    ) {
-      const retryAfter = new Date(failure.lastAttemptMs + BACKOFF_MS).toISOString();
-      const reason = `backoff after ${failure.count} consecutive failures, retry after ${retryAfter}`;
-      log(`gbrain-curator: SKIP ${slug} — ${reason}`);
-      results.push({ slug, sourceFile: displayPath, outcome: "skipped-backoff", reason });
-      continue;
-    }
-
-    if (failure && typeof failure === "object" && failure.mtimeMs !== currentMtime) {
-      if (nextState.__failures && Object.prototype.hasOwnProperty.call(nextState.__failures, slug)) {
-        delete nextState.__failures[slug];
-        failuresChanged = true;
-      }
-    }
-
-    const lockHolder = await checkLock(lockFile, { readFileSync, isPidAlive });
-    if (lockHolder) {
-      const reason = `gbrain lock held by pid ${lockHolder.pid}, deferring to next sweep`;
-      log(`gbrain-curator: SKIP ${slug} — ${reason}`);
-      results.push({ slug, sourceFile: displayPath, outcome: "skipped-locked", reason });
-      continue;
-    }
-
-    const recordFailure = (reason) => {
-      log(`gbrain-curator: FAIL ${slug} — ${reason}`);
-      if (!nextState.__failures || typeof nextState.__failures !== "object") {
-        nextState.__failures = {};
-      }
-      const priorCount = failure && typeof failure === "object" && failure.mtimeMs === currentMtime ? failure.count : 0;
-      nextState.__failures[slug] = { count: priorCount + 1, lastAttemptMs: startedAt, mtimeMs: currentMtime };
-      failuresChanged = true;
-      results.push({ slug, sourceFile: displayPath, outcome: "failed", reason });
-    };
-
-    let captureSourceFile = sourceFile;
-    const projectSource = sourceProjections && typeof sourceProjections.get === "function" ? sourceProjections.get(slug) : null;
-    if (projectSource) {
-      try {
-        const rawText = await readSource(sourceFile);
-        const projectedText = projectSource(rawText);
-        const sourceBytes = Buffer.byteLength(rawText, "utf8");
-        const projectedBytes = Buffer.byteLength(projectedText, "utf8");
-        if (projectedBytes > projectionMaxBytes) {
-          recordFailure(`projection still too large (${projectedBytes} bytes)`);
-          continue;
-        }
-        captureSourceFile = await writeTemp(slug, projectedText);
-        log(`gbrain-curator: PROJECT ${slug} — ${sourceBytes} bytes -> ${projectedBytes} bytes`);
-      } catch (err) {
-        const reason = String(err && err.message ? err.message : err);
-        recordFailure(reason);
-        continue;
-      }
-    }
-
-    log(`gbrain-curator: CAPTURE ${slug} (${displayPath}) mtimeMs=${currentMtime} previous=${Number.isFinite(recorded) ? recorded : "none"}`);
-    const capture = await runCapture(captureSourceFile, slug);
-    if (!capture.ok) {
-      const reason = capture.error || "capture failed";
-      recordFailure(reason);
-      continue;
-    }
-
-    log(`gbrain-curator: OK ${slug} — captured`);
-    nextState[slug] = currentMtime;
-    if (nextState.__failures && Object.prototype.hasOwnProperty.call(nextState.__failures, slug)) {
-      delete nextState.__failures[slug];
-      failuresChanged = true;
-    }
-    results.push({ slug, sourceFile: displayPath, outcome: "ingested" });
+    existing.push({ file, rel, mtimeMs: st.mtimeMs });
   }
 
-  // Only write state if at least one source was successfully ingested, if a
-  // failure counter changed, OR if the state file was reset on read (so a fresh
-  // empty state is persisted). If nothing changed and the read was clean, skip
-  // the write entirely.
-  const shouldWrite = stateReadReset || results.some((r) => r.outcome === "ingested") || failuresChanged;
+  const stale = existing.filter((file) => {
+    const recorded = priorMtime(state, file.rel);
+    return !Number.isFinite(recorded) || recorded < file.mtimeMs;
+  });
+
+  if (existing.length === 0) {
+    results.push({ outcome: "skipped-empty", reason: "no markdown notes found" });
+  }
+
+  for (const file of existing) {
+    if (stale.includes(file)) continue;
+    log(`gbrain-curator: SKIP ${file.rel} - up to date (mtimeMs=${file.mtimeMs})`);
+    results.push({ sourceFile: file.rel, outcome: "up-to-date" });
+  }
+
+  const nextState = {
+    ...state,
+    noteMtimes: {
+      ...(state && typeof state.noteMtimes === "object" ? state.noteMtimes : {}),
+    },
+  };
+  let failuresChanged = false;
+
+  const signature = buildSignature(stale);
+  if (stale.length > 0 && failureActive(state, signature, startedAt)) {
+    const failure = state.__indexFailure;
+    const retryAfter = new Date(failure.lastAttemptMs + BACKOFF_MS).toISOString();
+    const reason = `backoff after ${failure.count} consecutive failures, retry after ${retryAfter}`;
+    for (const file of stale) {
+      log(`gbrain-curator: SKIP ${file.rel} - ${reason}`);
+      results.push({ sourceFile: file.rel, outcome: "skipped-backoff", reason });
+    }
+  } else if (stale.length > 0) {
+    try {
+      log(`gbrain-curator: INDEX ${stale.length} stale note(s) -> ${rootRel(indexFile)}`);
+      const built = await buildIndex({
+        notesDir,
+        indexFile,
+        noteFiles: existing.map((file) => file.file),
+      });
+      for (const file of existing) nextState.noteMtimes[file.rel] = file.mtimeMs;
+      delete nextState.__indexFailure;
+      failuresChanged = Boolean(state.__indexFailure);
+      for (const file of stale) {
+        results.push({
+          sourceFile: file.rel,
+          outcome: "indexed",
+          chunks: built.chunks,
+          embedded: built.embedded,
+          reused: built.reused,
+        });
+      }
+      log(`gbrain-curator: OK indexed ${built.files} file(s), chunks=${built.chunks}, embedded=${built.embedded}, reused=${built.reused}`);
+    } catch (err) {
+      const reason = String(err && err.message ? err.message : err);
+      const prior = state && typeof state.__indexFailure === "object" && state.__indexFailure.signature === signature
+        ? state.__indexFailure.count
+        : 0;
+      nextState.__indexFailure = { count: prior + 1, lastAttemptMs: startedAt, signature };
+      failuresChanged = true;
+      for (const file of stale) {
+        log(`gbrain-curator: FAIL ${file.rel} - ${reason}`);
+        results.push({ sourceFile: file.rel, outcome: "failed", reason });
+      }
+    }
+  }
+
+  const shouldWrite = stateReadReset || stale.length > 0 || failuresChanged;
   let persistError = null;
   if (shouldWrite) {
     const wr = await writeState(stateFile, nextState);
     if (!wr.ok) {
       persistError = wr.code || wr.message || "write-failed";
-      log(`gbrain-curator: ERROR persisting state FAILED (code=${wr.code || "?"}, msg=${String(wr.message || "").slice(0, 120)}) — next run may re-ingest unchanged files`);
+      log(`gbrain-curator: ERROR persisting state FAILED (code=${wr.code || "?"}, msg=${String(wr.message || "").slice(0, 120)}) - next run may re-index unchanged notes`);
     } else {
-      log(`gbrain-curator: persisted state (${Object.keys(nextState).length} slugs)`);
+      log(`gbrain-curator: persisted state (${Object.keys(nextState.noteMtimes || {}).length} notes)`);
     }
   }
 
   const finishedAt = now();
-  const ingested = results.filter((r) => r.outcome === "ingested").length;
+  const indexed = results.filter((r) => r.outcome === "indexed").length;
   const upToDate = results.filter((r) => r.outcome === "up-to-date").length;
-  const skipped = results.filter((r) => r.outcome === "skipped-missing").length;
+  const skipped = results.filter((r) => r.outcome && r.outcome.startsWith("skipped")).length;
   const failed = results.filter((r) => r.outcome === "failed").length;
-  const skippedLocked = results.filter((r) => r.outcome === "skipped-locked").length;
-  const skippedBackoff = results.filter((r) => r.outcome === "skipped-backoff").length;
-  log(`gbrain-curator --once DONE ${new Date(finishedAt).toISOString()} — ingested=${ingested} up-to-date=${upToDate} skipped=${skipped} failed=${failed} skipped-locked=${skippedLocked} skipped-backoff=${skippedBackoff}`);
+  log(`gbrain-curator --once DONE ${new Date(finishedAt).toISOString()} - indexed=${indexed} up-to-date=${upToDate} skipped=${skipped} failed=${failed}`);
 
   return { results, persistError };
 }
 
-// ---- CLI ----
 function parseArgs(argv) {
   const out = { once: false };
-  for (let i = 2; i < argv.length; i++) {
+  for (let i = 2; i < argv.length; i += 1) {
     if (argv[i] === "--once") out.once = true;
   }
   return out;

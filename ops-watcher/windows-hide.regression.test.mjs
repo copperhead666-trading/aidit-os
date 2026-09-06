@@ -49,9 +49,14 @@ async function t(name, fn) {
 
 await t("T1 every first-party spawn call site passes windowsHide", async () => {
   const sites = await auditRepo();
-  // A scanner that finds nothing would pass vacuously. It found 69 sites after
-  // .claude was added on purpose; the floor guards against the scan silently breaking.
-  assert.ok(sites.length >= 69, `expected the scan to find the repository's call sites, found ${sites.length}`);
+  // A scanner that finds nothing would pass vacuously, so this floor guards
+  // against the scan silently breaking. It was 69 after .claude was added; it is
+  // 67 since gbrain-curator stopped shelling out to the `gbrain` CLI that was
+  // never installed on this machine, which removed exactly two call sites (the
+  // `gbrain capture` spawn and the `taskkill` that killed it on timeout). The
+  // floor was lowered only after confirming those two, by diff — lowering it to
+  // make a red test green is how this guard would quietly stop guarding.
+  assert.ok(sites.length >= 67, `expected the scan to find the repository's call sites, found ${sites.length}`);
   const bad = offenders(sites);
   const report = bad.map((s) => `  ${s.file}:${s.line}  ${s.callee}(${s.snippet})`).join("\n");
   assert.equal(
