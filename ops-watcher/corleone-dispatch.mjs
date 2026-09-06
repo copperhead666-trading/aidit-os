@@ -330,6 +330,22 @@ export async function dispatchCorleone(prompt, deps = {}) {
   else if (source.ventureId) process.stderr.write(`corleone-dispatch: ${source.reason}; continuing in Aidit OS\n`);
   if (!workspace.isolated) process.stderr.write(`corleone-dispatch: ${workspace.reason}
 `);
+  if (workspace.refused === true) {
+    const reason = workspace.reason || "lane worktree refused";
+    await _recordLaneOutcome("corleone", { ok: false, stdout: "", stderr: reason });
+    await _logLaneUsage({
+      lane: "corleone",
+      runId,
+      promptLength: prompt.length,
+      ok: false,
+      exitCode: 1,
+      durationMs: 0,
+      stdout: "",
+      stderr: reason,
+      extra: { refused: true, reason },
+    });
+    return { ok: false, refused: true, reason, stdout: "", stderr: reason, exitCode: 1, runId };
+  }
   // Isolation is not the only thing worth saying out loud. A reused worktree
   // may still hold an earlier run's files, and this lane's diff would then
   // contain work nobody asked it to do. Nothing is cleaned here: those files

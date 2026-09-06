@@ -186,7 +186,7 @@ export function behindCount(cwd, { _exec = execFileSync } = {}) {
 
 /**
  * The worktree for `lane`, creating it if absent. Returns
- * { path, branch, created, dirty, head, checkedOutBranch, behind, reason }.
+ * { path, branch, created, isolated, refused, dirty, head, checkedOutBranch, behind, reason }.
  * `dirty` is the number of uncommitted WORK entries in a REUSED worktree —
  * runtime-state-only changes (RUNTIME_STATE_PATHS, e.g. state/ledger.jsonl)
  * do not count (0 when clean, null when git could not be asked), and 0 for
@@ -194,6 +194,8 @@ export function behindCount(cwd, { _exec = execFileSync } = {}) {
  * `head` is the commit the tree is actually on, `checkedOutBranch` what it is
  * really checked out on (which may differ from `branch`), and `behind` how
  * many commits origin/main is ahead of it (null when it cannot be measured).
+ * `isolated` cannot carry refusals because isolated:false already means the
+ * usable shared-root fallback; `refused:true` alone means the caller must not run.
  *
  * NEVER THROWS. A dispatcher that cannot get an isolated tree must still be able
  * to run — degrading to the shared repo root is worse than isolation but far
@@ -305,7 +307,8 @@ export function ensureLaneWorktree(lane, deps = {}) {
           path: target,
           branch,
           created: false,
-          isolated: false,
+          isolated: true,
+          refused: true,
           dirty,
           head,
           checkedOutBranch,
