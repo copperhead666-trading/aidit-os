@@ -375,3 +375,72 @@ sampai ke `ops-watcher/events.jsonl` — nol baris di sana — sehingga tidak ad
 rekaman apakah mtime berubah pada run mana pun.
 
 Reconcile tetap hijau pada ketiga pemeriksaannya setelah seluruh merge malam ini.
+
+---
+
+## Tambahan ketiga, dan penutup
+
+### 13. KOL-81 akhirnya selesai, dan nilainya null (`b1c09bb`)
+
+`config/ventures.json` sekarang membawa `metrik_terakhir` untuk
+`caveman-trading-os`:
+
+```json
+{ "nilai": null, "dari": 9, "pada": "2026-09-07",
+  "sumber": "ventures/caveman-trading-os/docs/planning/phase-1-workstreams.md",
+  "catatan": "...tidak ada baris, kolom, atau penanda yang mencatat bahwa kriteria itu sudah terpenuhi..." }
+```
+
+Null di sana bukan kegagalan mengukur, melainkan hasil pengukurannya. Dokumen
+sumber menyatakan Definition of Done untuk kesembilan workstream dan tidak
+mencatat di mana pun bahwa salah satunya terpenuhi. Nol akan mengklaim pengukuran
+yang dilakukan dan hasilnya kosong; null menyatakan sumbernya tidak membawa
+faktanya. Aturan pertama registry adalah metrik dikutip dari sumber dan tidak
+pernah dipilih agen — dan nol karangan justru pemilihan yang dilarang aturan itu.
+
+Directive ini gagal empat kali sebelum malam ini dan **tidak satu pun kegagalannya
+tentang tugasnya**: dua karena deskripsi terpotong di 1200 karakter, dua karena
+executor yang mengukur dari mtime. Keduanya diperbaiki malam ini, lalu tugasnya
+selesai dalam satu run.
+
+### 14. Dua keputusan yang premisnya berubah semalam
+
+Keduanya diberi catatan fakta di papan, isinya tidak disentuh — keputusannya
+tetap milik pemilik.
+
+- **KOL-77** ("kedua venture belum punya ukuran maju") tidak lagi tentang
+  ketiadaan ukuran. Keduanya punya sekarang. Yang tersisa lebih sempit: apakah
+  dokumen perencanaan caveman-trading-os perlu kolom status per workstream supaya
+  angkanya bisa dihitung dan tidak tetap null.
+- **KOL-75** ("Aidit OS belum punya salinan di luar mesin ini") sebagian sudah
+  tidak benar. Remote `origin` adalah `github.com/copperhead666-trading/aidit-os`,
+  `main` lokal berjarak nol commit darinya, dan seluruh pekerjaan semalam sudah
+  terdorong. Yang benar-benar tidak tersalin adalah `.paperclip/` — papan
+  operasional berikut 100 issue dan seluruh komentarnya, plus
+  `decision-signing.key` dan `master.key`. Jadi pertanyaannya berubah menjadi
+  apakah papan perlu cadangan dan ke mana, dan itu membawa kunci sehingga
+  jawabannya milik pemilik.
+
+### Keadaan lane pada penutupan
+
+- **SJAHRIR** kehabisan kuota: `403 You've reached your 5-hour usage limit`
+  dari kimi. Ia mendarat delapan kali malam ini dan menulis sebagian besar
+  perbaikan besar.
+- **HATTA** masih hidup di `glm-5.1:cloud`. Terukur malam ini: ia mendarat pada
+  packet satu-fungsi dan tidak pernah mendarat pada packet dua-aturan —
+  dua kali menghabiskan seluruh 40 panggilan tanpa menulis sebaris pun. Packet
+  steward akhirnya dipecah dua atas dasar pengukuran itu, dan separuhnya mendarat.
+- **CORLEONE** tidak dipakai malam ini setelah kuota codex-nya habis lebih awal.
+
+### Papan pada penutupan
+
+```
+done 42   todo 13   backlog 21   in_review 1   cancelled 21   blocked 2
+```
+
+Sisa `OWNER_REQUIRED` seluruhnya pertanyaan pemilik yang sah — KOL-66, KOL-67,
+KOL-75, KOL-76, KOL-77 — bukan cacat alat yang menyamar sebagai pertanyaan. Itu
+perbedaan yang malam ini dibuat: eskalasi palsu di KOL-81 dan KOL-94 dicabut
+setelah sebabnya diperbaiki, bukan dijawab.
+
+Reconcile hijau pada ketiga pemeriksaannya. Suite 86/86 pada setiap merge.
