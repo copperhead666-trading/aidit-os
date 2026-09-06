@@ -43,7 +43,7 @@ import { retrieveDispatchContext } from "./ahmad-context-retrieval.mjs";
 import { deliverAlert } from "./alert-delivery.mjs";
 import { judgeWrite } from "./write-delivery.mjs";
 import { escapeMarkdown, sendMessage as telegramSendMessage } from "./telegram-client.mjs";
-import { resolveSpecialistsForPacket } from "./specialists.mjs";
+import { laneForTaskClass, resolveSpecialistsForPacket } from "./specialists.mjs";
 // The venture registry answers the ventures fence. This file must not decide
 // what a venture is or which paths belong to one — config/ventures.json and
 // ops-watcher/ventures.mjs already own that, and a second answer here would
@@ -178,6 +178,7 @@ const OUTPUT_CAP = 8000;
 // DISPATCH_TIMEOUT_MS exactly.
 const EXECUTION_TIMEOUT_MS = 12 * 60 * 1000;
 const VERIFY_FILE_RED_WITHOUT_FILES_REASON = "verify-file-red-without-files";
+const DIRECTIVE_MAKER_LANE_ORDER = Object.freeze(["corleone", "hatta", "sjahrir", "soekarno"]);
 
 // The EXACT decision-comment prefixes telegram-listener.mjs writes when the
 // owner taps APPROVE / REJECT on a decision card (DECISION_COMMENT_PREFIX in
@@ -489,6 +490,113 @@ async function resolveSpecialistsForIssue(issue, resolver, deps = {}) {
     log(`directive-runner: specialist resolver failed for ${ident}: ${err && err.message ? err.message : err}`);
     return null;
   }
+}
+
+function normalizeLaneKey(value) {
+  const s = String(value || "").trim().toLowerCase();
+  return s || null;
+}
+
+function planDeclaresWriteFiles(plan) {
+  return Array.isArray(plan?.files) && plan.files.length > 0;
+}
+
+function directiveLaneStaticRefusal(laneKey, lane, planWritesFiles) {
+  if (!lane) return "unknown-lane";
+  if (!lane.wrapper) return "review-only";
+  if (lane.readOnly && planWritesFiles) return "read-only";
+  return null;
+}
+
+function directiveLaneCandidates(preferredLane) {
+  const out = [];
+  const add = (lane) => {
+    if (lane && !out.includes(lane)) out.push(lane);
+  };
+  add(preferredLane);
+  for (const lane of DIRECTIVE_MAKER_LANE_ORDER) add(lane);
+  return out;
+}
+
+async function directiveLanePreference({ explicitLane, taskClass, laneForTaskClassFn, laneForTaskClassDeps, log, ident }) {
+  const explicit = normalizeLaneKey(explicitLane);
+  if (explicit) return { lane: explicit, source: "caller" };
+  try {
+    const routed = await laneForTaskClassFn(taskClass, laneForTaskClassDeps || {});
+    const maker = normalizeLaneKey(routed && routed.maker);
+    if (maker) {
+      return { lane: maker, source: routed.source === "skill-matrix" ? "skill-matrix" : "measured-default" };
+    }
+  } catch (err) {
+    log(`directive-runner: laneForTaskClass failed for ${ident}: ${err && err.message ? err.message : err}`);
+  }
+  return { lane: DEFAULT_DIRECTIVE_LANE, source: "default-corleone" };
+}
+
+const DEFAULT_DIRECTIVE_LANE = "corleone";
+
+async function chooseDirectiveLane({
+  explicitLane,
+  taskClass,
+  plan,
+  guardLane,
+  guardDeps,
+  laneForTaskClassFn,
+  laneForTaskClassDeps,
+  log,
+  ident,
+}) {
+  const planWritesFiles = planDeclaresWriteFiles(plan);
+  const pref = await directiveLanePreference({
+    explicitLane,
+    taskClass,
+    laneForTaskClassFn,
+    laneForTaskClassDeps,
+    log,
+    ident,
+  });
+
+  if (explicitLane && !REPAIR_LANES[pref.lane]) {
+    return {
+      ok: false,
+      lane: null,
+      reason: "unknown-lane",
+      laneReason: `caller requested unknown lane ${pref.lane}`,
+    };
+  }
+
+  const skipped = [];
+  for (const laneKey of directiveLaneCandidates(pref.lane)) {
+    const lane = REPAIR_LANES[laneKey];
+    const staticRefusal = directiveLaneStaticRefusal(laneKey, lane, planWritesFiles);
+    if (staticRefusal) {
+      skipped.push(`${laneKey}:${staticRefusal}`);
+      continue;
+    }
+
+    const guard = await guardLane(lane.guardName || laneKey, guardDeps);
+    if (guard && guard.skip) {
+      skipped.push(`${laneKey}:lane-${guard.reason || "unknown"}`);
+      continue;
+    }
+
+    return {
+      ok: true,
+      lane: laneKey,
+      guard,
+      laneReason: skipped.length
+        ? `fallback from ${pref.source} ${pref.lane} to ${laneKey}; skipped ${skipped.join(", ")}`
+        : pref.source,
+    };
+  }
+
+  const lastCooldown = [...skipped].reverse().find((s) => /lane-/.test(s));
+  return {
+    ok: false,
+    lane: null,
+    reason: lastCooldown ? lastCooldown.split(":").slice(1).join(":") : "lane-unavailable",
+    laneReason: `no writable maker lane available from ${pref.source} ${pref.lane}; skipped ${skipped.join(", ")}`,
+  };
 }
 
 function specialistPromptLines(specialists) {
@@ -2686,6 +2794,7 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
   const logLaneOutcomeFn = deps.logLaneOutcome || defaultLogLaneOutcome;
   const statFileFn = deps.statFile || defaultStatFile;
   const resolveSpecialists = deps.resolveSpecialistsForPacket || resolveSpecialistsForPacket;
+  const laneForTaskClassFn = deps.laneForTaskClass || laneForTaskClass;
   // Resolved ONCE per execution. The registry decides which venture paths this
   // directive may touch, and both the re-validation below and the lane's HARD
   // STOPS must be told the same answer — two reads could disagree mid-run.
@@ -2694,6 +2803,7 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
   const log = deps.log || (() => {});
 
   let chosenLane = null;
+  let laneReason = null;
   let laneCalled = false;
   let runId = null;
   let finalLogged = false;
@@ -2705,9 +2815,10 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
         identifier: ident,
         ...result,
         lane: chosenLane,
+        laneReason,
       }, evidenceDeps);
     } catch { /* evidence is best-effort; never let it surface */ }
-    return result;
+    return { ...result, lane: chosenLane, laneReason };
   }
 
   async function statEntry(file) {
@@ -2795,19 +2906,29 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
       return emit({ outcome: "refused", reason: "verify-out-of-scope" });
     }
 
-    // 3. Lane guard with fallback. Try deps.lane || "corleone"; if it is
-    //    skipped, fall back to "hatta". Both unavailable -> skipped.
-    const lanePref = deps.lane || "corleone";
+    const specialists = await resolveSpecialistsForIssue(issue, resolveSpecialists, { log, specialistDeps: deps.specialistDeps });
+
+    // 3. Lane guard with fallback. Caller override remains first, otherwise
+    //    task-class routing picks the maker lane. GIBRAN is review-only, and
+    //    SOEKARNO is read-only, so neither can receive a plan that lists files
+    //    to write. That filter lives here rather than in prompt text because a
+    //    read-only lane given write work fails late and opaquely.
     const guardDeps = deps.guardLaneDeps || {};
-    chosenLane = lanePref;
-    let guard = await guardLaneFn(REPAIR_LANES[lanePref]?.guardName || lanePref, guardDeps);
-    if (guard && guard.skip) {
-      const fallback = "hatta";
-      chosenLane = fallback;
-      guard = await guardLaneFn(REPAIR_LANES[fallback]?.guardName || fallback, guardDeps);
-      if (guard && guard.skip) {
-        return emit({ outcome: "skipped", reason: "lane-" + (guard.reason || "unknown") });
-      }
+    const laneChoice = await chooseDirectiveLane({
+      explicitLane: deps.lane,
+      taskClass: specialists && specialists.taskClass,
+      plan,
+      guardLane: guardLaneFn,
+      guardDeps,
+      laneForTaskClassFn,
+      laneForTaskClassDeps: deps.specialistDeps,
+      log,
+      ident,
+    });
+    chosenLane = laneChoice.lane;
+    laneReason = laneChoice.laneReason;
+    if (!laneChoice.ok) {
+      return emit({ outcome: laneChoice.reason === "unknown-lane" ? "refused" : "skipped", reason: laneChoice.reason });
     }
     const lane = REPAIR_LANES[chosenLane];
 
@@ -2823,7 +2944,6 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
     for (const f of files) before.push(await statEntry(f));
 
     // 6. Dispatch the execution prompt, then record the lane outcome.
-    const specialists = await resolveSpecialistsForIssue(issue, resolveSpecialists, { log, specialistDeps: deps.specialistDeps });
     const prompt = buildExecutionPrompt(issue, plan, specialists, ventures);
     const dispatchFn = deps.dispatchExecution || makeDefaultDispatchExecution(lane && lane.wrapper);
     runId = randomUUID();

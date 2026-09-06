@@ -2200,6 +2200,9 @@ function makeExecDeps(overrides = {}) {
   };
   const laneOutcomes = [];
   const dispatchOptions = [];
+  const evidenceEntries = [];
+  const guardLaneNames = [];
+  const recordOutcomeLaneNames = [];
   let mutated = false;
   const statFile = async (file) => {
     calls.stat++;
@@ -2249,14 +2252,20 @@ function makeExecDeps(overrides = {}) {
     },
     guardLane: async (laneName /*, d */) => {
       calls.guardLane++;
+      guardLaneNames.push(laneName);
+      if (typeof overrides.guardResult === "function") {
+        return overrides.guardResult(laneName, calls.guardLane);
+      }
       return overrides.guardResult !== undefined ? overrides.guardResult : { skip: false, reason: null, laneKey: laneName };
     },
-    recordOutcome: async (/* laneName, result, d */) => {
+    recordOutcome: async (laneName /*, result, d */) => {
       calls.recordOutcome++;
+      recordOutcomeLaneNames.push(laneName);
       return { recorded: true };
     },
-    appendEvidence: async (/* entry, d */) => {
+    appendEvidence: async (entry /*, d */) => {
       calls.appendEvidence++;
+      evidenceEntries.push(entry);
       return undefined;
     },
     logLaneOutcome: async (entry) => {
@@ -2266,7 +2275,17 @@ function makeExecDeps(overrides = {}) {
       return undefined;
     },
   };
-  return { deps, calls, laneOutcomes, dispatchOptions, isMutated: () => mutated, setMutated: (v) => { mutated = v; } };
+  return {
+    deps,
+    calls,
+    laneOutcomes,
+    dispatchOptions,
+    evidenceEntries,
+    guardLaneNames,
+    recordOutcomeLaneNames,
+    isMutated: () => mutated,
+    setMutated: (v) => { mutated = v; },
+  };
 }
 
 await t("buildExecutionPrompt contains identifier, every file, VERIFY, and the no-weaken-assertions hard stop; deterministic across two calls", () => {
@@ -2800,6 +2819,133 @@ await t("executeApprovedDirective specialist resolver failure leaves no-speciali
   assert.equal(logs.some((msg) => /specialist resolver failed.*resolver boom/.test(msg)), true);
 });
 
+await t("executeApprovedDirective: skill-matrix maker selects SJAHRIR instead of default CORLEONE", async () => {
+  const plan = parsePlan(goodPlan);
+  const made = makeExecDeps();
+  delete made.deps.lane;
+  made.deps.resolveSpecialistsForPacket = async () => ({
+    taskClass: "repo-analysis",
+    preferredMaker: "SJAHRIR",
+    section: "",
+    hardStops: [],
+    requiredStandards: [],
+  });
+  made.deps.laneForTaskClass = async (taskClass) => ({
+    maker: taskClass === "repo-analysis" ? "SJAHRIR" : null,
+    reviewer: "GIBRAN",
+    source: "skill-matrix",
+  });
+
+  const res = await executeApprovedDirective(issue({ title: "audit repo", description: "read-only inventory" }), plan, made.deps);
+
+  assert.equal(res.outcome, "done");
+  assert.equal(res.lane, "sjahrir");
+  assert.deepEqual(made.guardLaneNames, ["sjahrir"]);
+  assert.deepEqual(made.recordOutcomeLaneNames, ["sjahrir"]);
+  assert.equal(made.evidenceEntries[0].lane, "sjahrir");
+  assert.match(made.evidenceEntries[0].laneReason, /skill-matrix/);
+});
+
+await t("executeApprovedDirective: explicit deps.lane beats skill-matrix maker", async () => {
+  const plan = parsePlan(goodPlan);
+  const made = makeExecDeps();
+  made.deps.lane = "hatta";
+  made.deps.resolveSpecialistsForPacket = async () => ({ taskClass: "repo-analysis", preferredMaker: "SJAHRIR", section: "" });
+  made.deps.laneForTaskClass = async () => ({ maker: "SJAHRIR", reviewer: "GIBRAN", source: "skill-matrix" });
+
+  const res = await executeApprovedDirective(issue({ title: "audit repo" }), plan, made.deps);
+
+  assert.equal(res.outcome, "done");
+  assert.equal(res.lane, "hatta");
+  assert.deepEqual(made.guardLaneNames, ["hatta"]);
+  assert.equal(made.evidenceEntries[0].lane, "hatta");
+  assert.match(made.evidenceEntries[0].laneReason, /caller/);
+});
+
+await t("executeApprovedDirective: preferred lane cooldown falls to the next healthy lane and records why", async () => {
+  const plan = parsePlan(goodPlan);
+  const made = makeExecDeps({
+    guardResult: (laneName) => laneName === "sjahrir"
+      ? { skip: true, reason: "cooldown", laneKey: laneName }
+      : { skip: false, reason: null, laneKey: laneName },
+  });
+  delete made.deps.lane;
+  made.deps.resolveSpecialistsForPacket = async () => ({ taskClass: "repo-analysis", preferredMaker: "SJAHRIR", section: "" });
+  made.deps.laneForTaskClass = async () => ({ maker: "SJAHRIR", reviewer: "GIBRAN", source: "skill-matrix" });
+
+  const res = await executeApprovedDirective(issue({ title: "audit repo" }), plan, made.deps);
+
+  assert.equal(res.outcome, "done");
+  assert.equal(res.lane, "corleone");
+  assert.deepEqual(made.guardLaneNames, ["sjahrir", "corleone"]);
+  assert.equal(made.evidenceEntries[0].lane, "corleone");
+  assert.match(made.evidenceEntries[0].laneReason, /fallback/);
+  assert.match(made.evidenceEntries[0].laneReason, /sjahrir.*cooldown/);
+});
+
+await t("executeApprovedDirective: every writable maker lane in cooldown skips without inventing another lane", async () => {
+  const plan = parsePlan(goodPlan);
+  const made = makeExecDeps({ guardResult: { skip: true, reason: "cooldown" } });
+  delete made.deps.lane;
+  made.deps.resolveSpecialistsForPacket = async () => ({ taskClass: "agent-dispatch", preferredMaker: "HATTA", section: "" });
+  made.deps.laneForTaskClass = async () => ({ maker: "HATTA", reviewer: "CORLEONE", source: "skill-matrix" });
+
+  const res = await executeApprovedDirective(issue({ title: "dispatch lane worker" }), plan, made.deps);
+
+  assert.equal(res.outcome, "skipped");
+  assert.equal(res.reason, "lane-cooldown");
+  assert.equal(res.lane, null);
+  assert.deepEqual(made.guardLaneNames, ["hatta", "corleone", "sjahrir"]);
+  assert.equal(made.calls.snapshot, 0);
+  assert.equal(made.calls.dispatch, 0);
+  assert.equal(made.evidenceEntries[0].lane, null);
+  assert.match(made.evidenceEntries[0].laneReason, /hatta.*cooldown/);
+});
+
+await t("executeApprovedDirective: unknown task class defaults to CORLEONE exactly as before", async () => {
+  const plan = parsePlan(goodPlan);
+  const made = makeExecDeps();
+  delete made.deps.lane;
+  made.deps.resolveSpecialistsForPacket = async () => ({ taskClass: "not-a-real-class", preferredMaker: null, section: "" });
+  made.deps.laneForTaskClass = async () => ({ maker: null, reviewer: null, source: "measured-default" });
+
+  const res = await executeApprovedDirective(issue({ title: "unclassified work" }), plan, made.deps);
+
+  assert.equal(res.outcome, "done");
+  assert.equal(res.lane, "corleone");
+  assert.deepEqual(made.guardLaneNames, ["corleone"]);
+  assert.match(made.evidenceEntries[0].laneReason, /default-corleone/);
+});
+
+await t("executeApprovedDirective: SOEKARNO is not selected for plans that write files", async () => {
+  const plan = parsePlan(goodPlan);
+  const made = makeExecDeps();
+  delete made.deps.lane;
+  made.deps.resolveSpecialistsForPacket = async () => ({ taskClass: "trading-safety", preferredMaker: "SOEKARNO", section: "" });
+  made.deps.laneForTaskClass = async () => ({ maker: "SOEKARNO", reviewer: null, source: "skill-matrix" });
+
+  const res = await executeApprovedDirective(issue({ title: "risk limit" }), plan, made.deps);
+
+  assert.equal(res.outcome, "done");
+  assert.equal(res.lane, "corleone");
+  assert.deepEqual(made.guardLaneNames, ["corleone"]);
+  assert.equal(made.guardLaneNames.includes("soekarno"), false);
+  assert.match(made.evidenceEntries[0].laneReason, /soekarno.*read-only/);
+});
+
+await t("executeApprovedDirective: ordinary unclassified directive still uses CORLEONE", async () => {
+  const plan = parsePlan(goodPlan);
+  const made = makeExecDeps();
+  delete made.deps.lane;
+  made.deps.resolveSpecialistsForPacket = async () => ({ taskClass: null, preferredMaker: null, section: "" });
+
+  const res = await executeApprovedDirective(issue({ title: "Directive", description: "Do work" }), plan, made.deps);
+
+  assert.equal(res.outcome, "done");
+  assert.equal(res.lane, "corleone");
+  assert.deepEqual(made.guardLaneNames, ["corleone"]);
+});
+
 await t("executeApprovedDirective: scope violation -> refused, no snapshot spy call, no dispatch spy call", async () => {
   const { deps, calls } = makeExecDeps();
   const plan = parsePlan(goodPlan.replace("ops-watcher/foo.mjs, docs/bar.md", "ventures/x.mjs"));
@@ -2821,7 +2967,7 @@ await t("executeApprovedDirective: non-node-ops-watcher VERIFY (rm -rf /) -> ref
   assert.equal(calls.dispatch, 0);
 });
 
-await t("executeApprovedDirective: both lanes in cooldown -> skipped, no snapshot", async () => {
+await t("executeApprovedDirective: all writable maker lanes in cooldown -> skipped, no snapshot", async () => {
   const { deps, calls } = makeExecDeps({ guardResult: { skip: true, reason: "cooldown" } });
   const plan = parsePlan(goodPlan);
   const res = await executeApprovedDirective(issue(), plan, deps);
@@ -2829,8 +2975,8 @@ await t("executeApprovedDirective: both lanes in cooldown -> skipped, no snapsho
   assert.match(res.reason, /^lane-/);
   assert.equal(calls.snapshot, 0);
   assert.equal(calls.dispatch, 0);
-  // guardLane is called twice: corleone then hatta fallback.
-  assert.equal(calls.guardLane, 2);
+  // Guard every writable maker lane; do not invent a sixth lane.
+  assert.equal(calls.guardLane, 3);
 });
 
 await t("executeApprovedDirective: snapshot failure -> aborted, no dispatch", async () => {
