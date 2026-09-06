@@ -494,3 +494,27 @@ yang sudah terukur akan gagal.
 Satu hal yang packet itu larang keras: tidak ada flag untuk memaksa jalan
 menembus penolakan. Kalau ada, ia akan dipakai, dan penjaganya kembali jadi
 hiasan.
+
+### Dan itu ditutup juga, sebelum pagi (`303f964`)
+
+CORLEONE mendaratkannya — kelima berkas berikut tesnya, dalam satu run.
+
+`refused` sekarang medan tersendiri. `isolated` tetap berarti apa yang selalu ia
+berarti: apakah path yang dikembalikan itu worktree milik lane atau root bersama.
+Kasus jatuh-ke-root **tidak berubah dan tetap men-spawn** — itu penting, karena
+begitulah lane tetap bisa bekerja ketika worktree tidak bisa dibuat. Hanya
+kotor-dan-basi yang menolak.
+
+Tiap dispatcher kini pulang sebelum spawn, mencatat hasil lane sebagai kegagalan
+berikut alasannya, dan menulis `lane-usage` dengan `refused: true`. Penolakan
+tidak boleh terbaca sebagai `LANE OK`.
+
+Tesnya mengasersi **dependensi spawn**, bukan teks log — dan juga mengasersi
+bahwa kasus jatuh-ke-root tetap men-spawn, sehingga kedua arti itu tidak bisa
+menyatu kembali diam-diam.
+
+Sengaja tidak ada flag untuk memaksa jalan menembus penolakan. Kalau ada, ia akan
+dipakai, dan penjaganya kembali jadi hiasan.
+
+Diverifikasi di sini: lane-worktree 27/27, corleone-dispatch 23/23,
+sjahrir-dispatch 14/14, hatta-dispatch 25/25, suite penuh 86/86.
