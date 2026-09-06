@@ -24,6 +24,11 @@ import {
   MIN_CLOCK_RESERVE_MS,
   callTimeoutMs,
   MIN_CALL_TIMEOUT_MS,
+  MODEL_TIERS,
+  resolveModel,
+  postChat,
+  OllamaChatTimeoutError,
+  OllamaModelUnavailableError,
 } from "./harness.mjs";
 
 // THE SANDBOX BOUNDARY THIS WHOLE FILE EXISTS TO TEST. It must be derived the
@@ -671,6 +676,94 @@ add("block junction/symlink realpath escape", async () => {
   } finally {
     await fs.unlink(linkAbs).catch(() => {});
     await fs.rm(outside, { recursive: true, force: true }).catch(() => {});
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Model tiers and retired/missing model surfacing (PACKET-MODEL-TIERS).
+// ---------------------------------------------------------------------------
+
+add("MODEL_TIERS has exactly code/heavy/light, each a non-empty :cloud string", () => {
+  assert.deepEqual(Object.keys(MODEL_TIERS).sort(), ["code", "heavy", "light"]);
+  for (const [tier, model] of Object.entries(MODEL_TIERS)) {
+    assert.equal(typeof model, "string", `${tier} must be a string`);
+    assert.ok(model.length > 0, `${tier} must be non-empty`);
+    assert.ok(model.endsWith(":cloud"), `${tier} must end in :cloud`);
+  }
+  assert.ok(Object.isFrozen(MODEL_TIERS), "MODEL_TIERS must be frozen");
+});
+
+add("resolveModel defaults to MODEL_TIERS.code when OLLAMA_MODEL_HATTA is unset", () => {
+  assert.equal(resolveModel(undefined), MODEL_TIERS.code);
+  assert.equal(resolveModel(""), MODEL_TIERS.code);
+});
+
+add("resolveModel lets an explicit OLLAMA_MODEL_HATTA win (comparison runs depend on it)", () => {
+  const original = process.env.OLLAMA_MODEL_HATTA;
+  process.env.OLLAMA_MODEL_HATTA = "glm-5.2:cloud";
+  try {
+    assert.equal(resolveModel(), "glm-5.2:cloud");
+  } finally {
+    if (original === undefined) delete process.env.OLLAMA_MODEL_HATTA;
+    else process.env.OLLAMA_MODEL_HATTA = original;
+  }
+});
+
+add("postChat surfaces 'was retired at' as OllamaModelUnavailableError, not a timeout", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(
+    JSON.stringify({ error: "glm-4.7 was retired at 2026-07-15 00:00:00" }),
+    { status: 404, headers: { "content-type": "application/json" } },
+  );
+  try {
+    await assert.rejects(
+      () => postChat([{ role: "user", content: "x" }]),
+      (err) => err instanceof OllamaModelUnavailableError
+        && err.name === "OllamaModelUnavailableError"
+        && err.message.includes("was retired at")
+        && err.message.includes(MODEL_TIERS.code)
+        && !(err instanceof OllamaChatTimeoutError),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+add("postChat surfaces 'not found' as OllamaModelUnavailableError, not a timeout", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(
+    JSON.stringify({ error: "model 'glm-5.1-flash' not found" }),
+    { status: 404, headers: { "content-type": "application/json" } },
+  );
+  try {
+    await assert.rejects(
+      () => postChat([{ role: "user", content: "x" }]),
+      (err) => err instanceof OllamaModelUnavailableError
+        && err.name === "OllamaModelUnavailableError"
+        && err.message.includes("not found")
+        && !(err instanceof OllamaChatTimeoutError),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+add("postChat still maps a genuine abort to OllamaChatTimeoutError, never to retirement", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    const err = new Error("The operation was aborted.");
+    err.name = "AbortError";
+    throw err;
+  };
+  try {
+    await assert.rejects(
+      () => postChat([{ role: "user", content: "x" }]),
+      (err) => err instanceof OllamaChatTimeoutError
+        && err.name === "OllamaChatTimeoutError"
+        && !(err instanceof OllamaModelUnavailableError),
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
 

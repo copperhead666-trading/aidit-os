@@ -375,6 +375,15 @@ await t("H21 guard skip returns exitCode 3 and does not spawn", async () => {
   assert.deepEqual(deps.usage[0].extra, { skipped: true, reason: "cooldown" });
 });
 
+await t("H22 flash dispatch derives its model from MODEL_TIERS.light, no own literal", async () => {
+  const { FLASH_MODEL } = await import("./hatta-flash-dispatch.mjs");
+  const { MODEL_TIERS } = await import("../hatta/harness.mjs");
+  assert.equal(FLASH_MODEL, MODEL_TIERS.light);
+  assert.ok(FLASH_MODEL.endsWith(":cloud"));
+  const src = await fs.readFile(path.join(__dirname, "hatta-flash-dispatch.mjs"), "utf8");
+  assert.ok(!src.includes('"glm-5.3-flash:cloud"'), "flash dispatch must not carry its own model literal");
+});
+
 await fs.unlink(TMP).catch(() => {});
 console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);
