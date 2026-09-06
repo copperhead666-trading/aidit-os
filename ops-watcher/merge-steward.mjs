@@ -4,6 +4,7 @@
 //
 //   node ops-watcher/merge-steward.mjs --once
 //   node ops-watcher/merge-steward.mjs --once --json
+//   node ops-watcher/merge-steward.mjs --once --no-suite
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -312,7 +313,15 @@ export function reviewWorktree(tree, deps = {}) {
       checkSecretShapedLiterals(facts, deps),
     ];
 
-    if (checks.every((check) => check.ok)) checks.push(checkSuite(facts, deps));
+    if (checks.every((check) => check.ok)) {
+      if (deps.noSuite) {
+        // The suite was never run: mark it skipped and refuse "clean" so a
+        // cheaply-checked worktree can never masquerade as fully verified.
+        checks.push({ name: "suite", ok: null, skipped: true, detail: "suite not run (--no-suite)" });
+        return { ...facts, checks, verdict: "unverified" };
+      }
+      checks.push(checkSuite(facts, deps));
+    }
 
     return {
       ...facts,
@@ -367,16 +376,18 @@ export function formatHumanReport(report) {
       lines.push(`  aheadOfMain: ${tree.aheadOfMain ?? "unknown"}, uncommitted: ${tree.uncommitted ?? "unknown"}, changedFiles: ${fileCount}`);
     }
     for (const check of Array.isArray(tree.checks) ? tree.checks : []) {
-      lines.push(`  ${check.ok ? "PASS" : "FAIL"} ${check.name}: ${check.detail}`);
+      const mark = check.skipped ? "SKIP" : check.ok ? "PASS" : "FAIL";
+      lines.push(`  ${mark} ${check.name}: ${check.detail}`);
     }
   }
   return lines.join("\n");
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   return {
     once: argv.includes("--once"),
     json: argv.includes("--json"),
+    noSuite: argv.includes("--no-suite"),
   };
 }
 
@@ -391,10 +402,10 @@ function isEntry() {
 if (isEntry()) {
   const args = parseArgs(process.argv.slice(2));
   if (!args.once) {
-    console.error("usage: node ops-watcher/merge-steward.mjs --once [--json]");
+    console.error("usage: node ops-watcher/merge-steward.mjs --once [--json] [--no-suite]");
     process.exit(1);
   }
-  const report = reviewLanes();
+  const report = reviewLanes({ noSuite: args.noSuite });
   if (args.json) console.log(JSON.stringify(report));
   else console.log(formatHumanReport(report));
   process.exit(0);

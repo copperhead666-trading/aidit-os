@@ -10,6 +10,7 @@ import {
   checkSuite,
   checkSyntax,
   checkTestsAccompanyBehaviour,
+  parseArgs,
   reviewLanes,
 } from "./merge-steward.mjs";
 import * as surface from "./merge-steward.mjs";
@@ -37,7 +38,7 @@ function execFixture(responses = {}) {
   return { calls, exec };
 }
 
-function laneDeps({ dirty = 0, exec, suiteRunner } = {}) {
+function laneDeps({ dirty = 0, exec, suiteRunner, noSuite } = {}) {
   return {
     repoRoot: "D:\\repo\\main",
     listLaneWorktrees: () => [
@@ -48,6 +49,7 @@ function laneDeps({ dirty = 0, exec, suiteRunner } = {}) {
     existsSync: () => true,
     execFileSync: exec,
     suiteRunner,
+    noSuite,
   };
 }
 
@@ -185,6 +187,91 @@ function t9_hostileInputsNeverThrow() {
   } catch (err) { bad(name, err); }
 }
 
+function t11_parseArgsRecognisesNoSuite() {
+  const name = "(11) parseArgs recognises --no-suite and defaults it off";
+  try {
+    assert.equal(parseArgs(["--once", "--no-suite"]).noSuite, true, "--no-suite sets noSuite");
+    assert.equal(parseArgs(["--no-suite"]).noSuite, true, "noSuite does not require --once");
+    assert.equal(parseArgs(["--once"]).noSuite, false, "absence leaves today's default");
+    assert.equal(parseArgs([]).noSuite, false, "empty argv leaves today's default");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+function cleanLaneFixture() {
+  return execFixture({
+    "rev-list --count origin/main..HEAD": "1\n",
+    "diff --name-only origin/main --": "ops-watcher/foo.mjs\nops-watcher/foo.test.mjs\n",
+    "diff --unified=0 origin/main --": "",
+  });
+}
+
+async function t12_noSuiteSkipsRunnerAndIsNotClean() {
+  const name = "(12) --no-suite never calls the suite runner and reports unverified, not clean";
+  try {
+    let suiteCalls = 0;
+    const report = await reviewLanes(laneDeps({
+      dirty: 0,
+      exec: cleanLaneFixture().exec,
+      suiteRunner: () => { suiteCalls++; return "SUITES: 85/85 passed"; },
+      noSuite: true,
+    }));
+    const tree = report.worktrees[0];
+    assert.equal(suiteCalls, 0, "injected suite runner is never called with --no-suite");
+    assert.notEqual(tree.verdict, "clean", "a worktree whose suite never ran must not be clean");
+    assert.equal(tree.verdict, "unverified");
+    const suite = tree.checks.find((check) => check.name === "suite");
+    assert.ok(suite, "suite check is present");
+    assert.equal(suite.skipped, true, "suite check is marked skipped");
+    assert.equal(suite.ok, null, "skipped is neither pass nor fail");
+    assert.equal(tree.checks.filter((check) => check.ok).length, 4, "the four cheap checks are listed as passed");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function t13_withoutFlagSuiteStillRuns() {
+  const name = "(13) without --no-suite the suite still runs and a passing lane is clean";
+  try {
+    let suiteCalls = 0;
+    const report = await reviewLanes(laneDeps({
+      dirty: 0,
+      exec: cleanLaneFixture().exec,
+      suiteRunner: () => { suiteCalls++; return "SUITES: 85/85 passed"; },
+    }));
+    const tree = report.worktrees[0];
+    assert.equal(suiteCalls, 1, "suite runner still runs without the flag");
+    assert.equal(tree.verdict, "clean", "passing worktree is still clean");
+    const suite = tree.checks.find((check) => check.name === "suite");
+    assert.ok(suite && suite.ok === true && !suite.skipped, "suite check ran and passed");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function t14_blockedEitherWaySuiteNeverRuns() {
+  const name = "(14) a cheap-check block is blocked with and without --no-suite and never runs the suite";
+  try {
+    for (const noSuite of [false, true]) {
+      let suiteCalls = 0;
+      const ex = execFixture({
+        "rev-list --count origin/main..HEAD": "1\n",
+        "diff --name-only origin/main --": ".env.local\n",
+        "diff --unified=0 origin/main --": "+TOKEN=notneeded\n",
+      });
+      const report = await reviewLanes(laneDeps({
+        dirty: 0,
+        exec: ex.exec,
+        suiteRunner: () => { suiteCalls++; return "SUITES: 85/85 passed"; },
+        noSuite,
+      }));
+      const tree = report.worktrees[0];
+      assert.equal(tree.verdict, "blocked", `blocked with noSuite=${noSuite}`);
+      assert.equal(suiteCalls, 0, `suite not run when an earlier check failed (noSuite=${noSuite})`);
+      assert.ok(!tree.checks.some((check) => check.name === "suite"), "no suite entry is fabricated after an early block");
+    }
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
 function t10_exportedSurfaceHasNoMutators() {
   const name = "(10) exported function names contain no mutating operation";
   try {
@@ -209,6 +296,10 @@ async function main() {
   await t8_slowCheckSkippedAfterEarlierFailure();
   t9_hostileInputsNeverThrow();
   t10_exportedSurfaceHasNoMutators();
+  t11_parseArgsRecognisesNoSuite();
+  await t12_noSuiteSkipsRunnerAndIsNotClean();
+  await t13_withoutFlagSuiteStillRuns();
+  await t14_blockedEitherWaySuiteNeverRuns();
   console.log("");
   console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
   if (failed > 0) {

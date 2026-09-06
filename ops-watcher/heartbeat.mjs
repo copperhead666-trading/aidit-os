@@ -232,7 +232,7 @@ export const STEPS = [
   { name: "ledger-writer",     argv: ["ops-watcher/ledger-writer.mjs", "--once"] },
   { name: "reconcile",         argv: ["ops-watcher/reconcile.mjs", "--once"] },
   { name: "directive-runner",  argv: ["ops-watcher/directive-runner.mjs", "--once"] },
-  { name: "merge-steward",     argv: ["ops-watcher/merge-steward.mjs", "--once"] },
+  { name: "merge-steward",     argv: ["ops-watcher/merge-steward.mjs", "--once", "--no-suite"] },
 ];
 
 const iso = () => new Date().toISOString();
