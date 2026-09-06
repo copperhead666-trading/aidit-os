@@ -18,7 +18,7 @@
       "metrik": "Phase-1 workstreams meeting their Definition of Done, out of 9",
       "metrik_status": "DINYATAKAN PEMILIK 2026-09-04 (KOL-78).",
       "metrik_sumber": "docs/planning/phase-1-workstreams.md in ventures/caveman-trading-os — the workstream list and each one's Definition of Done.",
-      "metrik_catatan": "The owner stated the measure and its denominator. The current numerator has NOT been counted: ventures/ is gitignored and the venture repositories are not present on this machine, so nothing here can read docs/planning/phase-1-workstreams.md. Whoever first runs on a machine that has the repository must count it; until then this metric is stated but unmeasured, which is a different thing from unstated.",
+      "metrik_catatan": "The owner stated the measure and its denominator. The current numerator has still NOT been counted, but the reason changed on 2026-09-06: the repository was moved from D:/Development/Caveman Trading OS into ventures/caveman-trading-os on the owner instruction, so docs/planning/phase-1-workstreams.md is now readable from this checkout. ventures/ remains gitignored, so lane worktrees still cannot see it until KOL-89 lands. This metric is stated but unmeasured, which is a different thing from unstated.",
       "hardStops": [
         "No production trading code, broker credentials, order-submission logic, or live endpoints — the repository's own Phase 1 statement (README.md).",
         "The broker is authoritative for live orders, fills and positions; nothing here may present itself as that authority (README.md, 'Source of truth').",
@@ -48,7 +48,7 @@
       "metrik": "Checked items in control/tasks/feature-backlog.md, out of 136",
       "metrik_status": "DINYATAKAN PEMILIK 2026-09-04 (KOL-78).",
       "metrik_sumber": "control/tasks/feature-backlog.md in ventures/sjs-superapps — the checked boxes, against a fixed denominator of 136.",
-      "metrik_catatan": "The owner stated the measure, the denominator (136) and the value on 2026-09-04 (22). That value is recorded in metrik_terakhir below and was NOT recounted here: ventures/ is gitignored and the venture repositories are not present on this machine.",
+      "metrik_catatan": "The owner stated the measure, the denominator (136) and the value on 2026-09-04 (22). That value is recorded in metrik_terakhir below and has NOT been recounted here. The repository was moved from D:/Development/SJS Super Apps into ventures/sjs-superapps on 2026-09-06 on the owner instruction, so control/tasks/ is now readable from this checkout; ventures/ remains gitignored, so lane worktrees still cannot see it until KOL-89 lands.",
       "metrik_terakhir": { "nilai": 22, "dari": 136, "pada": "2026-09-04", "sumber": "owner statement, KOL-78" },
       "hardStops": [
         "This repository is the source of truth for schema and Edge Functions; changes made anywhere else are drift, not work (README.md).",
