@@ -161,7 +161,14 @@ export function laneStringToProbeKey(laneStr) {
 }
 
 // ---- cheap spawn probe (real) ----
-export function runSpawnReal(cmd, { timeoutMs = 4000, shell = process.platform === "win32" } = {}) {
+// The 4s cap was shorter than the exit time of several lane CLIs on this
+// machine. Measured 2026-09-06: `kimi --version` prints its version and then
+// needs 5.8s to exit, `codex --version` 5.5s, and under concurrent sweep load
+// hermes also crosses 4s. Lane status therefore flapped UP and DOWN with
+// machine load, which raised false drift alerts to the owner — and an alarm
+// that is sometimes right and sometimes wrong teaches people to ignore it.
+// 12s clears the slowest measured exit (5.8s) with load headroom.
+export function runSpawnReal(cmd, { timeoutMs = 12000, shell = process.platform === "win32" } = {}) {
   return new Promise((resolve) => {
     let child;
     try {
