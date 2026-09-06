@@ -12,6 +12,20 @@
 - Keep files under 500 lines
 - Validate input at system boundaries
 
+## The Hands MCP Layer
+
+The shared MCP hand layer lives in the repository root at `.mcp.json` so every
+lane inherits the same server list. Today it contains one verified connection:
+GitHub via the native `D:\AI\tools\github-mcp-server\github-mcp-server.exe`
+binary, with the personal access token referenced from `GITHUB_TOKEN` in the
+environment or `.env.local`; never copy the token value into tracked files.
+
+GitHub MCP use is limited to `copperhead666-trading/aidit-os` and
+`copperhead666-trading/caveman-trading-os`. Do not use this connection for
+broker credentials, live broker endpoints, or trading-side access. Add a new
+MCP server to `.mcp.json` only after `ops-watcher/mcp-probe.mjs` proves it is
+registered, configured, and reachable.
+
 ## Ruflo Capability Brain & Implementation Loop
 
 Ruflo is the coordination ledger and policy decision point. Claude Code is the

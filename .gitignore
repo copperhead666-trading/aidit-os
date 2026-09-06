@@ -9,9 +9,6 @@ env.local*
 *.key
 *credential*
 
-# MCP server config — may carry provider tokens; treated as sensitive
-.mcp.json
-
 # embedded/local DB data + Paperclip instance state — binary, large, may hold live data
 .paperclip/
 .paperclip-data/

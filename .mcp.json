@@ -1,0 +1,23 @@
+{
+  "_handsPolicy": {
+    "allowedRepositories": [
+      "copperhead666-trading/aidit-os",
+      "copperhead666-trading/caveman-trading-os"
+    ],
+    "rule": "GitHub MCP use is limited to the repositories above. Do not use it for broker credentials, live broker endpoints, or trading-side access."
+  },
+  "mcpServers": {
+    "github": {
+      "type": "stdio",
+      "command": "D:\\AI\\tools\\github-mcp-server\\github-mcp-server.exe",
+      "args": [
+        "stdio"
+      ],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}",
+        "GITHUB_READ_ONLY": "1",
+        "GITHUB_TOOLSETS": "repos,issues,pull_requests,users"
+      }
+    }
+  }
+}

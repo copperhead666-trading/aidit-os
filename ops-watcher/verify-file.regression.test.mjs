@@ -12,6 +12,7 @@
 //   node ops-watcher/verify-file.regression.test.mjs
 
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeRepoPath, parseArgs, verifyFile } from "./verify-file.mjs";
@@ -169,15 +170,22 @@ await t("verifyFile carries the venture verdict through, it does not just normal
 await t("the real repository still refuses what it always refused", async () => {
   // No injection: the live registry, the live file. This is the command the
   // first venture directive will actually run.
-  const real = await verifyFile({
-    path: "ventures/caveman-trading-os/docs/planning/phase-1-workstreams.md",
-    contains: "Workstreams",
-  });
-  assert.equal(real.ok, true, `the live registry must allow the active venture, got: ${real.reason}`);
-
   const gitDir = await verifyFile({ path: "ventures/caveman-trading-os/.git/config", contains: "core" });
   assert.equal(gitDir.ok, false);
   assert.equal(gitDir.reason, "denied directory refused");
+
+  const livePath = "ventures/caveman-trading-os/docs/planning/phase-1-workstreams.md";
+  if (!fs.existsSync(path.join(REPO_ROOT, livePath))) {
+    // No venture checked out on this machine. Keep the path-fence assertion
+    // above, but do not fail the whole suite for a missing external checkout.
+    console.log("  SKIP: no venture repository at ventures/caveman-trading-os - the live read has nothing to verify");
+    return;
+  }
+  const real = await verifyFile({
+    path: livePath,
+    contains: "Workstreams",
+  });
+  assert.equal(real.ok, true, `the live registry must allow the active venture, got: ${real.reason}`);
 });
 
 console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
