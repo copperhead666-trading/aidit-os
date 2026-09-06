@@ -487,7 +487,7 @@ function isSecretLikeRelativePath(rel) {
   if (base.startsWith(".env.")) return true;
   if (PROTECTED_SECRET_EXTENSIONS.has(path.extname(base))) return true;
   if (path.extname(base) === ".md") return false;           // .md exempt from name-pattern heuristic
-  return /(^|[._-])(token|secret|credential|password|apikey|api-key)([._-]|$)/i.test(base);
+  return /(^|[._-])(tokens?|secrets?|credentials?|passwords?|apikeys?|api-keys?)([._-]|$)/i.test(base);
 }
 
 export function protectedWorkspacePathReason(requested, { write = false } = {}) {
