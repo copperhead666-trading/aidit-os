@@ -92,10 +92,10 @@ export const RUNTIME_STATE_PATHS = ["state/ledger.jsonl"];
 
 function porcelainEntryPath(line) {
   // The shared git() helper trims the WHOLE output, which strips the leading
-  // space of the first porcelain line (" M path" -> "M path"), so positions
-  // are not reliable. Porcelain is always XY<space>PATH; capture PATH with a
-  // regex instead of fixed offsets.
-  const m = /^.. (.*)$/.exec(line);
+  // space of the first porcelain line (" M path" -> "M path"), so later lines
+  // have two status characters before the space but the first has one.
+  // Porcelain is XY<space>PATH, or X<space>PATH once trimmed; accept either.
+  const m = /^.{1,2} +(.*)$/.exec(line);
   let p = m ? m[1] : line;
   // Renames look like "R  old -> new"; the entry names the NEW path.
   const arrow = p.indexOf(" -> ");
