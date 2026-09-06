@@ -30,7 +30,7 @@ import http from "node:http";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { runReviewSweep, runReviewOnce, parseVerdict, verdictCategory, isUnusableReviewerReply, isReviewerQuotaFailure } from "./review-runner.mjs";
+import { runReviewSweep, runReviewOnce, parseVerdict, verdictCategory, isUnusableReviewerReply, isReviewerQuotaFailure, buildPrompt } from "./review-runner.mjs";
 import {
   acquireLock,
   releaseLock,
@@ -867,6 +867,18 @@ async function testUnusableReviewerReplyFourShapesViaSharedHelper() {
   } catch (e) { bad(name, e); }
 }
 
+async function testGibranPromptCarriesReviewOnlyRufloContext() {
+  const name = "(s) GIBRAN prompt carries review-only Ruflo context";
+  try {
+    const prompt = buildPrompt({ id: "iss-ruflo", identifier: "KOL-RUFLO", title: "Ruflo context test", description: "verify prompt prelude" });
+    assert.match(prompt, /\[RUFLO LANE CONTEXT\]/, "Ruflo prelude marker present");
+    assert.match(prompt, /GIBRAN is review-only/i, "prelude keeps GIBRAN review-only");
+    assert.match(prompt, /never coordinate writes/i, "prelude forbids write coordination");
+    assert.match(prompt, /VERDICT: PASS/, "existing verdict contract remains present");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
 async function main() {
   console.log("# review-runner regression tests");
   await testHappyPass();
@@ -895,6 +907,7 @@ async function main() {
   await testKol47IncidentPathStillFlagged();
   await testInWorkspacePathNotFlagged();
   await testUnusableReviewerReplyFourShapesViaSharedHelper();
+  await testGibranPromptCarriesReviewOnlyRufloContext();
   console.log("");
   console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
   if (failed > 0) { for (const f of failures) console.log(`  FAILED: ${f}`); process.exit(1); }

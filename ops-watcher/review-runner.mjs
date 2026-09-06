@@ -129,6 +129,7 @@ import {
   isInCooldown as isInCooldownReal,
 } from "./routing.mjs";
 import { isUnusableModelOutput } from "./lane-guard.mjs";
+import { mergeRufloLaneEnv, withRufloLanePrelude } from "./ruflo-lane-context.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -353,6 +354,7 @@ export function dispatchReviewerReal(prompt, { timeoutMs = HERMES_TIMEOUT_MS } =
         child = spawn(exe, ["-z", prompt, "--provider", HERMES_PROVIDER, "-m", HERMES_MODEL, "--in", HERMES_WORKSPACE], {
           stdio: ["ignore", "pipe", "pipe"],
           windowsHide: true,
+          env: mergeRufloLaneEnv(process.env),
         });
         launched = true;
       } catch (err) {
@@ -385,8 +387,8 @@ export function dispatchReviewerReal(prompt, { timeoutMs = HERMES_TIMEOUT_MS } =
   });
 }
 
-function buildPrompt(it) {
-  return [
+export function buildPrompt(it) {
+  return withRufloLanePrelude("gibran", [
     "You are GIBRAN, the review/acceptance agent for material changes in the FounderOS-Aidit Paperclip workspace.",
     "Review the following issue and decide whether it passes acceptance review.",
     "",
@@ -412,7 +414,7 @@ function buildPrompt(it) {
     "   VERDICT: PASS WITH NOTES",
     "   VERDICT: REJECT",
     "Choose exactly one. The VERDICT: line must be the last non-empty line.",
-  ].join("\n");
+  ].join("\n"));
 }
 
 function cap(s, n = OUTPUT_CAP) {

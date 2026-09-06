@@ -8,6 +8,7 @@
 
 import assert from "node:assert/strict";
 import { buildKimiArgs, parseKimiStream } from "./sjahrir-dispatch.mjs";
+import { mergeRufloLaneEnv } from "./ruflo-lane-context.mjs";
 
 let passed = 0;
 let failed = 0;
@@ -49,14 +50,26 @@ run("T1: buildKimiArgs — stream-json in argv, prompt passed as a single argume
 
   const pIdx = argv.indexOf("-p");
   assert.notEqual(pIdx, -1, "T1: '-p' present");
-  assert.equal(argv[pIdx + 1], prompt, "T1: prompt sits as ONE element right after -p");
+  assert.ok(argv[pIdx + 1].includes(prompt), "T1: original prompt is carried inside the single -p argument");
+  assert.ok(argv[pIdx + 1].includes("[RUFLO LANE CONTEXT]"), "T1: SJAHRIR prompt includes compact Ruflo lane context");
+  assert.match(argv[pIdx + 1], /must not assume native MCP/i, "T1: Ruflo prelude does not overclaim native MCP");
 
   const fmtIdx = argv.indexOf("--output-format");
   assert.notEqual(fmtIdx, -1, "T1: '--output-format' present");
   assert.equal(argv[fmtIdx + 1], "stream-json", "T1: '--output-format' is followed by 'stream-json'");
 
-  assert.ok(argv.includes(prompt), "T1: the full prompt string is present verbatim in argv");
-  assert.ok(argv.every((a) => !a.includes(" ") || a === prompt), "T1: no other argv element contains spaces (prompt not fragmented)");
+  assert.ok(argv.some((a) => a.includes(prompt)), "T1: the full prompt string is present inside argv");
+  assert.ok(argv.every((a) => !a.includes(" ") || a === argv[pIdx + 1]), "T1: no other argv element contains spaces (prompt not fragmented)");
+});
+
+run("T1b: mergeRufloLaneEnv preserves explicit caller values", () => {
+  const env = mergeRufloLaneEnv({
+    CLAUDE_FLOW_MCP_TOOLS: "memory",
+    EXISTING: "kept",
+  });
+  assert.equal(env.CLAUDE_FLOW_MCP_TOOLS, "memory", "explicit caller value wins");
+  assert.equal(env.CLAUDE_FLOW_ENABLE_NATIVE_BRIDGE_ON_WINDOWS, "1", "native bridge default added");
+  assert.equal(env.EXISTING, "kept", "unrelated env is preserved");
 });
 
 // ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { logLaneUsage } from "./lane-usage.mjs";
 import { ensureLaneWorktree } from "./lane-worktree.mjs";
 import { guardLaneStart, recordLaneOutcome } from "./lane-guard.mjs";
+import { mergeRufloLaneEnv, withRufloLanePrelude } from "./ruflo-lane-context.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -29,7 +30,7 @@ const TIMEOUT_MS = 8 * 60 * 1000; // 480000ms, under ahmad-mcp-server.mjs's 9-mi
  * configured default model.
  */
 export function buildKimiArgs(prompt) {
-  return ["-p", prompt, "--output-format", "stream-json"];
+  return ["-p", withRufloLanePrelude("sjahrir", prompt), "--output-format", "stream-json"];
 }
 
 /**
@@ -172,6 +173,7 @@ export async function dispatchSjahrir(prompt, deps = {}) {
       timeout: TIMEOUT_MS,
       encoding: "utf8",
       maxBuffer: 16 * 1024 * 1024,
+      env: mergeRufloLaneEnv(process.env),
     });
     const durationMs = Date.now() - t0;
     const stdout = typeof r.stdout === "string" ? r.stdout : "";
