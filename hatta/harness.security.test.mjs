@@ -652,6 +652,29 @@ mustBlockCommand("block type key file", "type", ["ops-watcher/gibran-api.key"]);
 mustBlockCommand("block npm exec", "npm", ["exec", "some-package"]);
 mustBlockCommand("block npm install", "npm", ["install"]);
 
+// ---------------------------------------------------------------------------
+// PACKET-HARNESS-PATH-FILTER: .md files are not credential stores.
+// The name-pattern heuristic must not refuse them, but all earlier checks
+// (basename, extension, .env. prefix, .git) remain authoritative.
+// ---------------------------------------------------------------------------
+add("allow docs/packets/PACKET-STEWARD-SECRET-SHAPES.md - .md exempt from name-pattern heuristic", () => {
+  assert.equal(protectedWorkspacePathReason("docs/packets/PACKET-STEWARD-SECRET-SHAPES.md"), null);
+});
+add("allow docs/token-rotation-runbook.md - .md exempt from name-pattern heuristic", () => {
+  assert.equal(protectedWorkspacePathReason("docs/token-rotation-runbook.md"), null);
+});
+add("allow README.md - .md exempt from name-pattern heuristic", () => {
+  assert.equal(protectedWorkspacePathReason("README.md"), null);
+});
+
+mustProtectPath("still refuse .env.local under .env prefix rule", ".env.local");
+mustProtectPath("still refuse .env.production.md under .env prefix rule", ".env.production.md");
+mustProtectPath("still refuse config/api-token.json under name-pattern rule", "config/api-token.json");
+mustProtectPath("still refuse secrets.md.key under extension rule", "secrets.md.key");
+mustProtectPath("still refuse secret-data.json under name-pattern rule", "secret-data.json");
+mustProtectPath("still refuse .env under basename rule", ".env");
+mustProtectPath("still refuse .git/config - .git rule untouched", ".git/config");
+
 // Lexical path escapes.
 mustBlockPath("block relative path escape", "../../Windows/System32/drivers/etc/hosts");
 mustBlockPath("block absolute path escape", "C:/Windows/System32");
