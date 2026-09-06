@@ -476,6 +476,10 @@ async function t15_noDestructiveGitVerbEver() {
     runs.push(reuseDeps("hatta", { onBranch: "lane/p0-probe", behind: "3" }));
     // Clean + stale but not fast-forwardable: merge --ff-only fails.
     runs.push(reuseDeps("w2", { behind: "8", extra: { "merge --ff-only origin/main": () => { throw new Error("Not possible to fast-forward, aborting."); } } }));
+    // Runtime-state-only dirt + stale: the packet's motivating fast-forward.
+    runs.push(reuseDeps("hatta", { status: " M state/ledger.jsonl", behind: "7", extra: { "merge --ff-only origin/main": "" } }));
+    // Runtime-state-only dirt + current: reuse, no fast-forward.
+    runs.push(reuseDeps("sjahrir", { status: " M state/ledger.jsonl", behind: "0" }));
 
     for (const { fs, ex } of runs) {
       ensureLaneWorktree("hatta", { _fs: fs, _exec: ex.exec });
@@ -485,6 +489,121 @@ async function t15_noDestructiveGitVerbEver() {
           `no destructive verb in: ${verbLine}`);
       }
     }
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// === Runtime state vs work: PACKET-DIRT-VS-RUNTIME-STATE ===
+// state/ledger.jsonl is tracked in git AND appended to at runtime by
+// ops-watcher/ledger.mjs, so every lane worktree carries it permanently dirty.
+// Dirt that is not work must not trip the staleness refusal, and must still be
+// named in the reason so "clean" and "dirty only in runtime state" differ in
+// the log.
+
+// Packet test 1: only state/ledger.jsonl modified -> clean, reason names it.
+async function t16_runtimeStateOnlyCountsAsClean() {
+  const name = "W16 runtime-state-only dirt counts as clean, and the reason names it";
+  try {
+    const { fs, ex } = reuseDeps("hatta", { status: " M state/ledger.jsonl", behind: "0" });
+    const r = ensureLaneWorktree("hatta", { _fs: fs, _exec: ex.exec });
+    assert.equal(r.dirty, 0, "runtime state is not work");
+    assert.equal(r.isolated, true, "a runtime-state-only tree stays usable");
+    assert.match(r.reason, /runtime-state/, "the reason says so out loud, not silent zero");
+    assert.match(r.reason, /state\/ledger\.jsonl/, "and names the file");
+    assert.doesNotMatch(r.reason, /NOT clean/, "no work-dirt warning on a clean tree");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// Packet test 2: ledger plus a real source file -> dirty, count is the work only.
+async function t17_runtimeStatePlusWorkCountsTheWorkOnly() {
+  const name = "W17 runtime state plus real work is dirty, and the count is the work only";
+  try {
+    const { fs, ex } = reuseDeps("corleone", { status: " M state/ledger.jsonl\n M ops-watcher/x.mjs", behind: "0" });
+    const r = ensureLaneWorktree("corleone", { _fs: fs, _exec: ex.exec });
+    assert.equal(r.dirty, 1, "only the real source file counts");
+    assert.match(r.reason, /NOT clean: 1 uncommitted entry/, "the count and warning name the work");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// Packet test 3: only real source files -> unchanged from before the packet.
+async function t18_realWorkOnlyIsUnchanged() {
+  const name = "W18 real work alone is counted exactly as before the packet";
+  try {
+    const { fs, ex } = reuseDeps("corleone", { status: " M ops-watcher/x.mjs\n M docs/y.md", behind: "0" });
+    const r = ensureLaneWorktree("corleone", { _fs: fs, _exec: ex.exec });
+    assert.equal(r.dirty, 2, "every real entry still counts");
+    assert.match(r.reason, /NOT clean: 2 uncommitted entries/, "the warning is unchanged");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// Packet test 4: an untracked file is work whatever it is called -- even when
+// its name sits next to a runtime-state path.
+async function t19_untrackedFilesAlwaysCountAsDirt() {
+  const name = "W19 an untracked file is dirt, whatever it is called";
+  try {
+    const { fs, ex } = reuseDeps("corleone", { status: "?? scratch.txt", behind: "0" });
+    const r = ensureLaneWorktree("corleone", { _fs: fs, _exec: ex.exec });
+    assert.equal(r.dirty, 1, "a new file is work");
+
+    const { fs: fs2, ex: ex2 } = reuseDeps("corleone", { status: "?? state/ledger.jsonl.bak", behind: "0" });
+    const r2 = ensureLaneWorktree("corleone", { _fs: fs2, _exec: ex2.exec });
+    assert.equal(r2.dirty, 1, "an untracked sibling of a runtime-state path is NOT runtime state");
+    assert.match(r2.reason, /NOT clean/, "and it is reported as work");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// Packet test 5: THE motivating case -- stale with only runtime-state dirt is
+// fast-forwarded, not refused. Before the packet this tree was refused on
+// ledger lines that are not work.
+async function t20_staleWithOnlyRuntimeStateFastForwards() {
+  const name = "W20 a stale tree dirty only in runtime state is fast-forwarded, not refused";
+  try {
+    const { fs, ex } = reuseDeps("hatta", { status: " M state/ledger.jsonl", behind: "7", extra: { "merge --ff-only origin/main": "" } });
+    const r = ensureLaneWorktree("hatta", { _fs: fs, _exec: ex.exec });
+    assert.equal(r.isolated, true, "not refused");
+    assert.equal(r.dirty, 0, "runtime state did not count against it");
+    assert.equal(r.behind, 7, "the measured gap is still reported");
+    const ff = ex.calls.find((c) => c.args[2] === "merge");
+    assert.ok(ff, "a fast-forward was attempted");
+    assert.deepEqual(ff.args.slice(2), ["merge", "--ff-only", "origin/main"], "and it was ff-only, never a merge commit");
+    assert.match(r.reason, /fast-forwarded 7 commits/, "the reason carries the number");
+    assert.match(r.reason, /runtime-state/, "and says the dirt it skipped is runtime state");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// Packet test 6: real work plus stale is still refused, both numbers named.
+async function t21_workPlusStaleStillRefuses() {
+  const name = "W21 real work plus runtime state on a stale tree is still refused, both numbers named";
+  try {
+    const { fs, ex } = reuseDeps("hatta", { status: " M state/ledger.jsonl\n M a.mjs\n?? b.txt", behind: "13" });
+    const r = ensureLaneWorktree("hatta", { _fs: fs, _exec: ex.exec });
+    assert.equal(r.isolated, false, "the dispatcher must decline, not run old code");
+    assert.equal(r.dirty, 2, "the count is the real work only, runtime state excluded");
+    assert.match(r.reason, /2 uncommitted entries/, "the reason names the work count");
+    assert.match(r.reason, /13 commits behind origin\/main/, "the reason names the behind count");
+    assert.equal(ex.calls.some((c) => c.args[2] === "merge"), false, "a dirty tree is never updated behind its dirt");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// Packet test 7: an unanswerable git still yields the unknown-dirt behaviour
+// and never throws.
+async function t22_unanswerableGitStillUnknownNotThrown() {
+  const name = "W22 an unanswerable git still yields unknown dirt and does not throw";
+  try {
+    const { fs, ex } = reuseDeps("corleone", {
+      status: () => { throw new Error("fatal: not a git repository"); },
+    });
+    let r;
+    assert.doesNotThrow(() => { r = ensureLaneWorktree("corleone", { _fs: fs, _exec: ex.exec }); });
+    assert.equal(r.dirty, null, "could not look is not the same fact as no dirt");
+    assert.equal(r.isolated, true, "an unanswerable status does not cost the lane its tree");
+    assert.doesNotMatch(r.reason, /NOT clean/, "no false work warning on an unknown tree");
     ok(name);
   } catch (err) { bad(name, err); }
 }
@@ -511,6 +630,13 @@ async function main() {
   await t13_unmeasurableBehindIsNullNotZero();
   await t14_createdWorktreeIsCurrent();
   await t15_noDestructiveGitVerbEver();
+  await t16_runtimeStateOnlyCountsAsClean();
+  await t17_runtimeStatePlusWorkCountsTheWorkOnly();
+  await t18_realWorkOnlyIsUnchanged();
+  await t19_untrackedFilesAlwaysCountAsDirt();
+  await t20_staleWithOnlyRuntimeStateFastForwards();
+  await t21_workPlusStaleStillRefuses();
+  await t22_unanswerableGitStillUnknownNotThrown();
   console.log("");
   console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
   if (failed > 0) { for (const f of failures) console.log(`  FAILED: ${f}`); process.exit(1); }
