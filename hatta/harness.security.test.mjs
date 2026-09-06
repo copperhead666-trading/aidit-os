@@ -22,6 +22,8 @@ import {
   HARD_ITERATION_CEILING,
   clockReserveMs,
   MIN_CLOCK_RESERVE_MS,
+  callTimeoutMs,
+  MIN_CALL_TIMEOUT_MS,
 } from "./harness.mjs";
 
 // THE SANDBOX BOUNDARY THIS WHOLE FILE EXISTS TO TEST. It must be derived the
@@ -249,6 +251,62 @@ add("a 33s observed call buys back budget the old reserve threw away", () => {
   assert.equal(oldRunnable, 330000);
   assert.equal(newRunnable, 384000);
   assert.ok(newRunnable > oldRunnable, "the adaptive reserve must not cost a run time");
+});
+
+// ---- A call is bounded by what is left of the run, so the harness ends the run ----
+// The clock reserve decides whether to START another iteration; it cannot decide
+// how long that iteration runs. With the old fixed worst-case reserve those were
+// the same question. With an adaptive reserve they are not, so the call itself
+// has to be bounded — otherwise one unexpectedly slow call runs past the outer
+// budget and the wrapper kills the harness instead of the harness stopping. A
+// kill is uncatchable on Windows and leaves only the last evidence write.
+add("a call is bounded by the budget left, never past the outer wall", () => {
+  // Plenty of budget left: the standing per-request timeout applies unchanged.
+  assert.equal(callTimeoutMs({ elapsedMs: 0, outerRunBudgetMs: 450000, requestTimeoutMs: 120000 }), 120000);
+  assert.equal(callTimeoutMs({ elapsedMs: 300000, outerRunBudgetMs: 450000, requestTimeoutMs: 120000 }), 120000);
+
+  // Near the wall: the call is cut to what remains, so it cannot outlive it.
+  assert.equal(callTimeoutMs({ elapsedMs: 400000, outerRunBudgetMs: 450000, requestTimeoutMs: 120000 }), 50000);
+
+  // Past the wall, or so close it does not matter: a floor, never zero or
+  // negative — a one-millisecond timeout would report a healthy model as broken.
+  assert.equal(callTimeoutMs({ elapsedMs: 450000, outerRunBudgetMs: 450000, requestTimeoutMs: 120000 }), MIN_CALL_TIMEOUT_MS);
+  assert.equal(callTimeoutMs({ elapsedMs: 999999, outerRunBudgetMs: 450000, requestTimeoutMs: 120000 }), MIN_CALL_TIMEOUT_MS);
+
+  // An explicitly requested timeout is never overridden by the floor. The floor
+  // exists to stop a nearly-spent budget yielding a zero-length call, not to
+  // veto a caller who asked for a short one.
+  assert.equal(callTimeoutMs({ elapsedMs: 0, outerRunBudgetMs: 480000, requestTimeoutMs: 1 }), 1);
+
+  // The invariant the whole function exists for.
+  for (const elapsedMs of [0, 1, 100000, 300000, 449000]) {
+    const bound = callTimeoutMs({ elapsedMs, outerRunBudgetMs: 450000, requestTimeoutMs: 120000 });
+    assert.ok(bound > 0, "a call must always be given some time");
+    assert.ok(bound <= 120000, "and never more than the per-request timeout");
+  }
+});
+
+add("runTask hands each call its bound, and it shrinks as the run is spent", async () => {
+  const bounds = [];
+  let call = 0;
+  await runTask("bounded calls", {
+    // A clock that advances 100s per reading, so the run visibly spends itself.
+    now: advancingClock(100000),
+    persist: async () => {},
+    chat: async (_messages, opts) => {
+      bounds.push(opts && opts.timeoutMs);
+      call += 1;
+      return call < 3
+        ? { message: { role: "assistant", content: "", tool_calls: [] } }
+        : { message: { role: "assistant", content: "done" } };
+    },
+  });
+
+  assert.ok(bounds.length >= 1, "every call must be given a bound");
+  for (const b of bounds) assert.ok(Number.isFinite(b) && b > 0, `bad bound: ${b}`);
+  for (let i = 1; i < bounds.length; i += 1) {
+    assert.ok(bounds[i] <= bounds[i - 1], "the bound must never grow as the budget is spent");
+  }
 });
 
 add("persistHarnessEvidence still defaults to the path hatta-dispatch reads", () => {

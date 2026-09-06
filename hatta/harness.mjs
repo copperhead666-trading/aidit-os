@@ -247,6 +247,56 @@ export const MIN_CLOCK_RESERVE_MS = 30 * 1000;
  * observation yet it stays at the cap — pessimism is correct only while there
  * is nothing to be pessimistic about.
  */
+// The floor on a per-call bound. Below this there is no point starting a call
+// at all, and a one-second timeout would report a healthy model as broken.
+export const MIN_CALL_TIMEOUT_MS = 5 * 1000;
+
+/**
+ * The per-request timeout as it stands RIGHT NOW.
+ *
+ * Read live rather than from the module-load constant, because postChat always
+ * read it live and something depends on that: HATTA_REQUEST_TIMEOUT_MS set
+ * after import has to take effect. The harness-history suite sets it to 1ms
+ * mid-run to prove an aborted fetch becomes a typed timeout carrying the right
+ * number, and a module-load snapshot silently reports 120000 instead — the
+ * check still passes on the important part and lies about the figure, which is
+ * the kind of green test that hides a broken knob.
+ */
+export function currentRequestTimeoutMs() {
+  const parsed = Number.parseInt(process.env.HATTA_REQUEST_TIMEOUT_MS || "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : REQUEST_TIMEOUT_MS;
+}
+
+/**
+ * How long THIS call may take, given what is left of the run's budget.
+ *
+ * WHY THE RESERVE ALONE IS NOT ENOUGH. The clock reserve decides whether to
+ * start another iteration; it cannot decide how long that iteration runs. With
+ * a fixed worst-case reserve those were the same question — the reserve was the
+ * per-request timeout, so a call that ran to its limit landed exactly on the
+ * outer budget. An adaptive reserve breaks that identity: a call that suddenly
+ * takes far longer than twice the slowest one seen could run past the outer
+ * budget and be killed by the wrapper instead of stopping itself.
+ *
+ * So the call is bounded by what is actually left. The harness stays the thing
+ * that ends the run, which is the difference between a stop it can report and a
+ * kill it cannot — TerminateProcess is uncatchable on Windows, and a killed
+ * harness leaves only whatever the last evidence write happened to contain.
+ */
+export function callTimeoutMs({
+  elapsedMs = 0,
+  outerRunBudgetMs = OUTER_RUN_BUDGET_MS,
+  requestTimeoutMs = REQUEST_TIMEOUT_MS,
+} = {}) {
+  const remaining = outerRunBudgetMs - elapsedMs;
+  if (!Number.isFinite(remaining)) return requestTimeoutMs;
+  // The floor applies to the REMAINING budget, never to the requested timeout.
+  // Clamping the other way round let a 5-second floor override an explicit
+  // HATTA_REQUEST_TIMEOUT_MS of 1ms, so the knob stopped working while every
+  // test that did not check the number kept passing.
+  return Math.min(requestTimeoutMs, Math.max(MIN_CALL_TIMEOUT_MS, remaining));
+}
+
 export function clockReserveMs({
   observedCallMs,
   requestTimeoutMs = REQUEST_TIMEOUT_MS,
@@ -1050,10 +1100,14 @@ async function executeToolCall(toolCall, evidence) {
   return { name, result };
 }
 
-export async function postChat(messages) {
+export async function postChat(messages, { timeoutMs } = {}) {
   if (ENDPOINT_CONFIG.error) throw new Error(ENDPOINT_CONFIG.error);
 
-  const requestTimeoutMs = Number.parseInt(process.env.HATTA_REQUEST_TIMEOUT_MS || "120000", 10);
+  // The caller may bound this call more tightly than the standing per-request
+  // timeout when the run's own budget is nearly spent. See callTimeoutMs.
+  const requestTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? timeoutMs
+    : Number.parseInt(process.env.HATTA_REQUEST_TIMEOUT_MS || "120000", 10);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
   try {
@@ -1097,6 +1151,7 @@ export async function runTask(prompt, {
   // leaves the conservative full reserve in place.
   monotonicMs = () => Date.now(),
   maxIterations = effectiveMaxIterations(),
+  outerRunBudgetMs = OUTER_RUN_BUDGET_MS,
 } = {}) {
   const startedAt = now();
   const startedAtMs = timeMs(startedAt);
@@ -1111,7 +1166,19 @@ export async function runTask(prompt, {
 
   try {
     for (let index = 0; ; index += 1) {
-      const stop = iterationStopReason(index, startedAtMs, timeMs(now()), { maxIterations, observedCallMs: slowestCallMs });
+      // ONE clock reading per iteration, reused. The evidence clock is injected,
+      // and tests drive it with a fake that jumps minutes per call — so an extra
+      // reading here would silently spend simulated budget and change when the
+      // loop stops. Reading once and passing the value around costs nothing and
+      // keeps the measurement out of the thing being measured.
+      const iterationNowMs = timeMs(now());
+      const perRequestMs = currentRequestTimeoutMs();
+      const stop = iterationStopReason(index, startedAtMs, iterationNowMs, {
+        maxIterations,
+        observedCallMs: slowestCallMs,
+        outerRunBudgetMs,
+        requestTimeoutMs: perRequestMs,
+      });
       if (stop) {
         evidence.error = stop.message;
         return evidence;
@@ -1119,7 +1186,13 @@ export async function runTask(prompt, {
 
       evidence.iterations = index + 1;
       const callStartedMs = monotonicMs();
-      const response = await chat(messages);
+      const response = await chat(messages, {
+        timeoutMs: callTimeoutMs({
+          elapsedMs: Math.max(0, iterationNowMs - startedAtMs),
+          outerRunBudgetMs,
+          requestTimeoutMs: perRequestMs,
+        }),
+      });
       const callMs = Math.max(0, monotonicMs() - callStartedMs);
       if (slowestCallMs === null || callMs > slowestCallMs) slowestCallMs = callMs;
       const assistantMessage = response?.message || { role: "assistant", content: "" };
