@@ -3311,27 +3311,31 @@ await t("KOL-81: RESULT_MARKER appears only in the done comment, never the no-op
   await resetTmp();
   const planAt = "2026-09-01T09:00:00.000Z";
   const after = "2026-09-01T09:30:00.000Z";
-  const issues = [
-    issue({ id: "kol82", identifier: "KOL-82" }),
-    issue({ id: "kol83", identifier: "KOL-83" }),
-    issue({ id: "kol84", identifier: "KOL-84" }),
-  ];
-  const approved = [c(`${PLAN_MARKER} (iso):\n${goodPlan}`, planAt), c(TG_APPROVE, after)];
-  const comments = { kol82: approved, kol83: approved.map((x) => ({ ...x })), kol84: approved.map((x) => ({ ...x })) };
+  // MAX_EXECUTIONS_PER_SWEEP is 1, so one sweep can only ever produce one
+  // outcome. Run three sweeps, one issue each, to see all three comment shapes.
+  const approved = () => [c(`${PLAN_MARKER} (iso):\n${goodPlan}`, planAt), c(TG_APPROVE, after)];
   const outcomes = [
     { outcome: "done", filesChanged: ["ops-watcher/foo.mjs"], verifyTail: "ok", verifyPassedBefore: false },
     { outcome: "no-op", reason: "file target sudah sama" },
     { outcome: "reverted", reason: "verify-red" },
   ];
-  const { deps, posts } = makeSweepDeps({
-    issues,
-    comments,
-    extra: { executeDirective: async () => outcomes.shift() },
-  });
-  const res = await runDirectiveSweepOnce(deps);
-  assert.equal(res.executed, 1);
-  assert.equal(res.noop, 1);
-  assert.equal(res.reverted, 1);
+  const posts = [];
+  const summaries = [];
+  for (const [id, identifier] of [["kol82", "KOL-82"], ["kol83", "KOL-83"], ["kol84", "KOL-84"]]) {
+    await resetTmp();
+    const issues = [issue({ id, identifier })];
+    const comments = { [id]: approved() };
+    const made = makeSweepDeps({
+      issues,
+      comments,
+      extra: { executeDirective: async () => outcomes.shift() },
+    });
+    summaries.push(await runDirectiveSweepOnce(made.deps));
+    posts.push(...made.posts);
+  }
+  assert.equal(summaries[0].executed, 1);
+  assert.equal(summaries[1].noop, 1);
+  assert.equal(summaries[2].reverted, 1);
   const bodies = posts.filter((p) => p.body && typeof p.body.body === "string").map((p) => p.body.body);
   const doneBody = bodies.find((b) => b.startsWith(RESULT_MARKER));
   const noopBody = bodies.find((b) => b.startsWith("DIRECTIVE NO-OP"));
