@@ -35,6 +35,7 @@ import {
   PLAN_MARKER,
   APPROVED_MARKER,
   REJECTED_MARKER,
+  REFUSED_MARKER,
   RESULT_MARKER,
   DISPATCH_MARKER,
   EXECUTION_CAP_MARKER,
@@ -4326,6 +4327,34 @@ await t("E2 an over-long packet is refused with a stated reason, not delivered i
   assert.equal(commandLineTooLong(["w.mjs", "x".repeat(100)], { execPath: "node", limit: 120 }), null);
   assert.ok(commandLineTooLong(["w.mjs", "x".repeat(120)], { execPath: "node", limit: 120 }),
     "the interpreter and wrapper paths count against the same cap");
+});
+
+await t("classifyDirective anchors REFUSED_MARKER and DISPATCH_MARKER to trimmed body start", () => {
+  // 1. A comment whose trimmed body starts with PLAN_REFUSED classifies as rejected.
+  assert.equal(classifyDirective(issue(), [c(`${REFUSED_MARKER}: I refuse this plan`)], { now: NOW }).state, "rejected");
+  // 2. The same behind a leading newline and two spaces still classifies as rejected.
+  assert.equal(classifyDirective(issue(), [c(`\n  ${REFUSED_MARKER}: I refuse this plan`)], { now: NOW }).state, "rejected");
+  // 3. A realistic handover note that quotes a PLAN_REFUSED line partway down does NOT classify as rejected.
+  const handoverNote = [
+    "Handover from previous session.",
+    "",
+    "The prior run produced: PLAN_REFUSED (2026-09-01T08:00:00.000Z): the plan was rejected automatically.",
+    "",
+    "I am picking up from where things left off and will re-plan.",
+  ].join("\n");
+  assert.equal(classifyDirective(issue(), [c(handoverNote)], { now: NOW }).state, "new");
+  // 4. A body starting with the dispatch marker still behaves as it does today (stalled when old).
+  const staleWake = new Date(NOW - DEFAULT_STALLED_AFTER_MS - 1000).toISOString();
+  assert.equal(classifyDirective(issue(), [c(`${DISPATCH_MARKER} (ops-watcher/ahmad-dispatch): waking headless AHMAD.`, staleWake)], { now: NOW }).state, "stalled");
+  // 5. A body quoting the dispatch marker partway down no longer triggers wake.
+  const partwayDispatch = [
+    "Resuming previous session.",
+    "",
+    "AHMAD DISPATCH (ops-watcher/ahmad-dispatch): waking headless AHMAD for KOL-1.",
+    "",
+    "Continuing from checkpoint.",
+  ].join("\n");
+  assert.equal(classifyDirective(issue(), [c(partwayDispatch, staleWake)], { now: NOW }).state, "new");
 });
 
 await resetTmp();
