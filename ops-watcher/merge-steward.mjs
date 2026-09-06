@@ -68,14 +68,6 @@ function statusPath(line) {
   return renamed.replace(/^"|"$/g, "");
 }
 
-function parseStatusFiles(text) {
-  return String(text || "")
-    .split(/\r?\n/)
-    .filter((line) => line.trim())
-    .map(statusPath)
-    .filter(Boolean);
-}
-
 function parseAddedLines(text) {
   return String(text || "")
     .split(/\r?\n/)
@@ -276,13 +268,28 @@ function gatherFacts(tree, deps) {
       };
     }
 
-    const diffNames = gitOutput(["diff", "--name-only", "origin/main", "--"], cwd, _exec)
-      .split(/\r?\n/)
-      .filter(Boolean);
+    // What this worktree contributed: its uncommitted files plus the files
+    // its own commits ahead of origin/main introduced. Three dots diff from
+    // the merge base, so a stale checkout is not charged for files main
+    // moved underneath it. Only untracked entries are read from porcelain
+    // status: gitOutput trims the output, which corrupts a leading " M" on
+    // the first line, and diff against HEAD already names the rest.
+    const uncommittedNames = uncommitted > 0
+      ? gitOutput(["diff", "--name-only", "HEAD", "--"], cwd, _exec)
+      : "";
     const statusText = uncommitted > 0 ? gitOutput(["status", "--porcelain"], cwd, _exec) : "";
-    const statusFiles = parseStatusFiles(statusText);
-    const changedFiles = unique([...diffNames, ...statusFiles]);
     const untracked = untrackedFilesFromStatus(statusText);
+    const aheadNames = gitOutput(["diff", "--name-only", "origin/main...HEAD", "--"], cwd, _exec);
+    // Sorted, because this list is printed in a report a person compares between
+    // sweeps. Three git calls contribute to it and their natural order is an
+    // accident of which command ran first; a stable order makes two runs of the
+    // same worktree diffable, and lets a test assert the list rather than only
+    // its membership.
+    const changedFiles = unique([
+      ...uncommittedNames.split(/\r?\n/),
+      ...untracked,
+      ...aheadNames.split(/\r?\n/),
+    ]).sort();
     const diffPatch = gitOutput(["diff", "--unified=0", "origin/main", "--"], cwd, _exec);
     const addedLines = [
       ...parseAddedLines(diffPatch),
