@@ -1268,7 +1268,7 @@ export async function sendDecisionCardReal({ issue, plan, telegramBase } = {}) {
 // "done" signal on the next sweep); the no-op and failure comments deliberately
 // avoid RESULT_MARKER so the directive stays classified as `approved` until the
 // owner re-evaluates or a later sweep re-executes.
-function doneResultComment({ filesChanged, verifyCmd, verifyTail, outOfScope, nowMs }) {
+function doneResultComment({ filesChanged, verifyCmd, verifyTail, outOfScope, nowMs, verifyPassedBefore }) {
   const files = Array.isArray(filesChanged) ? filesChanged : [];
   return [
     `${RESULT_MARKER} (${iso(nowMs)}): directive telah dikerjakan dan diverifikasi.`,
@@ -1281,6 +1281,14 @@ function doneResultComment({ filesChanged, verifyCmd, verifyTail, outOfScope, no
     String(verifyTail || "").trim() || "(tidak ada output)",
     "",
     `Yang sengaja tidak dikerjakan: ${outOfScope || "(tidak dinyatakan)"}`,
+    // KOL-81: when the verify command was already green BEFORE the lane ran,
+    // a green afterwards proves nothing about the change - the pattern may
+    // match a part of the file the directive was not about. The done claim
+    // then rests on the measured content change, and the comment must say so.
+    ...(verifyPassedBefore ? [
+      "",
+      "Catatan: verifikasi sudah lulus SEBELUM eksekusi - perintah ini tidak membedakan keadaan sebelum dan sesudah perubahan; keberhasilan dilaporkan atas dasar perubahan konten yang terukur, bukan output verifikasi.",
+    ] : []),
   ].join("\n");
 }
 function noOpComment({ nowMs }) {
@@ -1966,6 +1974,7 @@ async function runDirectiveSweepLocked(deps = {}) {
             verifyTail: result.verifyTail,
             outOfScope: String((exPlan && exPlan.outOfScope) || ""),
             nowMs,
+            verifyPassedBefore: result.verifyPassedBefore === true,
           });
           const dpost = await _post(`${base}/api/issues/${exIssue.id}/comments`, { body, authorType: "user" });
           const dposted = judgeWrite(dpost);
@@ -2779,6 +2788,16 @@ async function defaultStatFile(file) {
   return { size: st.size, mtimeMs: st.mtimeMs };
 }
 
+// Default hashFile: sha256 of the file's bytes, hex. Never throws — an
+// unreadable file surfaces as a null hash, the same null a missing stat
+// reports, so the before/after comparison reads "unreadable on both sides"
+// as unchanged instead of throwing. sha256 because it is the collision
+// resistance mtime comparison never had and it ships in node:crypto.
+async function defaultHashFile(file) {
+  const bytes = await fs.readFile(file);
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
 // Ordered. Returns one of the documented outcomes and NEVER throws. Every
 // outcome appends exactly one evidence line via the injectable appendEvidence.
 // This function posts NO comments and sends NO Telegram.
@@ -2794,6 +2813,7 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
   const recordOutcomeFn = deps.recordOutcome || defaultRecordLaneOutcome;
   const logLaneOutcomeFn = deps.logLaneOutcome || defaultLogLaneOutcome;
   const statFileFn = deps.statFile || defaultStatFile;
+  const hashFileFn = deps.hashFile || defaultHashFile;
   const ensureLaneWorktreeFn = deps.ensureLaneWorktree || defaultEnsureLaneWorktree;
   const resolveSpecialists = deps.resolveSpecialistsForPacket || resolveSpecialistsForPacket;
   const laneForTaskClassFn = deps.laneForTaskClass || laneForTaskClass;
@@ -2828,9 +2848,18 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
     const fileToStat = workspacePath ? path.resolve(workspacePath, file) : file;
     try {
       const st = await statFileFn(fileToStat);
-      return { file, size: st && st.size, mtimeMs: st && st.mtimeMs };
+      // Content decides what changed, not size or mtime: a lane that rewrites a
+      // file with byte-identical text bumps the mtime and changes nothing. An
+      // injected statFile may carry its own hash; otherwise hash the bytes.
+      let hash = null;
+      if (st && typeof st.hash === "string") {
+        hash = st.hash;
+      } else {
+        try { hash = await hashFileFn(fileToStat); } catch { hash = null; }
+      }
+      return { file, size: st && st.size, mtimeMs: st && st.mtimeMs, hash };
     } catch {
-      return { file, size: null, mtimeMs: null };
+      return { file, size: null, mtimeMs: null, hash: null };
     }
   }
 
@@ -2841,7 +2870,14 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
     for (let i = 0; i < files.length; i++) {
       const b = before[i], a = after[i];
       if (!b || !a) continue;
-      if (b.size !== a.size || b.mtimeMs !== a.mtimeMs) changed.push(files[i]);
+      // The hash is null exactly when the bytes could not be read on that
+      // side, so this one comparison covers all four shapes: null -> hex is a
+      // file the lane created, hex -> null is one it deleted, different hexes
+      // are a real edit, and null -> null (unreadable both times) or equal
+      // hexes are NOT a change no matter what size and mtime did. There is
+      // deliberately no size cap and no mtime fallback: a silent fallback
+      // would restore the bug for exactly the files where it matters most.
+      if (b.hash !== a.hash) changed.push(files[i]);
     }
     return { after, changed };
   }
@@ -2956,6 +2992,25 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
     const before = [];
     for (const f of files) before.push(await statEntry(f));
 
+    // 5b. Baseline verification: run the plan's VERIFY BEFORE dispatching the
+    //     lane, and once again after. KOL-81 reported "dikerjakan dan
+    //     diverifikasi" on a file that did not change, because the verify
+    //     pattern matched a part of the file the directive was not about and
+    //     the command passed identically before and after the "work". A pass
+    //     that reads the same on both sides of the work is not evidence of
+    //     the work; only the delta is. A red baseline is NOT a failure — for
+    //     most directives making it green is the point of the work — so it
+    //     never blocks dispatch; it only decides what the green afterwards
+    //     is allowed to claim.
+    const runVerifyFn = deps.runVerify || (async (cmd) => spawnCapture(nodeCommandToArgv(cmd)));
+    let verifyBeforeResult = null;
+    try {
+      verifyBeforeResult = await runVerifyFn(verify);
+    } catch {
+      verifyBeforeResult = null;
+    }
+    const verifyPassedBefore = !!(verifyBeforeResult && verifyBeforeResult.ok === true);
+
     // 6. Dispatch the execution prompt, then record the lane outcome.
     const prompt = buildExecutionPrompt(issue, plan, specialists, ventures);
     const dispatchFn = deps.dispatchExecution || makeDefaultDispatchExecution(lane && lane.wrapper);
@@ -2986,8 +3041,8 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
       }
     }
 
-    // 7. Verify stage A: the plan's VERIFY command.
-    const runVerifyFn = deps.runVerify || (async (cmd) => spawnCapture(nodeCommandToArgv(cmd)));
+    // 7. Verify stage A: the plan's VERIFY command, run again AFTER the lane
+    //    so it can be compared against the 5b baseline.
     const verifyResult = await runVerifyFn(verify);
     if (!verifyResult || verifyResult.ok !== true) {
       const { changed } = await countChangedFiles(files, before);
@@ -3020,11 +3075,13 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
       );
     }
 
-    // 9. Done. Report the changed files and the verify tail.
+    // 9. Done. Report the changed files and the verify tail. verifyPassedBefore
+    //    rides along so the result comment can say whether the verification
+    //    actually distinguished the before and after states.
     const verifyOut = String((verifyResult && verifyResult.stdout || "") + (verifyResult && verifyResult.stderr || ""));
     const verifyTail = verifyOut.slice(-400);
     return emitMeasured(
-      { outcome: "done", filesChanged, verifyTail },
+      { outcome: "done", filesChanged, verifyTail, verifyPassedBefore },
       { verifyPassed: true, filesChanged: filesChanged.length, filesPlanned: files.length },
     );
   } catch (err) {
