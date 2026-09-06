@@ -14,6 +14,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { GBRAIN_INDEX_FILE, readGbrainIndex } from "./gbrain.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, "..");
@@ -32,7 +33,7 @@ const EVENTS_FILE = path.join(__dirname, "events.jsonl");
 // the folder was renamed — and a missing token reads as "board unreachable",
 // which is a different and much more misleading failure.
 const SECRETS_DIR = path.join(ROOT, ".paperclip", "instances", "default", "secrets");
-const GBRAIN_DB = path.join(ROOT, "knowledge", "store", ".gbrain", "brain.pglite");
+const GBRAIN_INDEX = GBRAIN_INDEX_FILE;
 const GRAPH_ACTIVE = path.join(ROOT, "graphify-out", "active", "graph.json");
 const GRAPH_LEGACY = path.join(ROOT, "graphify-out", "legacy", "graph.json");
 
@@ -330,8 +331,9 @@ async function collectSnapshot() {
     snap.errors.push(`ollama /api/tags status=${ollamaRes.status}`);
   }
 
-  const gStat = await statIfExists(GBRAIN_DB);
-  if (gStat) { snap.gbrain.exists = true; snap.gbrain.mtimeMs = gStat.mtimeMs; }
+  const gStat = await statIfExists(GBRAIN_INDEX);
+  const gIndex = gStat ? await readGbrainIndex(GBRAIN_INDEX) : null;
+  if (gIndex) { snap.gbrain.exists = true; snap.gbrain.mtimeMs = gStat.mtimeMs; }
   snap.graphify.active = !!(await statIfExists(GRAPH_ACTIVE));
   snap.graphify.legacy = !!(await statIfExists(GRAPH_LEGACY));
   return snap;
@@ -463,10 +465,10 @@ function detectWorkerLaneAvailability(snap) {
   return events;
 }
 
-function detectConnectorDegradation(snap) {
+export function detectConnectorDegradation(snap) {
   const events = [];
   if (!snap.gbrain.exists)
-    events.push({ detector: "gbrain-store-missing", target_role: "AHMAD", payload: { path: GBRAIN_DB } });
+    events.push({ detector: "gbrain-store-missing", target_role: "AHMAD", payload: { path: GBRAIN_INDEX } });
   if (!snap.graphify.active)
     events.push({ detector: "graphify-active-missing", target_role: "AHMAD", payload: { path: GRAPH_ACTIVE } });
   if (!snap.graphify.legacy)
