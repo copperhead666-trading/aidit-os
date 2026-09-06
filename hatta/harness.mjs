@@ -22,7 +22,20 @@ const WORKSPACE_ROOT = path.resolve(__harnessDir, "..");
 const DEFAULT_ENDPOINT = "http://localhost:11434/api/chat";
 const ENDPOINT_CONFIG = resolveEndpoint(process.env.OLLAMA_HOST);
 const ENDPOINT = ENDPOINT_CONFIG.endpoint;
-const MODEL = process.env.OLLAMA_MODEL_HATTA || "glm-5.3:cloud";
+// Model tiers, named in one place so lanes cannot drift apart. Benchmark:
+// heavy runs glm-5.2, code runs glm-5.1, light runs a flash model.
+// OLLAMA_MODEL_HATTA overrides the code tier for comparison runs.
+export const MODEL_TIERS = Object.freeze({
+  code: "glm-5.1:cloud",        // HATTA's default: it edits code
+  heavy: "glm-5.2:cloud",       // reserved; nothing routes here yet
+  light: "glm-5.3-flash:cloud", // the flash lane
+});
+
+export function resolveModel(envOverride = process.env.OLLAMA_MODEL_HATTA) {
+  return envOverride || MODEL_TIERS.code;
+}
+
+const MODEL = resolveModel();
 const OUTER_RUN_BUDGET_MS = Number.parseInt(process.env.HATTA_OUTER_RUN_BUDGET_MS || "480000", 10);
 const REQUEST_TIMEOUT_MS = Number.parseInt(process.env.HATTA_REQUEST_TIMEOUT_MS || "120000", 10);
 export const HARD_ITERATION_CEILING = 40;
@@ -1078,6 +1091,28 @@ export class OllamaChatTimeoutError extends Error {
   }
 }
 
+// Thrown when the endpoint rejects a model outright (retired or missing) so a
+// lane dying for that reason says so in the first line of its failure instead
+// of surfacing as an ordinary HTTP failure or looking like a timeout.
+export class OllamaModelUnavailableError extends Error {
+  constructor(model, body) {
+    super(`Ollama model ${model} unavailable: ${truncate(body, 200)}`);
+    this.name = "OllamaModelUnavailableError";
+    this.model = model;
+    this.body = body;
+  }
+}
+
+// Returns "retired" for bodies like {"error":"glm-4.7 was retired at ..."} and
+// "missing" for bodies like {"error":"model 'glm-5.1-flash' not found"},
+// else null. Models have been retired twice in two months; this will repeat.
+function classifyModelUnavailable(body) {
+  if (typeof body !== "string" || body.length === 0) return null;
+  if (body.includes("was retired at")) return "retired";
+  if (body.includes("not found")) return "missing";
+  return null;
+}
+
 async function executeToolCall(toolCall, evidence) {
   const name = toolCall?.function?.name || toolCall?.name;
   const args = parseToolArguments(toolCall?.function?.arguments ?? toolCall?.arguments);
@@ -1126,6 +1161,9 @@ export async function postChat(messages, { timeoutMs } = {}) {
 
     if (!response.ok) {
       const body = await response.text().catch(() => "");
+      if (classifyModelUnavailable(body)) {
+        throw new OllamaModelUnavailableError(MODEL, body);
+      }
       throw new Error(`Ollama chat failed: HTTP ${response.status} ${truncate(body, 500)}`);
     }
 

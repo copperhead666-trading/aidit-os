@@ -6,10 +6,10 @@
 // in ahmad-mcp-server.mjs) requires exe === "node" + a fixed allowlisted .mjs
 // script, AND it cannot set environment variables when calling
 // `node hatta/harness.mjs` directly. HATTA's harness already reads its model
-// from process.env.OLLAMA_MODEL_HATTA (hatta/harness.mjs line 16:
-// `const MODEL = process.env.OLLAMA_MODEL_HATTA || "glm-5.3:cloud";`), so this
-// wrapper simply spawns the harness with the child environment overriding that
-// one key to "glm-5.3-flash:cloud" while spreading the rest of process.env
+// from process.env.OLLAMA_MODEL_HATTA (hatta/harness.mjs: MODEL =
+// resolveModel()), so this wrapper simply spawns the harness with the child
+// environment overriding that one key to MODEL_TIERS.light while spreading the
+// rest of process.env
 // (so other inherited vars the harness needs, e.g. OLLAMA_HOST, are preserved).
 // This mirrors the origin FounderOS design's 4-tier model-lanes layer
 // (heavy, code, Flash-lightweight, secondary-CLI) that this fork was missing
@@ -21,6 +21,7 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { MODEL_TIERS } from "../hatta/harness.mjs";
 import { logLaneUsage } from "./lane-usage.mjs";
 import { guardLaneStart, recordLaneOutcome } from "./lane-guard.mjs";
 
@@ -29,7 +30,9 @@ const REPO_ROOT = path.resolve(__dirname, "..");
 
 const TIMEOUT_MS = 8 * 60 * 1000; // 480000ms, under ahmad-mcp-server.mjs's 9-min RUN_TIMEOUT_MS cap
 const HARNESS_SCRIPT = path.resolve(REPO_ROOT, "hatta", "harness.mjs");
-const FLASH_MODEL = "glm-5.3-flash:cloud";
+// Derived from the single tier table in the harness, never its own literal, so
+// the flash lane and the harness cannot drift apart.
+export const FLASH_MODEL = MODEL_TIERS.light;
 
 async function main() {
   const prompt = process.argv[2];
