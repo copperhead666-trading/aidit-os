@@ -143,7 +143,15 @@ const GIBRAN_AGENT_ID = "ce433688-4e0d-4902-addd-b7d27eb081b7";
 const HERMES_WORKSPACE = path.resolve(__dirname, "..");
 const HERMES_PROVIDER = "nous";
 const HERMES_MODEL = "upstage/solar-pro4:free";
-const HERMES_TIMEOUT_MS = 10 * 60 * 1000;
+// EVERY LAYER MUST OUTLIVE THE ONE IT CONTAINS.
+// The nesting is heartbeat.mjs STEP_TIMEOUT_MS (10 min) > ahmad-mcp-server.mjs
+// RUN_TIMEOUT_MS (9 min) > lane wrapper. Every other lane sits at 8 minutes
+// under that 9-minute cap. GIBRAN alone sat at 10 minutes: run under AHMAD it
+// was killed by the layer above 60 seconds before its own limit could fire, so
+// its timeout branch — the one that reports the reviewer as timed out rather
+// than crashed — could never run. A limit that the layer above always reaches
+// first is not a limit, it is dead code.
+export const HERMES_TIMEOUT_MS = 8 * 60 * 1000;
 const RUN_WAIT_MS = 15000;
 const MAX_HERMES_ATTEMPTS = 3;
 const OUTPUT_CAP = 6000;

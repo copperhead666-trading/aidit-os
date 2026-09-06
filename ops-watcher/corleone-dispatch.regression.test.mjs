@@ -301,9 +301,45 @@ function t16_agentMessageItemIsTheAnswer() {
   ok("T16: an agent_message item is the lane ANSWER, not dropped");
 }
 
+// ---- The lane is told what it may do, and how long it has ----
+// CORLEONE received neither until 2026-09-06: ruflo-lane-context.mjs had no
+// corleone entry, and withRufloLanePrelude was called only from sjahrir-dispatch
+// and review-runner. Meanwhile its ten longest runs all ended at exactly 480.0
+// seconds — the spawn timeout to the millisecond, which is what being killed
+// looks like, not what finishing looks like.
+async function t17_promptCarriesLaneContextAndTheBudget() {
+  const name = "T17: the dispatched prompt carries the lane prelude and a stated budget";
+  const deps = makeDeps({ status: 0, stdout: "", stderr: "" });
+  await mod.dispatchCorleone("PACKET BODY", { ...deps, effort: "high", timeoutMs: 480000 });
+  assert.equal(deps.calls.length, 1, "exactly one spawn");
+  const prompt = deps.calls[0].args[deps.calls[0].args.length - 1];
+  assert.match(prompt, /^\[RUFLO LANE CONTEXT\]/, "the prelude must lead the prompt");
+  assert.match(prompt, /480 seconds/, "the wall must be stated to the lane in seconds");
+  assert.match(prompt, /do not start daemons/i, "the prelude must still narrow authority");
+  assert.ok(prompt.endsWith("PACKET BODY"), "the packet body must survive intact");
+  ok(name);
+}
+
+// The budget the lane is told must be the budget that actually kills it. A
+// prelude quoting the default while the caller passes something else is a lie
+// with a number in it, which is worse than saying nothing.
+async function t18_theStatedBudgetIsTheOneThatFires() {
+  const name = "T18: the stated budget is the timeout actually in force";
+  const deps = makeDeps({ status: 0, stdout: "", stderr: "" });
+  await mod.dispatchCorleone("BODY", { ...deps, effort: "high", timeoutMs: 90000 });
+  const call = deps.calls[0];
+  const prompt = call.args[call.args.length - 1];
+  assert.match(prompt, /90 seconds/);
+  assert.ok(!/480 seconds/.test(prompt), "it must not quote a default it is not using");
+  assert.equal(call.options.timeout, 90000, "and that is the timeout handed to spawnSync");
+  ok(name);
+}
+
 async function main() {
   console.log("# corleone-dispatch regression tests");
   const tests = [
+    t17_promptCarriesLaneContextAndTheBudget,
+    t18_theStatedBudgetIsTheOneThatFires,
     t16_agentMessageItemIsTheAnswer,
     t1_buildsNodeBackedInvocationForWindowsShim,
     t2_buildsDirectCodexInvocationWithoutShim,

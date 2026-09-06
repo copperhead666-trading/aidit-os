@@ -30,7 +30,8 @@ import http from "node:http";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { runReviewSweep, runReviewOnce, parseVerdict, verdictCategory, isUnusableReviewerReply, isReviewerQuotaFailure, buildPrompt } from "./review-runner.mjs";
+import { runReviewSweep, runReviewOnce, parseVerdict, verdictCategory, isUnusableReviewerReply, isReviewerQuotaFailure, buildPrompt, HERMES_TIMEOUT_MS } from "./review-runner.mjs";
+import { TIMEOUT_MS as LANE_WRAPPER_TIMEOUT_MS } from "./hatta-dispatch.mjs";
 import {
   acquireLock,
   releaseLock,
@@ -879,8 +880,28 @@ async function testGibranPromptCarriesReviewOnlyRufloContext() {
   } catch (e) { bad(name, e); }
 }
 
+// ---- Every layer must outlive the one it contains ----
+// The nesting is heartbeat.mjs STEP_TIMEOUT_MS (10 min) > ahmad-mcp-server.mjs
+// RUN_TIMEOUT_MS (9 min) > lane wrapper (8 min). GIBRAN alone sat at 10 minutes,
+// so under AHMAD it was killed by the layer above 60 seconds before its own
+// limit could fire, and its timeout branch — the one that reports the reviewer
+// as timed out rather than crashed — was unreachable code.
+async function testGibranTimeoutNestsUnderTheLayerAboveIt() {
+  const name = "(t) GIBRAN's timeout fits under the layer that kills it";
+  try {
+    assert.equal(HERMES_TIMEOUT_MS, LANE_WRAPPER_TIMEOUT_MS,
+      "GIBRAN must use the same wrapper ceiling as every other lane");
+    assert.ok(HERMES_TIMEOUT_MS < 9 * 60 * 1000,
+      "it must end before ahmad-mcp-server.mjs's 9-minute RUN_TIMEOUT_MS");
+    assert.ok(HERMES_TIMEOUT_MS < 10 * 60 * 1000,
+      "and before heartbeat.mjs's 10-minute per-step cap");
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
 async function main() {
   console.log("# review-runner regression tests");
+  await testGibranTimeoutNestsUnderTheLayerAboveIt();
   await testHappyPass();
   await testPassWithNotes();
   await testRejectGoesToNeedsRework();

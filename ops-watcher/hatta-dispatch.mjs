@@ -26,16 +26,44 @@ import { fileURLToPath } from "node:url";
 import { logLaneUsage } from "./lane-usage.mjs";
 import { ensureLaneWorktree } from "./lane-worktree.mjs";
 import { guardLaneStart, recordLaneOutcome } from "./lane-guard.mjs";
+import { mergeRufloLaneEnv, withRufloLanePrelude } from "./ruflo-lane-context.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(__dirname, "..");
+export const REPO_ROOT = path.resolve(__dirname, "..");
 
-const TIMEOUT_MS = 8 * 60 * 1000; // 480000ms, under ahmad-mcp-server.mjs's 9-min RUN_TIMEOUT_MS cap
+// Exported so the regression suite can assert the LAYERING rather than restate
+// the numbers: every budget here must end before the one that kills it.
+export const TIMEOUT_MS = 8 * 60 * 1000; // 480000ms, under ahmad-mcp-server.mjs's 9-min RUN_TIMEOUT_MS cap
+
+// The harness must finish BEFORE the spawn timeout kills it, not at the same
+// instant. Until 2026-09-06 hatta/harness.mjs defaulted to 480000ms and this
+// wrapper killed at 480000ms, so the two coincided by accident: a harness that
+// used its whole budget was terminated mid-write with nothing to say for
+// itself. TerminateProcess cannot be caught on Windows, so a harness killed
+// that way never gets to print its verdict. This margin is the difference
+// between a run that reports itself and one that vanishes.
+export const HARNESS_TEARDOWN_MARGIN_MS = 30 * 1000;
+export const HARNESS_BUDGET_MS = TIMEOUT_MS - HARNESS_TEARDOWN_MARGIN_MS;
 
 // Where hatta/harness.mjs persists evidence after every iteration. Reading it is
 // best-effort by design: a missing or half-written file must never turn a
 // reported timeout into a crash.
-const HARNESS_EVIDENCE_FILE = path.join(REPO_ROOT, "hatta", ".harness-evidence.json");
+//
+// THE PATH FOLLOWS THE HARNESS, NOT THIS FILE. harness.mjs derives its own
+// WORKSPACE_ROOT from its own location, so the isolated harness inside a lane
+// worktree writes <worktree>/hatta/.harness-evidence.json. This wrapper used to
+// read <repo>/hatta/.harness-evidence.json unconditionally — a different tree
+// from the one the run happened in. Measured 2026-09-06: the real evidence of
+// the 04:05 run (12 iterations, 19 tool calls, the file it wrote, the exact
+// budget error) sat in the worktree, while the shared path held a leftover from
+// the harness security suite. A timeout would have recovered that leftover and
+// reported it as this run's evidence. Reporting someone else's run as your own
+// is worse than reporting nothing.
+export function harnessEvidenceFileFor(workspacePath) {
+  const root = workspacePath ? path.resolve(workspacePath) : REPO_ROOT;
+  return path.join(root, "hatta", ".harness-evidence.json");
+}
+const HARNESS_EVIDENCE_FILE = harnessEvidenceFileFor(REPO_ROOT);
 export function readHarnessEvidence(file = HARNESS_EVIDENCE_FILE, _fs = fsSync) {
   try {
     const parsed = JSON.parse(_fs.readFileSync(file, "utf8"));
@@ -196,13 +224,18 @@ async function main() {
   const harness = harnessScriptFor(workspace.path);
   if (!harness.isolated) process.stderr.write(`hatta-dispatch: ${harness.reason}\n`);
   const t0 = Date.now();
-  const r = spawnSync(process.execPath, [harness.script, prompt], {
+  // The lane is TOLD its budget, and the harness is GIVEN the same number.
+  // Neither was true before: the prelude existed for HATTA but no wrapper ever
+  // applied it, and the harness read its budget from a default that happened to
+  // equal this wrapper's kill timeout. A budget the model cannot see is an
+  // ambush, and two layers agreeing by coincidence is not a design.
+  const r = spawnSync(process.execPath, [harness.script, withRufloLanePrelude("hatta", prompt, { budgetMs: HARNESS_BUDGET_MS })], {
     cwd: workspace.path,
     windowsHide: true,
     timeout: TIMEOUT_MS,
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
-    env: { ...process.env },
+    env: mergeRufloLaneEnv({ ...process.env, HATTA_OUTER_RUN_BUDGET_MS: String(HARNESS_BUDGET_MS) }),
   });
   const durationMs = Date.now() - t0;
 
@@ -219,7 +252,7 @@ async function main() {
     // — spawnSync's kill goes through TerminateProcess, which no SIGTERM handler
     // in the child can catch, so the child's own signal handler never fires.
     // Read the file here, where the run is being reported.
-    const recovered = readHarnessEvidence();
+    const recovered = readHarnessEvidence(harnessEvidenceFileFor(workspace.path));
     if (recovered) {
       process.stdout.write(JSON.stringify({ ...recovered, timedOut: true, recoveredFrom: "evidence-file" }) + "\n");
       process.stderr.write(

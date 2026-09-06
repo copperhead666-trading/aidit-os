@@ -6,7 +6,17 @@ import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { readHarnessEvidence, parseHarnessStdout, buildNormalExitUsage, harnessScriptFor } from "./hatta-dispatch.mjs";
+import {
+  readHarnessEvidence,
+  parseHarnessStdout,
+  buildNormalExitUsage,
+  harnessScriptFor,
+  harnessEvidenceFileFor,
+  HARNESS_BUDGET_MS,
+  HARNESS_TEARDOWN_MARGIN_MS,
+  TIMEOUT_MS,
+  REPO_ROOT,
+} from "./hatta-dispatch.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TMP = path.join(__dirname, "hatta-dispatch.regression.evidence.tmp.json");
@@ -211,6 +221,36 @@ await t("a workspace with no harness falls back LOUDLY, never silently", () => {
   assert.equal(r.isolated, false);
   assert.equal(r.script, "D:/repo/hatta/harness.mjs");
   assert.match(r.reason, /writes the SHARED tree/);
+});
+
+// ---- The evidence path follows the harness, not this module ----
+// harness.mjs derives its WORKSPACE_ROOT from its own location, so the isolated
+// harness inside a lane worktree writes <worktree>/hatta/.harness-evidence.json.
+// This wrapper read <repo>/hatta/.harness-evidence.json unconditionally — a
+// different tree from the one the run happened in. Measured 2026-09-06: the real
+// evidence of the 04:05 run (12 iterations, 19 tool calls, the file it wrote,
+// the exact budget error) sat in the worktree, while the shared path held a
+// leftover fixture from the harness security suite. A timeout would have
+// recovered that fixture and reported it as this run's own evidence.
+await t("the evidence file read is the one in the workspace that ran", () => {
+  const inWorktree = harnessEvidenceFileFor("D:/AI/worktrees/lane-hatta").split(path.sep).join("/");
+  assert.equal(inWorktree, "D:/AI/worktrees/lane-hatta/hatta/.harness-evidence.json");
+
+  const shared = harnessEvidenceFileFor(REPO_ROOT).split(path.sep).join("/");
+  assert.notEqual(inWorktree, shared, "an isolated run must not read the shared tree's evidence");
+  assert.ok(shared.endsWith("/hatta/.harness-evidence.json"));
+
+  // No workspace at all still yields a usable path rather than throwing: the
+  // timeout branch must never crash while trying to report a timeout.
+  assert.ok(harnessEvidenceFileFor(undefined).endsWith(path.join("hatta", ".harness-evidence.json")));
+});
+
+// ---- The harness is given a budget that ends BEFORE its killer fires ----
+await t("the harness budget leaves room to report itself before the kill", () => {
+  assert.ok(HARNESS_BUDGET_MS < TIMEOUT_MS,
+    "a harness whose budget equals the spawn timeout is killed mid-write, and TerminateProcess cannot be caught");
+  assert.equal(TIMEOUT_MS - HARNESS_BUDGET_MS, HARNESS_TEARDOWN_MARGIN_MS);
+  assert.ok(HARNESS_TEARDOWN_MARGIN_MS >= 10000, "the margin must be big enough to finish a write, not symbolic");
 });
 
 await fs.unlink(TMP).catch(() => {});

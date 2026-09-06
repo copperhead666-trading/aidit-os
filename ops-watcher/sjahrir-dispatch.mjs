@@ -29,8 +29,8 @@ const TIMEOUT_MS = 8 * 60 * 1000; // 480000ms, under ahmad-mcp-server.mjs's 9-mi
  * `-m/--model` is deliberately NOT set: the lane uses the machine's
  * configured default model.
  */
-export function buildKimiArgs(prompt) {
-  return ["-p", withRufloLanePrelude("sjahrir", prompt), "--output-format", "stream-json"];
+export function buildKimiArgs(prompt, { budgetMs } = {}) {
+  return ["-p", withRufloLanePrelude("sjahrir", prompt, { budgetMs }), "--output-format", "stream-json"];
 }
 
 /**
@@ -167,7 +167,7 @@ export async function dispatchSjahrir(prompt, deps = {}) {
     // contain work nobody asked it to do. Nothing is cleaned here: those files
     // are the only copy of work a lane already did.
     if (workspace.dirty > 0) process.stderr.write(`sjahrir-dispatch: ${workspace.reason}\n`);
-    const r = _spawn("kimi", buildKimiArgs(prompt), {
+    const r = _spawn("kimi", buildKimiArgs(prompt, { budgetMs: TIMEOUT_MS }), {
       cwd: workspace.path,
       windowsHide: true,
       timeout: TIMEOUT_MS,

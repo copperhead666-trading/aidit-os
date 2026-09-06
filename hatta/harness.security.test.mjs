@@ -20,6 +20,8 @@ import {
   runTask,
   effectiveMaxIterations,
   HARD_ITERATION_CEILING,
+  clockReserveMs,
+  MIN_CLOCK_RESERVE_MS,
 } from "./harness.mjs";
 
 // THE SANDBOX BOUNDARY THIS WHOLE FILE EXISTS TO TEST. It must be derived the
@@ -121,13 +123,20 @@ async function withEnv(key, value, fn) {
 // Harness evidence persistence and termination bookkeeping.
 // ---------------------------------------------------------------------------
 add("runTask persists harness evidence JSON with iterations", async () => {
-  await fs.rm(HARNESS_EVIDENCE_PATH, { force: true }).catch(() => {});
+  // NOT the real evidence path. hatta-dispatch reads that file to recover what
+  // a timed-out run managed to do, so a test that overwrites it makes the next
+  // timeout report this fixture as its own evidence.
+  const evidencePath = path.join(
+    await fs.mkdtemp(path.join(os.tmpdir(), "hatta-evidence-")),
+    ".harness-evidence.json",
+  );
 
   const evidence = await runTask("offline evidence smoke", {
     chat: finalChat("evidence complete"),
     now: fixedClock(),
+    persist: (record) => persistHarnessEvidence(record, fs, evidencePath),
   });
-  const parsed = JSON.parse(await fs.readFile(HARNESS_EVIDENCE_PATH, "utf8"));
+  const parsed = JSON.parse(await fs.readFile(evidencePath, "utf8"));
 
   assert.equal(evidence.ok, true);
   assert.equal(parsed.iterations, 1);
@@ -207,7 +216,49 @@ add("slow clock stops before overrunning outer budget reserve", async () => {
     assert.equal(evidence.ok, false);
     assert.equal(evidence.iterations, 2);
     assert.match(evidence.error, /Reached clock budget before a final answer/);
-    assert.match(evidence.error, /elapsed=360000ms; outer=480000ms; reserve=120000ms; remaining=120000ms/);
+    // slowestCall=unobserved is the honest reading under a fake evidence clock:
+    // the monotonic timer that measures a call is real, so a stubbed chat that
+    // returns instantly gives it nothing to observe, and the reserve stays at
+    // the conservative full per-request timeout — the pre-2026-09-06 behaviour,
+    // preserved exactly for the case where nothing has been measured.
+    assert.match(evidence.error, /elapsed=360000ms; outer=480000ms; reserve=120000ms; slowestCall=unobserved; remaining=120000ms/);
+  });
+});
+
+// ---- The reserve follows observed call cost, not the worst case ----
+// It was the full per-request timeout, charged unconditionally: an eight-minute
+// budget could only ever work for six. Measured 2026-09-06, model calls took 13
+// to 33 seconds and never anything near 120, and the run that hit this bound
+// stopped while reporting 83607ms it refused to spend.
+add("clock reserve follows observed call cost, floored and capped", () => {
+  assert.equal(clockReserveMs({ observedCallMs: 33000 }), 66000, "twice the slowest observed call");
+  assert.equal(clockReserveMs({ observedCallMs: 5000 }), MIN_CLOCK_RESERVE_MS, "never below one ordinary call plus its evidence write");
+  assert.equal(clockReserveMs({ observedCallMs: 900000 }), 120000, "never above the per-request timeout, which bounds any single call");
+  assert.equal(clockReserveMs({ observedCallMs: 33000, requestTimeoutMs: 40000 }), 40000, "the cap follows the caller's request timeout");
+  for (const value of [undefined, null, 0, -1, Number.NaN, "slow"]) {
+    assert.equal(clockReserveMs({ observedCallMs: value }), 120000,
+      `unobserved cost (${String(value)}) must keep the conservative full reserve`);
+  }
+});
+
+add("a 33s observed call buys back budget the old reserve threw away", () => {
+  // The concrete claim, in the numbers from the 04:05 run on 2026-09-06.
+  const outer = 450000;
+  const oldRunnable = outer - 120000;
+  const newRunnable = outer - clockReserveMs({ observedCallMs: 33000 });
+  assert.equal(oldRunnable, 330000);
+  assert.equal(newRunnable, 384000);
+  assert.ok(newRunnable > oldRunnable, "the adaptive reserve must not cost a run time");
+});
+
+add("persistHarnessEvidence still defaults to the path hatta-dispatch reads", () => {
+  // The path is injectable ONLY so tests stop clobbering the real evidence file.
+  // If the injectable path ever became the default, a timed-out run would have
+  // nothing to recover.
+  const written = [];
+  const io = { mkdir: async () => {}, writeFile: async (file) => { written.push(file); } };
+  return persistHarnessEvidence({ ok: true }, io).then(() => {
+    assert.deepEqual(written, [HARNESS_EVIDENCE_PATH]);
   });
 });
 

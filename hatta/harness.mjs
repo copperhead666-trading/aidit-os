@@ -226,10 +226,42 @@ function timeMs(value) {
   return Number.isFinite(parsed) ? parsed : Date.now();
 }
 
+// The smallest reserve worth keeping: enough for one ordinary model call plus
+// the evidence write that follows it. Below this the harness would start an
+// iteration it has no realistic chance of finishing.
+export const MIN_CLOCK_RESERVE_MS = 30 * 1000;
+
+/**
+ * How much of the budget to hold back for the last call.
+ *
+ * THE RESERVE USED TO BE THE WORST CASE, CHARGED EVERY TIME. It was the full
+ * per-request timeout — 120 seconds — subtracted unconditionally, so a run with
+ * an eight-minute budget could only work for six. Measured on 2026-09-06:
+ * model calls took 13 to 33 seconds, never anything close to 120, and the run
+ * that hit this bound stopped while reporting `remaining=83607ms` it refused to
+ * spend. A quarter of paid budget was structurally unreachable.
+ *
+ * So the reserve now follows what calls in THIS run have actually cost: twice
+ * the slowest one seen, floored at MIN_CLOCK_RESERVE_MS and still capped by the
+ * per-request timeout, which remains the hard bound on any single call. With no
+ * observation yet it stays at the cap — pessimism is correct only while there
+ * is nothing to be pessimistic about.
+ */
+export function clockReserveMs({
+  observedCallMs,
+  requestTimeoutMs = REQUEST_TIMEOUT_MS,
+} = {}) {
+  const cap = Number.isFinite(requestTimeoutMs) && requestTimeoutMs > 0 ? requestTimeoutMs : REQUEST_TIMEOUT_MS;
+  const observed = Number(observedCallMs);
+  if (!Number.isFinite(observed) || observed <= 0) return cap;
+  return Math.min(cap, Math.max(MIN_CLOCK_RESERVE_MS, observed * 2));
+}
+
 function iterationStopReason(index, startedAtMs, nowMs, {
   maxIterations = effectiveMaxIterations(),
   outerRunBudgetMs = OUTER_RUN_BUDGET_MS,
   requestTimeoutMs = REQUEST_TIMEOUT_MS,
+  observedCallMs = null,
 } = {}) {
   if (index >= maxIterations) {
     return {
@@ -249,21 +281,29 @@ function iterationStopReason(index, startedAtMs, nowMs, {
   if (index === 0) return null;
 
   const elapsedMs = Math.max(0, nowMs - startedAtMs);
-  const runnableBudgetMs = Math.max(0, outerRunBudgetMs - requestTimeoutMs);
+  const reserveMs = clockReserveMs({ observedCallMs, requestTimeoutMs });
+  const runnableBudgetMs = Math.max(0, outerRunBudgetMs - reserveMs);
   if (elapsedMs >= runnableBudgetMs) {
     return {
       bound: "clock",
-      message: `Reached clock budget before a final answer (elapsed=${elapsedMs}ms; outer=${outerRunBudgetMs}ms; reserve=${requestTimeoutMs}ms; remaining=${Math.max(0, outerRunBudgetMs - elapsedMs)}ms).`,
+      message: `Reached clock budget before a final answer (elapsed=${elapsedMs}ms; outer=${outerRunBudgetMs}ms; reserve=${reserveMs}ms; slowestCall=${Number.isFinite(Number(observedCallMs)) && Number(observedCallMs) > 0 ? `${Math.round(Number(observedCallMs))}ms` : "unobserved"}; remaining=${Math.max(0, outerRunBudgetMs - elapsedMs)}ms).`,
     };
   }
 
   return null;
 }
 
-export async function persistHarnessEvidence(evidence, io = fs) {
+// `filePath` is injectable ONLY so tests stop writing the real evidence file.
+// They did until 2026-09-06, and hatta-dispatch reads that same path to recover
+// what a timed-out run managed to do. After any suite run the file held a
+// fixture — one iteration, no tool calls, finalMessage "evidence complete",
+// startedAt 2026-01-01 — and the next timeout would have reported that fixture
+// as the run's own evidence. Production callers pass nothing and keep the real
+// path; a test that needs a file gets its own.
+export async function persistHarnessEvidence(evidence, io = fs, filePath = HARNESS_EVIDENCE_PATH) {
   try {
-    await io.mkdir(path.dirname(HARNESS_EVIDENCE_PATH), { recursive: true });
-    await io.writeFile(HARNESS_EVIDENCE_PATH, JSON.stringify(evidence), "utf8");
+    await io.mkdir(path.dirname(filePath), { recursive: true });
+    await io.writeFile(filePath, JSON.stringify(evidence), "utf8");
   } catch {
     // Best-effort harness bookkeeping; never fail the model run over evidence persistence.
   }
@@ -1048,6 +1088,14 @@ export async function runTask(prompt, {
   chat = postChat,
   persist = persistHarnessEvidence,
   now = () => new Date().toISOString(),
+  // DELIBERATELY NOT `now`. `now` is the evidence clock, and tests drive it with
+  // a fake that jumps minutes per call to simulate a slow run. Timing the model
+  // call with that same clock would make every extra reading consume simulated
+  // budget, so adding a measurement would change when the loop stops. This is a
+  // separate monotonic reading whose only job is "how long did that call take";
+  // under a fake evidence clock it reports ~0, which reads as unobserved and
+  // leaves the conservative full reserve in place.
+  monotonicMs = () => Date.now(),
   maxIterations = effectiveMaxIterations(),
 } = {}) {
   const startedAt = now();
@@ -1056,16 +1104,24 @@ export async function runTask(prompt, {
   currentEvidence = evidence;
   const messages = [{ role: "user", content: prompt }];
 
+  // The slowest model call seen in THIS run. The clock reserve is derived from
+  // it rather than from the per-request timeout, so a fast model is not charged
+  // a slow model's worst case for the whole run.
+  let slowestCallMs = null;
+
   try {
     for (let index = 0; ; index += 1) {
-      const stop = iterationStopReason(index, startedAtMs, timeMs(now()), { maxIterations });
+      const stop = iterationStopReason(index, startedAtMs, timeMs(now()), { maxIterations, observedCallMs: slowestCallMs });
       if (stop) {
         evidence.error = stop.message;
         return evidence;
       }
 
       evidence.iterations = index + 1;
+      const callStartedMs = monotonicMs();
       const response = await chat(messages);
+      const callMs = Math.max(0, monotonicMs() - callStartedMs);
+      if (slowestCallMs === null || callMs > slowestCallMs) slowestCallMs = callMs;
       const assistantMessage = response?.message || { role: "assistant", content: "" };
       messages.push(assistantMessage);
 

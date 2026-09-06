@@ -41,6 +41,7 @@ import { fileURLToPath } from "node:url";
 import { logLaneUsage } from "./lane-usage.mjs";
 import { ensureLaneWorktree } from "./lane-worktree.mjs";
 import { guardLaneStart, recordLaneOutcome } from "./lane-guard.mjs";
+import { mergeRufloLaneEnv, withRufloLanePrelude } from "./ruflo-lane-context.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -292,7 +293,15 @@ export async function dispatchCorleone(prompt, deps = {}) {
   // interactive approval (confirmed via `codex exec --help`). Deliberately NOT
   // using --dangerously-bypass-approvals-and-sandbox (documented as extremely
   // dangerous, out of scope here).
-  const { file, args } = buildCodexInvocation(prompt, { codexJs: _resolveCodexEntry(), effort });
+  // CORLEONE was never given a lane prelude and was never told its budget.
+  // Its ten longest runs all ended at exactly 480.0 seconds — the spawn timeout
+  // to the millisecond — which is what being killed looks like, not what
+  // finishing looks like. A model that knows the wall can choose a smaller
+  // landing; one that does not will plan straight through it.
+  const { file, args } = buildCodexInvocation(
+    withRufloLanePrelude("corleone", prompt, { budgetMs: timeoutMs }),
+    { codexJs: _resolveCodexEntry(), effort },
+  );
   // WORKTREE ISOLATION. Each writing lane runs in its OWN git worktree, never in
   // the shared repository root.
   //
@@ -323,6 +332,7 @@ export async function dispatchCorleone(prompt, deps = {}) {
     timeout: timeoutMs,
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
+    env: mergeRufloLaneEnv(process.env),
   });
   const durationMs = now() - t0;
   const stdout = r.stdout || "";
