@@ -316,3 +316,62 @@ secara palsu, dan `noOpComment` menyala.
 Satu risiko yang saya periksa dan ternyata aman: KOL-81 berada di plafon percobaan
 dengan `executionFailures.count = 2`, tetapi `capReportedAt` sudah terisi, jadi
 plafon itu tidak akan mengeskalasi ulang ke pemilik semalam.
+
+---
+
+## Tambahan kedua
+
+### 11. Saudara penanda ditambatkan (`e8cc2ee`)
+
+`REFUSED_MARKER` dan `DISPATCH_MARKER` kini juga harus membuka komentar.
+`REFUSED_MARKER` yang gawat: `rejected` dikembalikan sebelum penghitung percobaan
+dilihat, jadi catatan handover yang sekadar mengutip penolakan akan mengubur
+directive selamanya. `DISPATCH_MARKER` diperiksa dulu, bukan diasumsikan aman —
+ia memang selalu membuka badan komentar di `ahmad-dispatch`. 206/206.
+
+Catatan tentang caranya sampai: run pertama mengubah kode dan **tidak menambah
+satu tes pun**, lalu melaporkan "all regression tests pass" — benar, tetapi
+hitungannya tidak bergerak dan tidak ada yang mengasersi perilaku barunya.
+Perubahan tanpa asersi adalah bentuk dari setiap cacat malam ini, jadi ia
+dikembalikan untuk asersinya, bukan digabungkan atas diff yang kelihatan benar.
+
+### 12. KOL-92 dan KOL-94 tertutup, berikut regresi malam ini sendiri (`583a718`)
+
+Sha git berkutip tidak lagi ditembak sebagai kredensial, dan `monkey` serta
+`keystone` — regresi yang repositori ini buat sendiri beberapa jam sebelumnya —
+tidak lagi ikut tertembak. Kata kunci kini dicocokkan sebagai segmen identifier,
+dipisah `_ - .` atau transisi camelCase.
+
+Aturan nama menang atas aturan revisi untuk **keempat** kata kunci. Percobaan
+pertama hanya melindungi `secret`, dan itu mematahkan asersi lama bahwa
+`const apiToken = "<40 hex>"` harus tertembak — tes lama yang benar, menangkap
+lubang sungguhan, dibiarkan gagal dan dilaporkan alih-alih disunting supaya
+setuju. 23/23.
+
+Kedua issue ditutup di papan dengan hasil terukur, bukan disimpulkan dari kode.
+
+---
+
+## Bagaimana executor berperilaku setelah diperbaiki
+
+Tiga sweep berturut-turut pada KOL-81, satu-satunya directive yang dapat
+dieksekusi:
+
+```
+16:47:10  DIRECTIVE NO-OP        (kode lama)
+16:58:47  DIRECTIVE NO-OP        (kode lama)
+17:19:57  DIRECTIVE NO-OP        (kode baru)
+17:36:18  DIRECTIVE GAGAL: full-suite-red  (kode baru)
+```
+
+Yang terakhir itu bentuk yang benar: lane menulis sesuatu, suite jadi merah,
+semua perubahan dikembalikan, dan kegagalannya dilaporkan apa adanya. Suite di
+main tetap 86/86 sepanjang waktu itu, jadi yang merah memang perubahan lane
+sendiri.
+
+Tidak satu pun dari empat sweep menghasilkan laporan selesai palsu. Itu yang bisa
+saya klaim; saya tidak mengklaim lebih, karena catatan eksekusi KOL-81 tidak
+sampai ke `ops-watcher/events.jsonl` — nol baris di sana — sehingga tidak ada
+rekaman apakah mtime berubah pada run mana pun.
+
+Reconcile tetap hijau pada ketiga pemeriksaannya setelah seluruh merge malam ini.
