@@ -22,11 +22,22 @@ const WORKSPACE_ROOT = path.resolve(__harnessDir, "..");
 const DEFAULT_ENDPOINT = "http://localhost:11434/api/chat";
 const ENDPOINT_CONFIG = resolveEndpoint(process.env.OLLAMA_HOST);
 const ENDPOINT = ENDPOINT_CONFIG.endpoint;
-// Model tiers, named in one place so lanes cannot drift apart. Benchmark:
-// heavy runs glm-5.2, code runs glm-5.1, light runs a flash model.
-// OLLAMA_MODEL_HATTA overrides the code tier for comparison runs.
+// Model tiers, named in one place so lanes cannot drift apart. The benchmark
+// puts glm-5.1 on the code tier; the owner moved HATTA off it on 2026-09-07
+// after five runs measured here: glm-5.1 landed single-function packets and
+// spent all 40 tool calls without writing a line on two-rule ones, while
+// kimi-k2.7-code wrote both files of a two-file packet and passed 12/12.
+// The benchmark's value for this tier is glm-5.1:cloud. It is recorded here
+// rather than as a fourth key: nothing would route to that key, and the suite
+// asserts this table has exactly three. To run the comparison, set
+// OLLAMA_MODEL_HATTA=glm-5.1:cloud, which still overrides the code tier.
+//
+// The kimi CLI that SJAHRIR uses and this Ollama-hosted kimi are DIFFERENT
+// quota pools: measured 2026-09-07, this endpoint answered 200 in 2.4s while
+// SJAHRIR's CLI was returning "5-hour usage limit". Putting HATTA here does not
+// couple the two lanes' failure.
 export const MODEL_TIERS = Object.freeze({
-  code: "glm-5.1:cloud",        // HATTA's default: it edits code
+  code: "kimi-k2.7-code:cloud", // HATTA's default: it edits code
   heavy: "glm-5.2:cloud",       // reserved; nothing routes here yet
   light: "glm-5.3-flash:cloud", // the flash lane
 });
