@@ -27,6 +27,7 @@ import { logLaneUsage } from "./lane-usage.mjs";
 import { ensureLaneWorktree } from "./lane-worktree.mjs";
 import { guardLaneStart, recordLaneOutcome } from "./lane-guard.mjs";
 import { mergeRufloLaneEnv, withRufloLanePrelude } from "./ruflo-lane-context.mjs";
+import { sourceRepoForPrompt } from "./lane-source-repo.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(__dirname, "..");
@@ -174,13 +175,23 @@ export function buildNormalExitUsage({ prompt, stdout, stderr, exitCode, duratio
   };
 }
 
-async function main() {
-  const prompt = process.argv[2];
-  if (typeof prompt !== "string" || prompt.length === 0) {
-    process.stderr.write('usage: node ops-watcher/hatta-dispatch.mjs "<prompt>"\n');
-    process.exit(2);
-  }
-  const runId = typeof process.env.LANE_RUN_ID === "string" && process.env.LANE_RUN_ID.trim() ? process.env.LANE_RUN_ID : randomUUID();
+export async function dispatchHatta(prompt, deps = {}) {
+  const _spawnSync = deps.spawnSync || spawnSync;
+  const _guardLaneStart = deps.guardLaneStart || guardLaneStart;
+  const _recordLaneOutcome = deps.recordLaneOutcome || recordLaneOutcome;
+  const _logLaneUsage = deps.logLaneUsage || logLaneUsage;
+  const _ensureLaneWorktree = deps.ensureLaneWorktree || ensureLaneWorktree;
+  const _sourceRepoForPrompt = deps.sourceRepoForPrompt || sourceRepoForPrompt;
+  const _harnessScriptFor = deps.harnessScriptFor || harnessScriptFor;
+  const _readHarnessEvidence = deps.readHarnessEvidence || readHarnessEvidence;
+  const _stdout = deps.stdout || ((m) => process.stdout.write(m));
+  const _stderr = deps.stderr || ((m) => process.stderr.write(m));
+  const now = deps.now || Date.now;
+  const timeoutMs = deps.timeoutMs || TIMEOUT_MS;
+  const harnessBudgetMs = deps.harnessBudgetMs || HARNESS_BUDGET_MS;
+  const runId = typeof deps.runId === "string" && deps.runId.trim()
+    ? deps.runId
+    : (typeof process.env.LANE_RUN_ID === "string" && process.env.LANE_RUN_ID.trim() ? process.env.LANE_RUN_ID : randomUUID());
 
   // Spawn `node hatta/harness.mjs "<prompt>"` with a plain process.env passthrough
   // — NO OLLAMA_MODEL_HATTA override (unlike hatta-flash-dispatch.mjs). This means
@@ -188,13 +199,13 @@ async function main() {
   // direct `node hatta/harness.mjs` call always did. process.execPath is the real
   // node binary, so this stays exe=node (consistent with the harness being a node
   // script, not a native binary).
-  const guard = await guardLaneStart("hatta");
+  const guard = await _guardLaneStart("hatta");
   if (guard.skip) {
     const reason = guard.reason || "unknown";
     const retryMinutes = Math.ceil(guard.remainingMs / 60000);
-    process.stderr.write(`hatta-dispatch: lane skipped (${reason}), retry in ${retryMinutes}m — no spawn attempted\n`);
-    await logLaneUsage({ lane: "hatta", runId, promptLength: prompt.length, ok: false, exitCode: 3, durationMs: 0, extra: { skipped: true, reason } });
-    process.exit(3);
+    _stderr(`hatta-dispatch: lane skipped (${reason}), retry in ${retryMinutes}m — no spawn attempted\n`);
+    await _logLaneUsage({ lane: "hatta", runId, promptLength: prompt.length, ok: false, exitCode: 3, durationMs: 0, extra: { skipped: true, reason } });
+    return { ok: false, skipped: true, reason, stdout: "", stderr: "", exitCode: 3, runId };
   }
 
   // WORKTREE ISOLATION. Each writing lane runs in its OWN git worktree, never in
@@ -212,35 +223,46 @@ async function main() {
   // the shared root with isolated:false and a reason, which is logged rather
   // than swallowed — a silent fallback would rebuild the exact bug this
   // prevents, behind a module everyone assumes is protecting them.
-  const workspace = ensureLaneWorktree("hatta");
-  if (!workspace.isolated) process.stderr.write(`hatta-dispatch: ${workspace.reason}\n`);
+  let source;
+  try {
+    source = await _sourceRepoForPrompt(prompt);
+  } catch (err) {
+    const msg = err && err.message ? err.message : String(err);
+    source = { sourceRepo: null, ventureId: null, reason: `source repo resolver failed; treating as not venture work: ${msg}` };
+    _stderr(`hatta-dispatch: ${source.reason}\n`);
+  }
+  if (!source || typeof source !== "object") source = { sourceRepo: null, ventureId: null, reason: "not venture work" };
+  const workspace = _ensureLaneWorktree("hatta", source.sourceRepo ? { sourceRepo: source.sourceRepo } : {});
+  if (source.sourceRepo) _stderr(`hatta-dispatch: ${source.reason}; worktree ${workspace.path}\n`);
+  else if (source.ventureId) _stderr(`hatta-dispatch: ${source.reason}; continuing in Aidit OS\n`);
+  if (!workspace.isolated) _stderr(`hatta-dispatch: ${workspace.reason}\n`);
   // Isolation is not the only thing worth saying out loud. A reused worktree
   // may still hold an earlier run's files, and this lane's diff would then
   // contain work nobody asked it to do. Nothing is cleaned here: those files
   // are the only copy of work a lane already did.
-  if (workspace.dirty > 0) process.stderr.write(`hatta-dispatch: ${workspace.reason}\n`);
+  if (workspace.dirty > 0) _stderr(`hatta-dispatch: ${workspace.reason}\n`);
   // The harness jails to its OWN location, so the isolated tree only isolates
   // anything when the harness that runs is the one inside it.
-  const harness = harnessScriptFor(workspace.path);
-  if (!harness.isolated) process.stderr.write(`hatta-dispatch: ${harness.reason}\n`);
-  const t0 = Date.now();
+  const harness = _harnessScriptFor(workspace.path);
+  if (!harness.isolated) _stderr(`hatta-dispatch: ${harness.reason}\n`);
+  const t0 = now();
   // The lane is TOLD its budget, and the harness is GIVEN the same number.
   // Neither was true before: the prelude existed for HATTA but no wrapper ever
   // applied it, and the harness read its budget from a default that happened to
   // equal this wrapper's kill timeout. A budget the model cannot see is an
   // ambush, and two layers agreeing by coincidence is not a design.
-  const r = spawnSync(process.execPath, [harness.script, withRufloLanePrelude("hatta", prompt, { budgetMs: HARNESS_BUDGET_MS })], {
+  const r = _spawnSync(process.execPath, [harness.script, withRufloLanePrelude("hatta", prompt, { budgetMs: harnessBudgetMs })], {
     cwd: workspace.path,
     windowsHide: true,
-    timeout: TIMEOUT_MS,
+    timeout: timeoutMs,
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
-    env: mergeRufloLaneEnv({ ...process.env, HATTA_OUTER_RUN_BUDGET_MS: String(HARNESS_BUDGET_MS) }),
+    env: mergeRufloLaneEnv({ ...process.env, HATTA_OUTER_RUN_BUDGET_MS: String(harnessBudgetMs) }),
   });
-  const durationMs = Date.now() - t0;
+  const durationMs = now() - t0;
 
-  if (r.stdout) process.stdout.write(r.stdout);
-  if (r.stderr) process.stderr.write(r.stderr);
+  if (r.stdout) _stdout(r.stdout);
+  if (r.stderr) _stderr(r.stderr);
 
   if (r.signal === "SIGTERM" && r.status === null) {
     // spawnSync sets status=null + signal="SIGTERM" on timeout kill.
@@ -252,26 +274,26 @@ async function main() {
     // — spawnSync's kill goes through TerminateProcess, which no SIGTERM handler
     // in the child can catch, so the child's own signal handler never fires.
     // Read the file here, where the run is being reported.
-    const recovered = readHarnessEvidence(harnessEvidenceFileFor(workspace.path));
+    const recovered = _readHarnessEvidence(harnessEvidenceFileFor(workspace.path));
     if (recovered) {
-      process.stdout.write(JSON.stringify({ ...recovered, timedOut: true, recoveredFrom: "evidence-file" }) + "\n");
-      process.stderr.write(
-        `hatta-dispatch: harness timed out after ${TIMEOUT_MS}ms — recovered partial evidence ` +
+      _stdout(JSON.stringify({ ...recovered, timedOut: true, recoveredFrom: "evidence-file" }) + "\n");
+      _stderr(
+        `hatta-dispatch: harness timed out after ${timeoutMs}ms — recovered partial evidence ` +
         `(iterations=${recovered.iterations ?? "?"}, toolCalls=${(recovered.toolCalls || []).length}, ` +
         `filesWritten=${(recovered.filesWritten || []).length})\n`,
       );
     } else {
-      process.stderr.write(`hatta-dispatch: harness timed out after ${TIMEOUT_MS}ms — no evidence file to recover\n`);
+      _stderr(`hatta-dispatch: harness timed out after ${timeoutMs}ms — no evidence file to recover\n`);
     }
-    await recordLaneOutcome("hatta", { ok: false, stdout: r.stdout, stderr: r.stderr, timedOut: true });
-    await logLaneUsage({ lane: "hatta", runId, promptLength: prompt.length, ok: false, timedOut: true, exitCode: 1, durationMs });
-    process.exit(1);
+    await _recordLaneOutcome("hatta", { ok: false, stdout: r.stdout, stderr: r.stderr, timedOut: true });
+    await _logLaneUsage({ lane: "hatta", runId, promptLength: prompt.length, ok: false, timedOut: true, exitCode: 1, durationMs });
+    return { ok: false, timedOut: true, stdout: r.stdout || "", stderr: r.stderr || "", exitCode: 1, runId };
   }
   if (r.error) {
-    process.stderr.write(`hatta-dispatch: failed to spawn harness: ${r.error && r.error.message ? r.error.message : r.error}\n`);
-    await recordLaneOutcome("hatta", { ok: false, stdout: r.stdout, stderr: r.stderr });
-    await logLaneUsage({ lane: "hatta", runId, promptLength: prompt.length, ok: false, exitCode: 1, durationMs });
-    process.exit(1);
+    _stderr(`hatta-dispatch: failed to spawn harness: ${r.error && r.error.message ? r.error.message : r.error}\n`);
+    await _recordLaneOutcome("hatta", { ok: false, stdout: r.stdout, stderr: r.stderr });
+    await _logLaneUsage({ lane: "hatta", runId, promptLength: prompt.length, ok: false, exitCode: 1, durationMs });
+    return { ok: false, timedOut: false, stdout: r.stdout || "", stderr: r.stderr || "", exitCode: 1, runId };
   }
   const exitCode = typeof r.status === "number" ? r.status : 1;
   // THE NORMAL-EXIT PATH, AND THE PLACE THE INNER TIMEOUT LEAKED.
@@ -288,9 +310,19 @@ async function main() {
   // timedOut=0 for the lane. Under-reported in exactly the spot that was
   // supposed to have been fixed.
   const usage = buildNormalExitUsage({ prompt, stdout: r.stdout, stderr: r.stderr, exitCode, durationMs, runId });
-  await recordLaneOutcome("hatta", { ok: exitCode === 0, stdout: r.stdout, stderr: r.stderr, timedOut: usage.timedOut });
-  await logLaneUsage(usage);
-  process.exit(exitCode);
+  await _recordLaneOutcome("hatta", { ok: exitCode === 0, stdout: r.stdout, stderr: r.stderr, timedOut: usage.timedOut });
+  await _logLaneUsage(usage);
+  return { ok: exitCode === 0, timedOut: usage.timedOut, stdout: r.stdout || "", stderr: r.stderr || "", exitCode, runId };
+}
+
+async function main() {
+  const prompt = process.argv[2];
+  if (typeof prompt !== "string" || prompt.length === 0) {
+    process.stderr.write('usage: node ops-watcher/hatta-dispatch.mjs "<prompt>"\n');
+    process.exit(2);
+  }
+  const result = await dispatchHatta(prompt);
+  process.exit(result.exitCode);
 }
 
 const isEntry = (() => {

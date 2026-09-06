@@ -22,10 +22,12 @@ function makeDeps(spawnResult, overrides = {}) {
   const calls = [];
   const usage = [];
   const outcomes = [];
+  const worktrees = [];
   return {
     calls,
     usage,
     outcomes,
+    worktrees,
     spawnSync: (file, args, options) => {
       calls.push({ file, args, options });
       return spawnResult;
@@ -33,6 +35,11 @@ function makeDeps(spawnResult, overrides = {}) {
     logLaneUsage: async (record) => { usage.push(record); },
     recordLaneOutcome: async (lane, outcome) => { outcomes.push({ lane, outcome }); },
     guardLaneStart: async () => ({ skip: false }),
+    sourceRepoForPrompt: async () => ({ sourceRepo: null, ventureId: null, reason: "not venture work" }),
+    ensureLaneWorktree: (lane, options = {}) => {
+      worktrees.push({ lane, options });
+      return { path: `D:/tmp/lane-${lane}`, isolated: true, dirty: 0, reason: "test worktree" };
+    },
     resolveCodexEntry: () => null,
     now: (() => {
       let t = 1000;
@@ -335,11 +342,52 @@ async function t18_theStatedBudgetIsTheOneThatFires() {
   ok(name);
 }
 
+async function t19_venturePromptCutsWorktreeFromSourceRepo() {
+  const sourceRepo = "D:/ventures/caveman-trading-os";
+  const deps = makeDeps({ status: 0, stdout: "", stderr: "" }, {
+    sourceRepoForPrompt: async () => ({
+      sourceRepo,
+      ventureId: "caveman-trading-os",
+      reason: "venture caveman-trading-os repository selected",
+    }),
+  });
+  await mod.dispatchCorleone("VENTURE_ID: caveman-trading-os\nwork", deps);
+
+  assert.equal(deps.worktrees.length, 1, "one worktree request");
+  assert.deepEqual(deps.worktrees[0].options, { sourceRepo });
+  ok("T19: venture prompts pass sourceRepo into ensureLaneWorktree");
+}
+
+async function t20_plainPromptKeepsWorktreeOptionsWithoutSourceRepoKey() {
+  const deps = makeDeps({ status: 0, stdout: "", stderr: "" });
+  await mod.dispatchCorleone("plain Aidit OS work", deps);
+
+  assert.equal(deps.worktrees.length, 1, "one worktree request");
+  assert.equal(Object.prototype.hasOwnProperty.call(deps.worktrees[0].options, "sourceRepo"), false);
+  ok("T20: plain prompts do not add a sourceRepo key to worktree options");
+}
+
+async function t21_sourceResolverFailureStillSpawnsInAiditWorktree() {
+  const deps = makeDeps({ status: 0, stdout: "", stderr: "" }, {
+    sourceRepoForPrompt: async () => { throw new Error("resolver down"); },
+  });
+  const result = await mod.dispatchCorleone("VENTURE_ID: caveman-trading-os\nwork", deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(deps.calls.length, 1, "Codex still spawns");
+  assert.equal(deps.calls[0].options.cwd, "D:/tmp/lane-corleone");
+  assert.equal(Object.prototype.hasOwnProperty.call(deps.worktrees[0].options, "sourceRepo"), false);
+  ok("T21: source resolver failure falls back to the Aidit OS worktree and still spawns");
+}
+
 async function main() {
   console.log("# corleone-dispatch regression tests");
   const tests = [
     t17_promptCarriesLaneContextAndTheBudget,
     t18_theStatedBudgetIsTheOneThatFires,
+    t19_venturePromptCutsWorktreeFromSourceRepo,
+    t20_plainPromptKeepsWorktreeOptionsWithoutSourceRepoKey,
+    t21_sourceResolverFailureStillSpawnsInAiditWorktree,
     t16_agentMessageItemIsTheAnswer,
     t1_buildsNodeBackedInvocationForWindowsShim,
     t2_buildsDirectCodexInvocationWithoutShim,

@@ -12,6 +12,7 @@ import {
   buildNormalExitUsage,
   harnessScriptFor,
   harnessEvidenceFileFor,
+  dispatchHatta,
   HARNESS_BUDGET_MS,
   HARNESS_TEARDOWN_MARGIN_MS,
   TIMEOUT_MS,
@@ -26,6 +27,44 @@ const ok = (n) => { console.log(`PASS: ${n}`); passed++; };
 const bad = (n, e) => { console.log(`FAIL: ${n}`); if (e) console.log(`       ${e && e.stack ? e.stack : e}`); failed++; };
 async function t(name, fn) {
   try { await fn(); ok(name); } catch (e) { bad(name, e); }
+}
+
+function makeDispatchDeps(spawnResult, overrides = {}) {
+  const calls = [];
+  const usage = [];
+  const outcomes = [];
+  const worktrees = [];
+  const out = [];
+  const err = [];
+  return {
+    calls,
+    usage,
+    outcomes,
+    worktrees,
+    out,
+    err,
+    spawnSync: (file, args, options) => {
+      calls.push({ file, args, options });
+      return spawnResult;
+    },
+    guardLaneStart: async () => ({ skip: false }),
+    recordLaneOutcome: async (lane, outcome) => { outcomes.push({ lane, outcome }); },
+    logLaneUsage: async (record) => { usage.push(record); },
+    sourceRepoForPrompt: async () => ({ sourceRepo: null, ventureId: null, reason: "not venture work" }),
+    ensureLaneWorktree: (lane, options = {}) => {
+      worktrees.push({ lane, options });
+      return { path: `D:/tmp/lane-${lane}`, isolated: true, dirty: 0, reason: "test worktree" };
+    },
+    harnessScriptFor: () => ({ script: "D:/repo/hatta/harness.mjs", isolated: false, reason: "test shared harness" }),
+    readHarnessEvidence: () => null,
+    stdout: (m) => { out.push(m); },
+    stderr: (m) => { err.push(m); },
+    now: (() => {
+      let tick = 1000;
+      return () => { tick += 25; return tick; };
+    })(),
+    ...overrides,
+  };
 }
 
 console.log("# hatta-dispatch regression tests");
@@ -251,6 +290,82 @@ await t("the harness budget leaves room to report itself before the kill", () =>
     "a harness whose budget equals the spawn timeout is killed mid-write, and TerminateProcess cannot be caught");
   assert.equal(TIMEOUT_MS - HARNESS_BUDGET_MS, HARNESS_TEARDOWN_MARGIN_MS);
   assert.ok(HARNESS_TEARDOWN_MARGIN_MS >= 10000, "the margin must be big enough to finish a write, not symbolic");
+});
+
+await t("H17 venture prompts pass sourceRepo into ensureLaneWorktree", async () => {
+  const sourceRepo = "D:/ventures/caveman-trading-os";
+  const deps = makeDispatchDeps({ status: 0, stdout: JSON.stringify({ ok: true, iterations: 1 }), stderr: "" }, {
+    sourceRepoForPrompt: async () => ({
+      sourceRepo,
+      ventureId: "caveman-trading-os",
+      reason: "venture caveman-trading-os repository selected",
+    }),
+  });
+  await dispatchHatta("VENTURE_ID: caveman-trading-os\nwork", deps);
+
+  assert.equal(deps.worktrees.length, 1, "one worktree request");
+  assert.deepEqual(deps.worktrees[0].options, { sourceRepo });
+});
+
+await t("H18 plain prompts do not add a sourceRepo key to worktree options", async () => {
+  const deps = makeDispatchDeps({ status: 0, stdout: JSON.stringify({ ok: true, iterations: 1 }), stderr: "" });
+  await dispatchHatta("plain Aidit OS work", deps);
+
+  assert.equal(deps.worktrees.length, 1, "one worktree request");
+  assert.equal(Object.prototype.hasOwnProperty.call(deps.worktrees[0].options, "sourceRepo"), false);
+});
+
+await t("H19 source resolver failure falls back to Aidit OS and still spawns", async () => {
+  const deps = makeDispatchDeps({ status: 0, stdout: JSON.stringify({ ok: true, iterations: 1 }), stderr: "" }, {
+    sourceRepoForPrompt: async () => { throw new Error("resolver down"); },
+  });
+  const result = await dispatchHatta("VENTURE_ID: caveman-trading-os\nwork", deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(deps.calls.length, 1, "harness still spawns");
+  assert.equal(deps.calls[0].options.cwd, "D:/tmp/lane-hatta");
+  assert.equal(Object.prototype.hasOwnProperty.call(deps.worktrees[0].options, "sourceRepo"), false);
+});
+
+await t("H20 venture workspace without a harness falls back to the shared-tree warning", async () => {
+  const workspacePath = "D:/tmp/lane-hatta-caveman";
+  let harnessSeen = null;
+  const deps = makeDispatchDeps({ status: 0, stdout: JSON.stringify({ ok: true, iterations: 1 }), stderr: "" }, {
+    sourceRepoForPrompt: async () => ({
+      sourceRepo: "D:/ventures/caveman-trading-os",
+      ventureId: "caveman-trading-os",
+      reason: "venture caveman-trading-os repository selected",
+    }),
+    ensureLaneWorktree: (lane, options = {}) => {
+      deps.worktrees.push({ lane, options });
+      return { path: workspacePath, isolated: true, dirty: 0, reason: "venture test worktree" };
+    },
+    harnessScriptFor: (p) => {
+      harnessSeen = harnessScriptFor(p, {
+        _fs: { existsSync: () => false },
+        sharedHarness: "D:/repo/hatta/harness.mjs",
+      });
+      return harnessSeen;
+    },
+  });
+  await dispatchHatta("VENTURE_ID: caveman-trading-os\nwork", deps);
+
+  assert.equal(harnessSeen.isolated, false);
+  assert.match(harnessSeen.reason, /writes the SHARED tree/);
+  assert.equal(deps.calls[0].args[0], "D:/repo/hatta/harness.mjs");
+});
+
+await t("H21 guard skip returns exitCode 3 and does not spawn", async () => {
+  const deps = makeDispatchDeps({ status: 0, stdout: "must not run", stderr: "" }, {
+    guardLaneStart: async () => ({ skip: true, reason: "cooldown", remainingMs: 61_000 }),
+  });
+  const result = await dispatchHatta("guarded", deps);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.skipped, true);
+  assert.equal(result.exitCode, 3);
+  assert.equal(deps.calls.length, 0, "no harness spawn while guarded");
+  assert.deepEqual(deps.usage[0].extra, { skipped: true, reason: "cooldown" });
 });
 
 await fs.unlink(TMP).catch(() => {});

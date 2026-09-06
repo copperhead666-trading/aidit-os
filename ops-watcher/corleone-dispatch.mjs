@@ -42,6 +42,7 @@ import { logLaneUsage } from "./lane-usage.mjs";
 import { ensureLaneWorktree } from "./lane-worktree.mjs";
 import { guardLaneStart, recordLaneOutcome } from "./lane-guard.mjs";
 import { mergeRufloLaneEnv, withRufloLanePrelude } from "./ruflo-lane-context.mjs";
+import { sourceRepoForPrompt } from "./lane-source-repo.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -266,6 +267,8 @@ export async function dispatchCorleone(prompt, deps = {}) {
   const _guardLaneStart = deps.guardLaneStart || guardLaneStart;
   const _recordLaneOutcome = deps.recordLaneOutcome || recordLaneOutcome;
   const _logLaneUsage = deps.logLaneUsage || logLaneUsage;
+  const _ensureLaneWorktree = deps.ensureLaneWorktree || ensureLaneWorktree;
+  const _sourceRepoForPrompt = deps.sourceRepoForPrompt || sourceRepoForPrompt;
   const _resolveCodexEntry = deps.resolveCodexEntry || resolveCodexEntry;
   const now = deps.now || Date.now;
   const timeoutMs = deps.timeoutMs || TIMEOUT_MS;
@@ -298,10 +301,15 @@ export async function dispatchCorleone(prompt, deps = {}) {
   // to the millisecond — which is what being killed looks like, not what
   // finishing looks like. A model that knows the wall can choose a smaller
   // landing; one that does not will plan straight through it.
-  const { file, args } = buildCodexInvocation(
-    withRufloLanePrelude("corleone", prompt, { budgetMs: timeoutMs }),
-    { codexJs: _resolveCodexEntry(), effort },
-  );
+  let source;
+  try {
+    source = await _sourceRepoForPrompt(prompt);
+  } catch (err) {
+    const msg = err && err.message ? err.message : String(err);
+    source = { sourceRepo: null, ventureId: null, reason: `source repo resolver failed; treating as not venture work: ${msg}` };
+    process.stderr.write(`corleone-dispatch: ${source.reason}\n`);
+  }
+  if (!source || typeof source !== "object") source = { sourceRepo: null, ventureId: null, reason: "not venture work" };
   // WORKTREE ISOLATION. Each writing lane runs in its OWN git worktree, never in
   // the shared repository root.
   //
@@ -317,7 +325,9 @@ export async function dispatchCorleone(prompt, deps = {}) {
   // the shared root with isolated:false and a reason, which is logged rather
   // than swallowed — a silent fallback would rebuild the exact bug this
   // prevents, behind a module everyone assumes is protecting them.
-  const workspace = (deps.ensureLaneWorktree || ensureLaneWorktree)("corleone");
+  const workspace = _ensureLaneWorktree("corleone", source.sourceRepo ? { sourceRepo: source.sourceRepo } : {});
+  if (source.sourceRepo) process.stderr.write(`corleone-dispatch: ${source.reason}; worktree ${workspace.path}\n`);
+  else if (source.ventureId) process.stderr.write(`corleone-dispatch: ${source.reason}; continuing in Aidit OS\n`);
   if (!workspace.isolated) process.stderr.write(`corleone-dispatch: ${workspace.reason}
 `);
   // Isolation is not the only thing worth saying out loud. A reused worktree
@@ -325,6 +335,10 @@ export async function dispatchCorleone(prompt, deps = {}) {
   // contain work nobody asked it to do. Nothing is cleaned here: those files
   // are the only copy of work a lane already did.
   if (workspace.dirty > 0) process.stderr.write(`corleone-dispatch: ${workspace.reason}\n`);
+  const { file, args } = buildCodexInvocation(
+    withRufloLanePrelude("corleone", prompt, { budgetMs: timeoutMs }),
+    { codexJs: _resolveCodexEntry(), effort },
+  );
   const t0 = now();
   const r = _spawnSync(file, args, {
     cwd: workspace.path,
