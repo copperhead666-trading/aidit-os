@@ -1,0 +1,181 @@
+diff --git a/ops-watcher/directive-runner.mjs b/ops-watcher/directive-runner.mjs
+index 8bbae84..8487b9b 100644
+--- a/ops-watcher/directive-runner.mjs
++++ b/ops-watcher/directive-runner.mjs
+@@ -1593,6 +1593,42 @@ function formatGraphAnchor(node) {
+   ].join("");
+ }
+ 
++function graphAnchorTextShape(value) {
++  return String(value || "")
++    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
++    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
++    .toLowerCase()
++    .replace(/[^a-z0-9]+/g, " ")
++    .replace(/\s+/g, " ")
++    .trim();
++}
++
++function graphAnchorLabelTokens(label) {
++  return graphAnchorTextShape(label)
++    .split(" ")
++    .filter((t) => t.length >= 2);
++}
++
++export function graphAnchorRelevanceScore(node, planText = "") {
++  const label = compactGraphAnchorText(node?.label || node?.name || node?.title || node?.id);
++  if (!label) return 0;
++  const rawPlan = String(planText || "").toLowerCase();
++  const rawLabel = String(label).toLowerCase();
++  const shapedPlan = graphAnchorTextShape(planText);
++  const shapedLabel = graphAnchorTextShape(label);
++  const tokens = graphAnchorLabelTokens(label);
++
++  if (rawLabel && rawPlan.includes(rawLabel)) {
++    return (tokens.length > 1 ? 2000 : 800) + tokens.length * 20 + rawLabel.length;
++  }
++  if (shapedLabel && shapedPlan.includes(shapedLabel)) {
++    return (tokens.length > 1 ? 1000 : 500) + tokens.length * 20 + shapedLabel.length;
++  }
++  if (!tokens.length) return 0;
++  if (tokens.every((t) => shapedPlan.includes(t))) return 600 + tokens.length * 10;
++  return tokens.reduce((score, token) => score + (shapedPlan.includes(token) ? 10 : 0), 0);
++}
++
+ // THE GRAPH MUST BE FRESH, OR IT CONTRIBUTES NOTHING.
+ //
+ // graphify-refresh.mjs writes the commit the graph was built at into a stamp
+@@ -1638,7 +1674,7 @@ function headCommitForAnchors(deps = {}) {
+   return String(exec("git", ["rev-parse", "HEAD"], { cwd: REPO_ROOT, encoding: "utf8" })).trim();
+ }
+ 
+-function activeGraphAnchorsForFiles(files, deps = {}) {
++function activeGraphAnchorsForFiles(files, deps = {}, planText = "") {
+   if (!files.length) return new Map();
+   // Fail CLOSED. Anything other than a proven-fresh graph produces no anchors
+   // and the caller falls back to the plain file list, which is exactly today's
+@@ -1687,7 +1723,10 @@ function activeGraphAnchorsForFiles(files, deps = {}) {
+   for (const file of targets) {
+     const seen = new Set();
+     const formatted = anchors.get(file)
+-      .sort((a, b) => a.priority - b.priority || formatGraphAnchor(a.node).localeCompare(formatGraphAnchor(b.node)))
++      .sort((a, b) =>
++        graphAnchorRelevanceScore(b.node, planText) - graphAnchorRelevanceScore(a.node, planText)
++        || a.priority - b.priority
++        || formatGraphAnchor(a.node).localeCompare(formatGraphAnchor(b.node)))
+       .map(({ node }) => formatGraphAnchor(node))
+       .filter((a) => {
+         if (!a || seen.has(a)) return false;
+@@ -1720,7 +1759,7 @@ export function buildExecutionPrompt(issue, plan, specialists = null) {
+   const files = Array.isArray(plan?.files) ? plan.files : [];
+   const steps = Array.isArray(plan?.steps) ? plan.steps : [];
+   const verify = String(plan?.verify || "");
+-  const graphAnchors = activeGraphAnchorsForFiles(files);
++  const graphAnchors = activeGraphAnchorsForFiles(files, {}, [title, objective, ...steps].join("\n"));
+   const fileLines = files.length
+     ? files.map((f) => formatExecutionFileLine(f, graphAnchors)).join("\n")
+     : "- (no files declared)";
+diff --git a/ops-watcher/directive-runner.regression.test.mjs b/ops-watcher/directive-runner.regression.test.mjs
+index fa31958..473c4f7 100644
+--- a/ops-watcher/directive-runner.regression.test.mjs
++++ b/ops-watcher/directive-runner.regression.test.mjs
+@@ -23,6 +23,7 @@ import {
+   readStateOutcome,
+   UNEXECUTABLE_MARKER,
+   buildExecutionPrompt,
++  graphAnchorRelevanceScore,
+   graphFreshnessForAnchors,
+   executeApprovedDirective,
+   PLAN_MARKER,
+@@ -1780,6 +1781,91 @@ await t("buildExecutionPrompt annotates files with anchors read from graphify-ou
+   });
+ });
+ 
++const directiveRunnerAnchorGraph = {
++  nodes: [
++    { id: "file:directive-runner", label: "ops-watcher/directive-runner.mjs", type: "file" },
++    { id: "const:__dirname", label: "__dirname", type: "constant", source_file: "ops-watcher/directive-runner.mjs", source_location: "ops-watcher/directive-runner.mjs:63" },
++    { id: "const:ACTIVE_GRAPH_FILE", label: "ACTIVE_GRAPH_FILE", type: "constant", source_file: "ops-watcher/directive-runner.mjs", source_location: "ops-watcher/directive-runner.mjs:66" },
++    { id: "fn:activeGraphAnchorsForFiles", label: "activeGraphAnchorsForFiles", type: "function", source_file: "ops-watcher/directive-runner.mjs", source_location: "ops-watcher/directive-runner.mjs:1641" },
++    { id: "fn:addIssueLabelReal", label: "addIssueLabelReal", type: "function", source_file: "ops-watcher/directive-runner.mjs", source_location: "ops-watcher/directive-runner.mjs:78" },
++    { id: "const:APPROVED_MARKER", label: "APPROVED_MARKER", type: "constant", source_file: "ops-watcher/directive-runner.mjs", source_location: "ops-watcher/directive-runner.mjs:108" },
++    { id: "fn:asMs", label: "asMs", type: "function", source_file: "ops-watcher/directive-runner.mjs", source_location: "ops-watcher/directive-runner.mjs:158" },
++    { id: "fn:buildExecutionPrompt", label: "buildExecutionPrompt", type: "function", source_file: "ops-watcher/directive-runner.mjs", source_location: "ops-watcher/directive-runner.mjs:1723" },
++  ],
++  edges: [],
++};
++
++const anchorPlan = (overrides = {}) => ({
++  ok: true,
++  objective: "Keep the execution prompt scoped.",
++  files: ["ops-watcher/directive-runner.mjs"],
++  steps: ["Read the selected graph anchor code."],
++  verify: "node ops-watcher/directive-runner.regression.test.mjs",
++  outOfScope: "No unrelated files.",
++  risk: "low",
++  ...overrides,
++});
++
++const firstDirectiveRunnerAnchor = (prompt) => {
++  const line = prompt.split("\n").find((l) => l.startsWith("- ops-watcher/directive-runner.mjs (KG anchors"));
++  assert.ok(line, "directive-runner anchors must be emitted");
++  return line.match(/graph\.json: ([^;)]*)/)?.[1] || "";
++};
++
++await t("graph anchor relevance from issue title puts buildExecutionPrompt first", async () => {
++  await withActiveGraph(directiveRunnerAnchorGraph, async () => {
++    const p = buildExecutionPrompt(issue({ title: "Fix buildExecutionPrompt anchor ranking" }), anchorPlan());
++    assert.match(firstDirectiveRunnerAnchor(p), /^buildExecutionPrompt \[function\] @ ops-watcher\/directive-runner\.mjs:1723$/);
++  });
++});
++
++await t("graph anchor relevance from objective puts buildExecutionPrompt first", async () => {
++  await withActiveGraph(directiveRunnerAnchorGraph, async () => {
++    const p = buildExecutionPrompt(issue({ title: "Directive" }), anchorPlan({ objective: "Fix buildExecutionPrompt anchor ranking." }));
++    assert.match(firstDirectiveRunnerAnchor(p), /^buildExecutionPrompt \[function\] @ ops-watcher\/directive-runner\.mjs:1723$/);
++  });
++});
++
++await t("graph anchor relevance from a step puts buildExecutionPrompt first", async () => {
++  await withActiveGraph(directiveRunnerAnchorGraph, async () => {
++    const p = buildExecutionPrompt(issue({ title: "Directive" }), anchorPlan({ steps: ["Update buildExecutionPrompt anchor ranking."] }));
++    assert.match(firstDirectiveRunnerAnchor(p), /^buildExecutionPrompt \[function\] @ ops-watcher\/directive-runner\.mjs:1723$/);
++  });
++});
++
++await t("graph anchor relevance with no graph name mention falls back to previous locale order without removing anchors", async () => {
++  await withActiveGraph(directiveRunnerAnchorGraph, async () => {
++    const p = buildExecutionPrompt(issue({ title: "Directive" }), anchorPlan({ objective: "Keep output stable.", steps: ["Touch the selected module."] }));
++    const line = p.split("\n").find((l) => l.startsWith("- ops-watcher/directive-runner.mjs (KG anchors"));
++    assert.ok(line, "anchors must still be emitted");
++    assert.match(firstDirectiveRunnerAnchor(p), /^__dirname \[constant\] @ ops-watcher\/directive-runner\.mjs:63$/);
++  });
++});
++
++await t("equal graph anchor relevance and priority keep localeCompare order and deterministic prompt bytes", async () => {
++  const graph = {
++    nodes: [
++      { id: "fn:bAnchor", label: "bAnchor", type: "function", source_file: "ops-watcher/directive-runner.mjs", source_location: "ops-watcher/directive-runner.mjs:11" },
++      { id: "fn:aAnchor", label: "aAnchor", type: "function", source_file: "ops-watcher/directive-runner.mjs", source_location: "ops-watcher/directive-runner.mjs:10" },
++    ],
++    edges: [],
++  };
++  await withActiveGraph(graph, async () => {
++    const plan = anchorPlan({ objective: "Touch this file.", steps: ["Keep stable ordering."] });
++    const p1 = buildExecutionPrompt(issue({ title: "Directive" }), plan);
++    const p2 = buildExecutionPrompt(issue({ title: "Directive" }), plan);
++    assert.equal(p1, p2);
++    const line = p1.split("\n").find((l) => l.startsWith("- ops-watcher/directive-runner.mjs (KG anchors"));
++    assert.match(line, /aAnchor \[function\] @ ops-watcher\/directive-runner\.mjs:10; bAnchor \[function\] @ ops-watcher\/directive-runner\.mjs:11/);
++  });
++});
++
++await t("graphAnchorRelevanceScore is case-insensitive and survives a parentheses suffix", () => {
++  const node = { label: "buildExecutionPrompt", type: "function", source_file: "ops-watcher/directive-runner.mjs" };
++  assert.equal(graphAnchorRelevanceScore(node, "please fix BUILDEXECUTIONPROMPT()"), graphAnchorRelevanceScore(node, "please fix buildExecutionPrompt"));
++  assert.ok(graphAnchorRelevanceScore(node, "please fix build execution prompt") > graphAnchorRelevanceScore({ label: "Execution" }, "please fix build execution prompt"));
++});
++
+ // =====================================================================
+ // THE STALE-GRAPH REFUSAL.
+ //

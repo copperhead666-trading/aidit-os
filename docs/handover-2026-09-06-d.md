@@ -162,10 +162,22 @@ periksa `git status` setelahnya.
    belum diperiksa. Kalau ada kartu tidak sampai, mulai dari sini.
 5. **`D:/AI/worktrees/worktrees/`** bersarang satu tingkat terlalu dalam, dan
    `lane-hatta` di dalamnya dimiliki user sandbox. Belum disentuh.
-6. **Lima worktree lane sudah mati** — w2, w3, w4, harness, corleone-vp. Mereka
-   memicu seluruh masalah kedipan. Membersihkannya perlu memeriksa isinya dulu:
-   `worktrees/lane-corleone` memuat perubahan `directive-runner.mjs` yang belum
-   di-commit.
+6. **Lima worktree lane sudah mati** — w2, w3, w4, harness, corleone-vp.
+   Mereka memicu seluruh masalah kedipan. Diperiksa 2026-09-06 malam: kelimanya
+   **0 commit di depan main dan nol pekerjaan belum di-commit**, jadi tidak ada
+   yang hilang kalau worktree-nya dihapus. Branch-nya tetap disimpan.
+
+7. **Ada pekerjaan belum di-merge di `D:/AI/worktrees/worktrees/lane-corleone`,
+   dan hampir hilang.** 128 baris `graphAnchorRelevanceScore` plus 86 baris tes,
+   belum di-commit, di worktree bersarang yang terlupakan. Main TIDAK memuatnya.
+   Sudah diselamatkan ke `docs/packets/RESCUED-graph-anchor-relevance.patch`
+   supaya pembersihan tidak bisa menghapusnya.
+
+   **Jangan langsung menerapkannya.** Main sudah punya peringkat anchor sendiri
+   lewat `anchorLabelParts` (directive-runner.mjs:2142) — pendekatan yang
+   berbeda. Yang diselamatkan ini lulus 141/141 di pohonnya sendiri, tetapi
+   pohonnya berbasis commit lama. Pertanyaannya bukan "apakah jalan", melainkan
+   pendekatan mana yang lebih baik, dan itu belum dijawab siapa pun.
 
 ---
 
