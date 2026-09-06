@@ -72,7 +72,7 @@ const DIRECTIVE_PLAN_MARKERS = Object.freeze([
 // "PLAN_REFUSED"), so no longest-first ordering trap exists here. Imported,
 // not retyped, for the same reason as the plan markers.
 const DIRECTIVE_COMPLETION_MARKERS = Object.freeze([
-  { prefix: RESULT_MARKER, kind: KINDS.DIRECTIVE_COMPLETED },
+  { prefix: RESULT_MARKER, kind: KINDS.EXECUTION_DONE },
 ]);
 
 function toIso(value) {
@@ -354,7 +354,7 @@ export function deriveEventsForIssue(entry, folded = new Map(), summary = null) 
       if (
         (classified.kind === KINDS.DIRECTIVE_PLAN_POSTED ||
           classified.kind === KINDS.DIRECTIVE_PLAN_REFUSED ||
-          classified.kind === KINDS.DIRECTIVE_COMPLETED) &&
+          classified.kind === KINDS.EXECUTION_DONE) &&
         !hasDirectiveLabel(issue)
       ) {
         continue;
@@ -381,7 +381,7 @@ export function deriveEventsForIssue(entry, folded = new Map(), summary = null) 
           ...classified.data,
           ...(classified.kind === KINDS.DIRECTIVE_PLAN_POSTED ||
           classified.kind === KINDS.DIRECTIVE_PLAN_REFUSED ||
-          classified.kind === KINDS.DIRECTIVE_COMPLETED
+          classified.kind === KINDS.EXECUTION_DONE
             ? { identifier: subject }
             : {}),
           commentId,
