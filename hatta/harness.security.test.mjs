@@ -675,6 +675,17 @@ mustProtectPath("still refuse secret-data.json under name-pattern rule", "secret
 mustProtectPath("still refuse .env under basename rule", ".env");
 mustProtectPath("still refuse .git/config - .git rule untouched", ".git/config");
 
+// Plural keyword forms must also be refused.
+mustProtectPath("refuse tokens.json (plural of token)", "tokens.json");
+mustProtectPath("refuse secrets.md.key (plural of secret)", "secrets.md.key");
+mustProtectPath("refuse credentials.json (plural of credential)", "credentials.json");
+mustProtectPath("refuse passwords.csv (plural of password)", "passwords.csv");
+mustProtectPath("refuse api-keys.json (plural of api-key)", "api-keys.json");
+mustProtectPath("refuse apikeys.txt (plural of apikey)", "apikeys.txt");
+
+// Keyword embedded in a longer word must NOT be refused.
+assert.ok(!protectedWorkspacePathReason("tokenisation.mjs"), "tokenisation.mjs is not secret-like; keyword is part of a longer word");
+
 // Lexical path escapes.
 mustBlockPath("block relative path escape", "../../Windows/System32/drivers/etc/hosts");
 mustBlockPath("block absolute path escape", "C:/Windows/System32");
