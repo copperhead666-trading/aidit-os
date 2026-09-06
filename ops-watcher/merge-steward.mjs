@@ -190,7 +190,7 @@ export function checkSecretShapedLiterals(input) {
     const addedLines = values(input, "addedLines").map((line) => String(line || ""));
     const longLiteral = /(["'`])([A-Za-z0-9+/=]{32,}|[a-fA-F0-9]{32,})\1/;
     const prefixed = /(["'`])?(ghp_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|pcp_[A-Za-z0-9_]{20,})(["'`])?/;
-    const assignedSecretName = /\b(token|secret|key|password)\b[^=\n]{0,80}=\s*(["'`])?([A-Za-z0-9+/=]{32,}|[a-fA-F0-9]{32,}|ghp_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|pcp_[A-Za-z0-9_]{20,})/i;
+    const assignedSecretName = /(\w*(?:token|secret|key|password)\w*)\s*[=:]\s*(["'`])?([A-Za-z0-9+/=]{32,}|[a-fA-F0-9]{32,}|ghp_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|pcp_[A-Za-z0-9_]{20,})/i;
     const findings = [];
 
     for (const line of addedLines) {

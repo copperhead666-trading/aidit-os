@@ -127,6 +127,12 @@ function t5_secretShapedLiterals() {
         "+// sha 0123456789abcdef0123456789abcdef01234567 from the previous run",
       ],
     }).ok, true);
+    assert.equal(checkSecretShapedLiterals({ addedLines: ["+TELEGRAM_TOKEN=deadbeef0123456789abcdef01234567"] }).ok, false);
+    assert.equal(checkSecretShapedLiterals({ addedLines: ["+const apiKey = \"deadbeef0123456789abcdef01234567\";"] }).ok, false);
+    assert.equal(checkSecretShapedLiterals({ addedLines: ["+db_password: \"deadbeef0123456789abcdef01234567\""] }).ok, false);
+    assert.equal(checkSecretShapedLiterals({ addedLines: ["+SUPABASE_SERVICE_KEY=deadbeef0123456789abcdef01234567"] }).ok, false);
+    assert.equal(checkSecretShapedLiterals({ addedLines: ["+// TELEGRAM_TOKEN=deadbeef0123456789abcdef01234567"] }).ok, true);
+    assert.equal(checkSecretShapedLiterals({ addedLines: ["+The key master said hello."] }).ok, true);
     ok(name);
   } catch (err) { bad(name, err); }
 }
