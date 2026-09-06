@@ -27,6 +27,7 @@ import {
   buildDecisionBriefCommentBody,
   renderRefusal,
 } from "./decision-brief.mjs";
+import { buildDecisionOptionsCommentBody } from "./telegram-decision-options.mjs";
 
 export const COMPANY_ID = "a7011f31-8891-4581-b8fb-bbda8ac6a890";
 const OWNER_REQUIRED_COLOR = "#b91c1c";
@@ -211,7 +212,31 @@ export async function runEscalateOnce(deps) {
   }
   log(`ahmad-escalate: ${issueIdentifier} decision brief posted`);
 
-  return { ok: true, identifier: issueIdentifier, escalated: true, briefPosted: true };
+  // THE OPTIONS THE BRIEF ALREADY NAMES MUST BE THE BUTTONS THE OWNER TAPS.
+  //
+  // The gate has required 2-5 real `pilihan` since it was written — each with a
+  // key, a label, and the consequence of choosing it. None of that ever reached
+  // the owner's phone. telegram-notify.mjs's buildButtons reads ONE thing, the
+  // "[DECISION OPTIONS]" marker comment, and nothing on this path ever wrote
+  // it. So every escalation raised through the proper gate arrived as generic
+  // SETUJUI / TOLAK / DETAIL / TUNDA, and the owner was asked to approve or
+  // reject a question that was never yes-or-no. Two lists, one of them unread.
+  //
+  // Posted LAST on purpose. If this write fails the escalation still stands:
+  // label, sentence and brief are on the board and buildButtons falls back to
+  // the generic card, which is worse but not silent. A missing button set is
+  // reported as its own fact rather than folded into the brief's.
+  const optionsRes = await _postComment(base, it.id, buildDecisionOptionsCommentBody(
+    verdict.brief.pilihan.map((option) => ({ key: option.key, label: option.label })),
+  ), { authorType: "user" });
+  const optionsLanded = judgeWrite(optionsRes);
+  if (!optionsLanded.ok) {
+    log(`ahmad-escalate: ${issueIdentifier} decision OPTIONS did not land (${optionsLanded.reason}) — the card will fall back to generic buttons`);
+    return { ok: true, identifier: issueIdentifier, escalated: true, briefPosted: true, optionsPosted: false };
+  }
+  log(`ahmad-escalate: ${issueIdentifier} decision options posted (${verdict.brief.pilihan.length} buttons)`);
+
+  return { ok: true, identifier: issueIdentifier, escalated: true, briefPosted: true, optionsPosted: true };
 }
 
 // ---- CLI ----

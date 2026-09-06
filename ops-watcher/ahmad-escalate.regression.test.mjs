@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import { runEscalateOnce, COMPANY_ID } from "./ahmad-escalate.mjs";
 import { DECISION_BRIEF_MARKER } from "./decision-brief.mjs";
+import { DECISION_OPTIONS_MARKER, parseDecisionOptionsFromComments } from "./telegram-decision-options.mjs";
 
 let pass = 0;
 const ok = (label) => { pass += 1; console.log(`OK  ${label}`); };
@@ -98,12 +99,29 @@ async function t1_addsLabelAndPostsComment() {
   assert.equal(calls.patch.length, 1, "T1: patchIssue called exactly once (label not yet present)");
   // PATCH must merge with existing labelIds, not clobber them.
   assert.deepEqual(calls.patch[0].patch.labelIds, ["lbl-directive", "lbl-owner-required"], "T1: PATCH merges OWNER_REQUIRED id with existing labelIds");
-  assert.equal(calls.comment.length, 2, "T1: postComment called exactly twice (escalation sentence, then structured brief)");
+  assert.equal(calls.comment.length, 3, "T1: postComment called exactly three times (escalation sentence, structured brief, decision options)");
   assert.equal(calls.comment[0].body, "AHMAD ESCALATION: Masalah ini butuh keputusan pemilik karena menyangkut uang sungguhan.", "T1: comment body has the exact AHMAD ESCALATION: <reason> prefix and verbatim reason");
   assert.equal(calls.comment[0].opts.authorType, "user", "T1: comment authorType=user");
   assert.ok(calls.comment[1].body.startsWith(DECISION_BRIEF_MARKER), "T1: structured brief is posted after the human escalation sentence");
   assert.equal(calls.comment[1].opts.authorType, "user", "T1: brief comment authorType=user");
   assert.equal(r.briefPosted, true, "T1: result briefPosted=true");
+
+  // THE BUTTONS THE OWNER TAPS MUST BE THE OPTIONS THE BRIEF ALREADY NAMES.
+  // telegram-notify.mjs's buildButtons reads exactly one thing — the
+  // "[DECISION OPTIONS]" marker comment — and until 2026-09-06 nothing on this
+  // path ever wrote it. Every escalation raised through this gate arrived on
+  // the owner's phone as generic SETUJUI / TOLAK / DETAIL / TUNDA, asking him
+  // to approve or reject a question that was never yes-or-no.
+  assert.ok(calls.comment[2].body.startsWith(DECISION_OPTIONS_MARKER), "T1: decision options are posted last");
+  assert.equal(calls.comment[2].opts.authorType, "user", "T1: options comment authorType=user");
+  const rendered = parseDecisionOptionsFromComments([{ body: calls.comment[2].body }]);
+  assert.equal(rendered.ok, true, `T1: the options comment must parse back (${rendered.reason || ""})`);
+  assert.deepEqual(
+    rendered.options,
+    VALID_BRIEF.pilihan.map((o) => ({ key: o.key, label: o.label })),
+    "T1: every option in the brief becomes a button, in the brief's own order",
+  );
+  assert.equal(r.optionsPosted, true, "T1: result optionsPosted=true");
   ok("T1: escalating an issue without OWNER_REQUIRED adds the label (merged) and posts the comment");
 }
 
@@ -136,7 +154,7 @@ async function t2_alreadyEscalatedSkipsPatchButStillComments() {
   assert.equal(r.ok, true, "T2: result ok=true even when already escalated");
   assert.equal(r.escalated, true, "T2: result escalated=true");
   assert.equal(calls.patch.length, 0, "T2: NO duplicate PATCH (label already present — idempotent)");
-  assert.equal(calls.comment.length, 2, "T2: a NEW escalation comment and decision brief ARE still posted");
+  assert.equal(calls.comment.length, 3, "T2: a NEW escalation comment, decision brief and decision options ARE still posted");
   assert.equal(calls.comment[0].body, "AHMAD ESCALATION: Alasan kedua — masih butuh perhatian pemilik.", "T2: comment body carries the new reason verbatim");
   assert.ok(calls.comment[1].body.startsWith(DECISION_BRIEF_MARKER), "T2: structured brief is posted after the repeated escalation reason");
   assert.equal(r.briefPosted, true, "T2: result briefPosted=true");
@@ -456,6 +474,44 @@ async function g5_briefCommentFailureKeepsEscalationLanded() {
   ok("G5: brief comment failure reports partial success without inviting blind retry");
 }
 
+// ---- G5b: the options comment fails, and the escalation still stands --------
+// The options are the LAST write on purpose. If they do not land, the label,
+// the sentence and the brief are all on the board and the owner is still
+// reached — buildButtons falls back to the generic card, which is worse than
+// context-shaped buttons but is not silence. Reporting that as a full failure
+// would invite a retry that escalates the same issue twice.
+async function g5b_optionsCommentFailureStillLeavesTheEscalationStanding() {
+  const calls = { patch: [], comment: [] };
+  const logs = [];
+  const r = await runEscalateOnce({
+    base: BASE,
+    companyId: COMPANY_ID,
+    issueIdentifier: "KOL-42",
+    reason: "Masalah ini butuh keputusan pemilik karena menyangkut uang sungguhan.",
+    brief: VALID_BRIEF,
+    httpGet: boardGet([ISSUE]),
+    ensureLabel: async () => ({ id: "lbl-owner-required", created: false }),
+    patchIssue: async (base, issueId, patch) => {
+      calls.patch.push({ issueId, patch });
+      return { networkError: false, status: 200, issue: { id: issueId, ...patch } };
+    },
+    postComment: async (base, issueId, body, opts) => {
+      calls.comment.push({ issueId, body, opts });
+      if (body.startsWith(DECISION_OPTIONS_MARKER)) return { networkError: false, status: 500, body: null };
+      return { networkError: false, status: 201, comment: { id: "cmt-ok" } };
+    },
+    log: (m) => { logs.push(m); },
+  });
+
+  assert.equal(r.ok, true, "G5b: the escalation itself still succeeded");
+  assert.equal(r.escalated, true, "G5b: result escalated=true");
+  assert.equal(r.briefPosted, true, "G5b: the brief did land");
+  assert.equal(r.optionsPosted, false, "G5b: the missing buttons are reported as their own fact");
+  assert.equal(calls.comment.length, 3, "G5b: all three writes were attempted");
+  assert.ok(logs.some((m) => /fall back to generic buttons/.test(m)), "G5b: the log says what the owner will actually see");
+  ok("G5b: a failed options comment degrades the card, not the escalation");
+}
+
 // ---- G6: a 200 that did not stick ------------------------------------------
 // The real incident, 2026-09-04. Three escalations logged "OWNER_REQUIRED label
 // added" on an HTTP 200 and left the issue with labelIds: []. The decisions were
@@ -502,6 +558,7 @@ async function main() {
     g3_recordRefusalFalseSuppressesComment,
     g4_literalKol67ShapeIsRefused,
     g5_briefCommentFailureKeepsEscalationLanded,
+    g5b_optionsCommentFailureStillLeavesTheEscalationStanding,
     g6_patchSucceedsButLabelIsNotThere,
   ];
   for (const t of tests) await t();
