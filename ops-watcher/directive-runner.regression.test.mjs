@@ -2210,7 +2210,9 @@ function makeExecDeps(overrides = {}) {
   const statFile = async (file) => {
     calls.stat++;
     statFiles.push(file);
-    return { size: 100, mtimeMs: mutated ? 2000 : 1000 };
+    // Content (the hash) decides what changed; mtime flips with it so an
+    // mtime-only rewrite reads as the no-op it really is.
+    return { size: 100, mtimeMs: mutated ? 2000 : 1000, hash: mutated ? "hash-after" : "hash-before" };
   };
   const deps = {
     lane: "corleone",
@@ -3044,9 +3046,9 @@ await t("executeApprovedDirective: workspace change is counted even when root co
     statFiles.push(file);
     const resolved = path.resolve(file);
     if (workspaceFiles.has(resolved)) {
-      return { size: laneChanged ? 101 : 100, mtimeMs: laneChanged ? 2000 : 1000 };
+      return { size: laneChanged ? 101 : 100, mtimeMs: laneChanged ? 2000 : 1000, hash: laneChanged ? "hash-lane-after" : "hash-lane-before" };
     }
-    return { size: 100, mtimeMs: 1000 };
+    return { size: 100, mtimeMs: 1000, hash: "hash-root" };
   };
   deps.dispatchExecution = async () => {
     calls.dispatch++;
@@ -3086,7 +3088,7 @@ await t("executeApprovedDirective: snapshot, re-stat, and restore use the same l
   deps.statFile = async (file) => {
     calls.stat++;
     seen.stat.push(file);
-    return { size: 100, mtimeMs: 1000 };
+    return { size: 100, mtimeMs: 1000, hash: "hash-constant" };
   };
   deps.restoreFiles = async (snap) => {
     calls.restore++;
@@ -3188,6 +3190,180 @@ await t("executeApprovedDirective: injected git/pm2 spies are never called acros
   }
   assert.equal(gitSpy.calls, 0);
   assert.equal(pm2Spy.calls, 0);
+});
+
+// KOL-81: a rewritten file is not a changed file. The measurement compares a
+// hash of the bytes, the verify command runs before dispatch as well as
+// after, and the result comment says which fact each claim rests on.
+await t("KOL-81: identical bytes rewritten with a newer mtime is a no-op, not done", async () => {
+  const { deps, calls } = makeExecDeps();
+  let afterDispatch = false;
+  deps.dispatchExecution = async (_prompt, opts = {}) => {
+    calls.dispatch++;
+    afterDispatch = true;
+    return { ok: true, stdout: "rewrote with identical bytes", stderr: "" };
+  };
+  // Byte-identical rewrite: mtime moves, the hash does not. This is exactly
+  // the KOL-81 shape.
+  deps.statFile = async () => ({ size: 100, mtimeMs: afterDispatch ? 2000 : 1000, hash: "byte-identical" });
+  const res = await executeApprovedDirective(issue(), parsePlan(goodPlan), deps);
+  assert.equal(res.outcome, "no-op", "same bytes + new mtime must be a no-op");
+  assert.equal(calls.runVerify, 2, "the verify command ran before AND after dispatch");
+});
+
+await t("KOL-81: genuinely different content is done and names the changed file", async () => {
+  const { deps } = makeExecDeps();
+  const res = await executeApprovedDirective(issue(), parsePlan(goodPlan), deps);
+  assert.equal(res.outcome, "done");
+  assert.deepEqual(res.filesChanged, ["ops-watcher/foo.mjs", "docs/bar.md"]);
+  assert.ok(res.filesChanged.every((f) => typeof f === "string" && f.length > 0), "done lists measured changed files only");
+});
+
+await t("KOL-81: a file created by the lane where none existed is changed", async () => {
+  const { deps } = makeExecDeps();
+  let statCalls = 0;
+  // First two stat calls are the BEFORE capture for the two planned files:
+  // nothing exists yet. After dispatch, both exist.
+  deps.statFile = async () => {
+    statCalls++;
+    if (statCalls <= 2) throw new Error("ENOENT");
+    return { size: 10, mtimeMs: 5, hash: "new-bytes" };
+  };
+  const res = await executeApprovedDirective(issue(), parsePlan(goodPlan), deps);
+  assert.equal(res.outcome, "done");
+  assert.deepEqual(res.filesChanged, ["ops-watcher/foo.mjs", "docs/bar.md"]);
+});
+
+await t("KOL-81: a file deleted by the lane is changed", async () => {
+  const { deps } = makeExecDeps();
+  let statCalls = 0;
+  deps.statFile = async () => {
+    statCalls++;
+    if (statCalls <= 2) return { size: 10, mtimeMs: 5, hash: "old-bytes" };
+    throw new Error("ENOENT");
+  };
+  const res = await executeApprovedDirective(issue(), parsePlan(goodPlan), deps);
+  assert.equal(res.outcome, "done");
+  assert.deepEqual(res.filesChanged, ["ops-watcher/foo.mjs", "docs/bar.md"]);
+});
+
+await t("KOL-81: a file unreadable both before and after is not changed and nothing throws", async () => {
+  const { deps } = makeExecDeps();
+  deps.statFile = async () => { throw new Error("EACCES"); };
+  const res = await executeApprovedDirective(issue(), parsePlan(goodPlan), deps);
+  assert.equal(res.outcome, "no-op", "unreadable on both sides cannot be called a change");
+  assert.notEqual(res.outcome, "error", "the comparison must not throw");
+});
+
+await t("KOL-81: verify passes before AND after with no content change is reported as a no-op", async () => {
+  const { deps, calls } = makeExecDeps({ mutateOnDispatch: false });
+  let verifyCalls = 0;
+  deps.runVerify = async () => { verifyCalls++; return { ok: true, stdout: "green", stderr: "" }; };
+  const res = await executeApprovedDirective(issue(), parsePlan(goodPlan), deps);
+  assert.equal(res.outcome, "no-op", "an unchanged pass is not evidence of work");
+  assert.equal(verifyCalls, 2, "the baseline run happened too");
+  assert.equal(calls.runVerify, 0, "the fixture spy was fully replaced");
+});
+
+await t("KOL-81: verify red before and green after is the real done shape", async () => {
+  const { deps } = makeExecDeps();
+  let verifyCalls = 0;
+  deps.runVerify = async () => {
+    verifyCalls++;
+    return verifyCalls === 1
+      ? { ok: false, stdout: "", stderr: "red before" }
+      : { ok: true, stdout: "green after", stderr: "" };
+  };
+  const res = await executeApprovedDirective(issue(), parsePlan(goodPlan), deps);
+  assert.equal(res.outcome, "done");
+  assert.equal(verifyCalls, 2);
+  assert.equal(res.verifyPassedBefore, false, "a red baseline must be recorded as red");
+});
+
+await t("KOL-81: verify green before AND after but content changed is done and the comment says the verify did not distinguish the states", async () => {
+  await resetTmp();
+  const planAt = "2026-09-01T09:00:00.000Z";
+  const after = "2026-09-01T09:30:00.000Z";
+  const issues = [issue({ id: "kol81", identifier: "KOL-81" })];
+  const comments = { kol81: [c(`${PLAN_MARKER} (iso):\n${goodPlan}`, planAt), c(TG_APPROVE, after)] };
+  const { deps, posts, patches } = makeSweepDeps({
+    issues,
+    comments,
+    extra: {
+      executeDirective: async () => ({
+        outcome: "done",
+        filesChanged: ["ops-watcher/foo.mjs"],
+        verifyTail: "VERIFY OK",
+        verifyPassedBefore: true,
+      }),
+    },
+  });
+  const res = await runDirectiveSweepOnce(deps);
+  assert.equal(res.executed, 1);
+  assert.match(posts[0].body.body, /^DIRECTIVE RESULT/);
+  assert.match(posts[0].body.body, /tidak membedakan keadaan sebelum dan sesudah/, "the comment names that the verification did not distinguish the states");
+  assert.match(posts[0].body.body, /perubahan konten yang terukur/, "the comment rests the claim on the measured content change");
+  assert.match(posts[0].body.body, /- ops-watcher\/foo\.mjs/, "the measured changed file is listed");
+  assert.equal(patches.length, 1, "a genuine content change still closes the directive");
+});
+
+await t("KOL-81: RESULT_MARKER appears only in the done comment, never the no-op or failure comments", async () => {
+  await resetTmp();
+  const planAt = "2026-09-01T09:00:00.000Z";
+  const after = "2026-09-01T09:30:00.000Z";
+  // MAX_EXECUTIONS_PER_SWEEP is 1, so one sweep can only ever produce one
+  // outcome. Run three sweeps, one issue each, to see all three comment shapes.
+  const approved = () => [c(`${PLAN_MARKER} (iso):\n${goodPlan}`, planAt), c(TG_APPROVE, after)];
+  const outcomes = [
+    { outcome: "done", filesChanged: ["ops-watcher/foo.mjs"], verifyTail: "ok", verifyPassedBefore: false },
+    { outcome: "no-op", reason: "file target sudah sama" },
+    { outcome: "reverted", reason: "verify-red" },
+  ];
+  const posts = [];
+  const summaries = [];
+  for (const [id, identifier] of [["kol82", "KOL-82"], ["kol83", "KOL-83"], ["kol84", "KOL-84"]]) {
+    await resetTmp();
+    const issues = [issue({ id, identifier })];
+    const comments = { [id]: approved() };
+    const made = makeSweepDeps({
+      issues,
+      comments,
+      extra: { executeDirective: async () => outcomes.shift() },
+    });
+    summaries.push(await runDirectiveSweepOnce(made.deps));
+    posts.push(...made.posts);
+  }
+  assert.equal(summaries[0].executed, 1);
+  assert.equal(summaries[1].noop, 1);
+  assert.equal(summaries[2].reverted, 1);
+  const bodies = posts.filter((p) => p.body && typeof p.body.body === "string").map((p) => p.body.body);
+  const doneBody = bodies.find((b) => b.startsWith(RESULT_MARKER));
+  const noopBody = bodies.find((b) => b.startsWith("DIRECTIVE NO-OP"));
+  const failedBody = bodies.find((b) => b.startsWith("DIRECTIVE GAGAL"));
+  assert.ok(doneBody, "a done comment exists");
+  assert.ok(noopBody, "a no-op comment exists");
+  assert.ok(failedBody, "a failure comment exists");
+  assert.ok(doneBody.includes(RESULT_MARKER), "the done comment carries the marker");
+  assert.ok(!noopBody.includes(RESULT_MARKER), "a marker here would close a directive that did nothing - the KOL-81 bug in a new place");
+  assert.ok(!failedBody.includes(RESULT_MARKER), "and neither may the failure comment");
+  // And the no-op / failure shapes are otherwise byte-unchanged in shape.
+  assert.match(noopBody, /DIRECTIVE NO-OP \(/);
+  assert.match(noopBody, /tidak ada perubahan/);
+  assert.match(failedBody, /DIRECTIVE GAGAL \(/);
+  assert.match(failedBody, /verify-red/);
+});
+
+await t("KOL-81: a red baseline never blocks dispatch and a green-after claim still rests on measured content", async () => {
+  // The packet's guard: 'passed before' must not become a failure on its own.
+  // Covered end to end here: baseline red, after green, content changed -> done.
+  const { deps } = makeExecDeps();
+  let verifyCalls = 0;
+  deps.runVerify = async () => {
+    verifyCalls++;
+    return { ok: verifyCalls > 1, stdout: verifyCalls > 1 ? "green" : "", stderr: verifyCalls > 1 ? "" : "red" };
+  };
+  const res = await executeApprovedDirective(issue(), parsePlan(goodPlan), deps);
+  assert.equal(res.outcome, "done");
 });
 
 // ===========================================================================
