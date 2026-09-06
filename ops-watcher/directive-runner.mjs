@@ -78,6 +78,7 @@ import {
   guardLaneStart as defaultGuardLaneStart,
   recordLaneOutcome as defaultRecordLaneOutcome,
 } from "./lane-guard.mjs";
+import { ensureLaneWorktree as defaultEnsureLaneWorktree } from "./lane-worktree.mjs";
 import { parseArgs as parseVerifyFileArgs, verifyFile as verifyFileReal } from "./verify-file.mjs";
 // V1: anchor emission asks the SAME question the content check asks. One
 // definition, so the two answers cannot drift apart again.
@@ -2793,6 +2794,7 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
   const recordOutcomeFn = deps.recordOutcome || defaultRecordLaneOutcome;
   const logLaneOutcomeFn = deps.logLaneOutcome || defaultLogLaneOutcome;
   const statFileFn = deps.statFile || defaultStatFile;
+  const ensureLaneWorktreeFn = deps.ensureLaneWorktree || defaultEnsureLaneWorktree;
   const resolveSpecialists = deps.resolveSpecialistsForPacket || resolveSpecialistsForPacket;
   const laneForTaskClassFn = deps.laneForTaskClass || laneForTaskClass;
   // Resolved ONCE per execution. The registry decides which venture paths this
@@ -2807,6 +2809,7 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
   let laneCalled = false;
   let runId = null;
   let finalLogged = false;
+  let workspacePath = null;
 
   async function emit(result) {
     try {
@@ -2822,8 +2825,9 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
   }
 
   async function statEntry(file) {
+    const fileToStat = workspacePath ? path.resolve(workspacePath, file) : file;
     try {
-      const st = await statFileFn(file);
+      const st = await statFileFn(fileToStat);
       return { file, size: st && st.size, mtimeMs: st && st.mtimeMs };
     } catch {
       return { file, size: null, mtimeMs: null };
@@ -2934,7 +2938,16 @@ export async function executeApprovedDirective(issue, plan, deps = {}) {
 
     // 4. Snapshot the listed files before any dispatch.
     const files = Array.isArray(plan?.files) ? plan.files : [];
-    const snapshot = await snapshotFn(files, { now: nowFn, _fs: deps._fs, dir: deps.snapshotDir });
+    try {
+      const workspace = await ensureLaneWorktreeFn(chosenLane, deps.laneWorktreeDeps || {});
+      if (workspace && typeof workspace.path === "string" && workspace.path.trim()) {
+        workspacePath = workspace.path;
+      }
+    } catch {
+      workspacePath = null;
+    }
+    const workspaceFiles = workspacePath ? files.map((file) => path.resolve(workspacePath, file)) : files;
+    const snapshot = await snapshotFn(workspaceFiles, { now: nowFn, _fs: deps._fs, dir: deps.snapshotDir });
     if (!snapshot || snapshot.ok === false) {
       return emit({ outcome: "aborted", reason: "snapshot-failed" });
     }

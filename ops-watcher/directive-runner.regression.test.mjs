@@ -2203,9 +2203,13 @@ function makeExecDeps(overrides = {}) {
   const evidenceEntries = [];
   const guardLaneNames = [];
   const recordOutcomeLaneNames = [];
+  const statFiles = [];
+  const snapshotFileBatches = [];
+  const restoreSnapshots = [];
   let mutated = false;
   const statFile = async (file) => {
     calls.stat++;
+    statFiles.push(file);
     return { size: 100, mtimeMs: mutated ? 2000 : 1000 };
   };
   const deps = {
@@ -2226,6 +2230,7 @@ function makeExecDeps(overrides = {}) {
     statFile,
     snapshotFiles: async (files /*, opts */) => {
       calls.snapshot++;
+      snapshotFileBatches.push([...(files || [])]);
       return {
         ok: true,
         dir: "/tmp/snap",
@@ -2234,6 +2239,7 @@ function makeExecDeps(overrides = {}) {
     },
     restoreFiles: async (snap /*, opts */) => {
       calls.restore++;
+      restoreSnapshots.push(snap);
       return { ok: true, restored: (snap && snap.entries ? snap.entries.length : 0) };
     },
     dispatchExecution: async (_prompt, opts = {}) => {
@@ -2283,6 +2289,9 @@ function makeExecDeps(overrides = {}) {
     evidenceEntries,
     guardLaneNames,
     recordOutcomeLaneNames,
+    statFiles,
+    snapshotFileBatches,
+    restoreSnapshots,
     isMutated: () => mutated,
     setMutated: (v) => { mutated = v; },
   };
@@ -3007,6 +3016,108 @@ await t("executeApprovedDirective: happy path -> done, restore NOT called, one e
     deliveredWhatWasAsked: true,
   });
   assert.ok(typeof res.verifyTail === "string");
+});
+
+await t("executeApprovedDirective: injected lane workspace is the base for planned-file stat", async () => {
+  const workspace = path.join(TEST_REPO_ROOT, ".fake-lane-corleone");
+  const { deps, statFiles } = makeExecDeps();
+  deps.ensureLaneWorktree = () => ({ path: workspace, isolated: true, reason: "fake lane" });
+  const plan = parsePlan(goodPlan);
+  const res = await executeApprovedDirective(issue(), plan, deps);
+  const expected = path.resolve(workspace, "ops-watcher/foo.mjs");
+  assert.equal(res.outcome, "done");
+  assert.equal(statFiles[0], expected);
+  assert.notEqual(statFiles[0], path.resolve(TEST_REPO_ROOT, "ops-watcher/foo.mjs"));
+});
+
+await t("executeApprovedDirective: workspace change is counted even when root copy is unchanged", async () => {
+  const workspace = path.join(TEST_REPO_ROOT, ".fake-lane-corleone");
+  const { deps, calls, laneOutcomes, statFiles } = makeExecDeps();
+  let laneChanged = false;
+  const workspaceFiles = new Set([
+    path.resolve(workspace, "ops-watcher/foo.mjs"),
+    path.resolve(workspace, "docs/bar.md"),
+  ]);
+  deps.ensureLaneWorktree = () => ({ path: workspace, isolated: true, reason: "fake lane" });
+  deps.statFile = async (file) => {
+    calls.stat++;
+    statFiles.push(file);
+    const resolved = path.resolve(file);
+    if (workspaceFiles.has(resolved)) {
+      return { size: laneChanged ? 101 : 100, mtimeMs: laneChanged ? 2000 : 1000 };
+    }
+    return { size: 100, mtimeMs: 1000 };
+  };
+  deps.dispatchExecution = async () => {
+    calls.dispatch++;
+    laneChanged = true;
+    return { ok: true, stdout: "implementation done", stderr: "" };
+  };
+  const plan = parsePlan(goodPlan);
+  const res = await executeApprovedDirective(issue(), plan, deps);
+  assert.equal(res.outcome, "done");
+  assert.deepEqual(res.filesChanged, ["ops-watcher/foo.mjs", "docs/bar.md"]);
+  assert.deepEqual(laneOutcomes[0].outcome, {
+    verifyPassed: true,
+    filesChanged: 2,
+    filesPlanned: 2,
+    deliveredWhatWasAsked: true,
+  });
+});
+
+await t("executeApprovedDirective: snapshot, re-stat, and restore use the same lane workspace base", async () => {
+  const workspace = path.join(TEST_REPO_ROOT, ".fake-lane-corleone");
+  const expected = [
+    path.resolve(workspace, "ops-watcher/foo.mjs"),
+    path.resolve(workspace, "docs/bar.md"),
+  ];
+  const { deps, calls } = makeExecDeps({ verifyResult: { ok: false, stdout: "", stderr: "AssertionError" } });
+  const seen = { snapshot: [], stat: [], restore: [] };
+  deps.ensureLaneWorktree = () => ({ path: workspace, isolated: true, reason: "fake lane" });
+  deps.snapshotFiles = async (files) => {
+    calls.snapshot++;
+    seen.snapshot.push(...files);
+    return {
+      ok: true,
+      dir: "/tmp/snap",
+      entries: files.map((file) => ({ file, backup: "/tmp/snap/" + path.basename(file), bytes: 100 })),
+    };
+  };
+  deps.statFile = async (file) => {
+    calls.stat++;
+    seen.stat.push(file);
+    return { size: 100, mtimeMs: 1000 };
+  };
+  deps.restoreFiles = async (snap) => {
+    calls.restore++;
+    seen.restore.push(...snap.entries.map((entry) => entry.file));
+    return { ok: true, restored: snap.entries.length };
+  };
+  const plan = parsePlan(goodPlan);
+  const res = await executeApprovedDirective(issue(), plan, deps);
+  assert.equal(res.outcome, "reverted");
+  assert.deepEqual(seen.snapshot, expected);
+  assert.deepEqual(seen.stat.slice(0, 2), expected);
+  assert.deepEqual(seen.stat.slice(-2), expected);
+  assert.deepEqual(seen.restore, expected);
+});
+
+await t("executeApprovedDirective: unresolved lane workspace falls back to current relative path behaviour", async () => {
+  const { deps, statFiles } = makeExecDeps();
+  deps.ensureLaneWorktree = () => ({ path: "", isolated: false, reason: "unresolved" });
+  const plan = parsePlan(goodPlan);
+  const res = await executeApprovedDirective(issue(), plan, deps);
+  assert.equal(res.outcome, "done");
+  assert.equal(statFiles[0], "ops-watcher/foo.mjs");
+});
+
+await t("executeApprovedDirective: thrown lane workspace resolver falls back without hiding outcome", async () => {
+  const { deps, statFiles } = makeExecDeps({ mutateOnDispatch: false });
+  deps.ensureLaneWorktree = () => { throw new Error("workspace unavailable"); };
+  const plan = parsePlan(goodPlan);
+  const res = await executeApprovedDirective(issue(), plan, deps);
+  assert.equal(res.outcome, "no-op");
+  assert.equal(statFiles[0], "ops-watcher/foo.mjs");
 });
 
 await t("executeApprovedDirective: verify red -> reverted verify-red, restoreFiles called with the snapshot", async () => {
