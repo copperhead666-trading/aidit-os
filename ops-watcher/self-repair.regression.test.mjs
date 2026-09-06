@@ -9,6 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   CONSECUTIVE_FAILURES_TO_ACT,
+  NOT_REPRODUCIBLE_ESCALATE_AFTER,
   REPAIR_COOLDOWN_MS,
   SCAN_MIN_INTERVAL_MS,
   MAX_REPAIRS_PER_SWEEP,
@@ -21,6 +22,7 @@ import {
   runSelfRepairOnce,
   shouldAttemptRepair,
 } from "./self-repair.mjs";
+import { escalate as ownerEscalate } from "./self-repair-actuator.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -49,6 +51,18 @@ function rec(name, opts = {}) {
     skipped: !!opts.skipped,
     durationMs: opts.durationMs || 1,
     excerpt: opts.excerpt || "",
+  };
+}
+
+function repairableFault(name = "gbrain-curator", opts = {}) {
+  return {
+    name,
+    kind: opts.kind || "crash",
+    reason: opts.reason || "newest record had failed exit and runtime-failure excerpt",
+    consecutiveFailures: opts.consecutiveFailures || CONSECUTIVE_FAILURES_TO_ACT,
+    repairable: opts.repairable === undefined ? true : opts.repairable,
+    blockedBy: opts.blockedBy === undefined ? null : opts.blockedBy,
+    records: opts.records || [rec(name, { excerpt: "ReferenceError: x is not defined" })],
   };
 }
 
@@ -506,6 +520,349 @@ async function testOnceAttemptRepairThrowCaught() {
   } catch (err) { bad(name, err); }
 }
 
+// =====================================================================
+// S14: repeated not-reproducible outcomes escalate exactly once at the
+//      configured threshold
+// =====================================================================
+async function testOnceNotReproducibleEscalatesExactlyOnce() {
+  const name = "S14 runSelfRepairOnce escalates not-reproducible exactly once at threshold";
+  try {
+    assert.equal(NOT_REPRODUCIBLE_ESCALATE_AFTER, 3, "not-reproducible threshold is 3 attempts");
+    const stateFile = "state-s14.json";
+    const mem = makeMemFs(new Map());
+    const fault = repairableFault("gbrain-curator");
+    const escalations = [];
+    const logs = [];
+    let attemptCalls = 0;
+    let nowMs = 10_000_000;
+
+    for (let i = 1; i <= NOT_REPRODUCIBLE_ESCALATE_AFTER; i++) {
+      nowMs += SCAN_MIN_INTERVAL_MS + 1;
+      const result = await runSelfRepairOnce({
+        scan: async () => ({ scannedSweeps: 3, faults: [fault] }),
+        attemptRepair: async () => { attemptCalls += 1; return { outcome: "not-reproducible" }; },
+        escalate: async (f, evidence) => { escalations.push({ fault: f, evidence }); return { alerted: true }; },
+        now: () => nowMs,
+        log: (m) => logs.push(m),
+        readFile: mem.readFile,
+        writeFile: mem.writeFile,
+        appendFile: mem.appendFile,
+        stateFile,
+        evidenceLogFile: "ev-s14.jsonl",
+      });
+      assert.equal(result.skipped, false, `sweep ${i} ran`);
+      assert.equal(result.attemptsMade, 1, `sweep ${i} made one attempt`);
+      assert.equal(result.outcomes[0].outcome, "not-reproducible");
+      assert.equal(escalations.length, i < NOT_REPRODUCIBLE_ESCALATE_AFTER ? 0 : 1, `escalation count after sweep ${i}`);
+    }
+
+    assert.equal(attemptCalls, NOT_REPRODUCIBLE_ESCALATE_AFTER, "one repair attempt per sweep until threshold");
+    assert.equal(escalations.length, 1, "not zero and not every sweep");
+    assert.equal(escalations[0].fault.stuckUnhealable.count, NOT_REPRODUCIBLE_ESCALATE_AFTER);
+    assert.ok(logs.some((l) => /unhealable \(not-reproducible x3\).*escalated to owner/.test(l)), "threshold escalation logged");
+
+    nowMs += SCAN_MIN_INTERVAL_MS + 1;
+    const afterEscalation = await runSelfRepairOnce({
+      scan: async () => ({ scannedSweeps: 3, faults: [fault] }),
+      attemptRepair: async () => { attemptCalls += 1; return { outcome: "not-reproducible" }; },
+      escalate: async (f, evidence) => { escalations.push({ fault: f, evidence }); return { alerted: true }; },
+      now: () => nowMs,
+      log: (m) => logs.push(m),
+      readFile: mem.readFile,
+      writeFile: mem.writeFile,
+      appendFile: mem.appendFile,
+      stateFile,
+      evidenceLogFile: "ev-s14.jsonl",
+    });
+    assert.equal(afterEscalation.skipped, false, "next sweep ran outside scan cooldown");
+    assert.equal(afterEscalation.attemptsMade, 0, "already escalated stuck step is not attempted again");
+    assert.equal(attemptCalls, NOT_REPRODUCIBLE_ESCALATE_AFTER, "no extra repair attempt after escalation");
+    assert.equal(escalations.length, 1, "no repeat escalation after escalation stamp");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// S15: detector reports an already escalated stuck fault as escalated, not
+//      cooldown, and runSelfRepairOnce leaves it alone
+// =====================================================================
+async function testEscalatedStuckFaultBlocksBeforeCooldown() {
+  const name = "S15 runSelfRepairScan reports escalated stuck faults before cooldown";
+  try {
+    const stateFile = "state-s15.json";
+    const stepLogFile = "steps-s15.jsonl";
+    const nowMs = 50_000_000;
+    const sweeps = [
+      sweep([rec("gbrain-curator", { excerpt: "ReferenceError: x is not defined" })]),
+      sweep([rec("gbrain-curator", { excerpt: "ReferenceError: x is not defined" })]),
+      sweep([rec("gbrain-curator", { excerpt: "ReferenceError: x is not defined" })]),
+    ];
+    const mem = makeMemFs(new Map([
+      [stepLogFile, sweeps.map((s) => JSON.stringify(s)).join("\n") + "\n"],
+      [stateFile, JSON.stringify({
+        attempts: { "gbrain-curator": { lastAttemptMs: nowMs - 1 } },
+        stuck: {
+          "gbrain-curator": {
+            count: NOT_REPRODUCIBLE_ESCALATE_AFTER,
+            firstNotReproducibleMs: nowMs - 1000,
+            escalatedMs: nowMs - 500,
+          },
+        },
+      })],
+    ]));
+
+    const scanResult = await runSelfRepairScan({
+      stepLogFile,
+      stateFile,
+      evidenceLogFile: "ev-s15.jsonl",
+      now: () => nowMs,
+      log: () => {},
+      readFile: mem.readFile,
+      writeFile: mem.writeFile,
+      appendFile: mem.appendFile,
+    });
+    assert.equal(scanResult.faults.length, 1);
+    assert.equal(scanResult.faults[0].name, "gbrain-curator");
+    assert.equal(scanResult.faults[0].repairable, false);
+    assert.equal(scanResult.faults[0].blockedBy, "escalated", "escalated wins over cooldown");
+
+    let attempts = 0;
+    let escalations = 0;
+    const logs = [];
+    const onceResult = await runSelfRepairOnce({
+      scan: async () => scanResult,
+      attemptRepair: async () => { attempts += 1; return { outcome: "repaired" }; },
+      escalate: async () => { escalations += 1; return { alerted: true }; },
+      now: () => nowMs + SCAN_MIN_INTERVAL_MS + 1,
+      log: (m) => logs.push(m),
+      readFile: mem.readFile,
+      writeFile: mem.writeFile,
+      appendFile: mem.appendFile,
+      stateFile,
+      evidenceLogFile: "ev-s15.jsonl",
+    });
+
+    assert.equal(onceResult.skipped, false);
+    assert.equal(onceResult.attemptsMade, 0, "next sweep does not attempt repair");
+    assert.equal(attempts, 0, "attemptRepair not called");
+    assert.equal(escalations, 0, "escalate not called again");
+    assert.ok(logs.some((l) => /skipping gbrain-curator \(blockedBy=escalated\)/.test(l)), "escalated skip reason logged");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// S16: a recovered step clears its stuck record, so a later new failure can
+//      escalate again after the threshold
+// =====================================================================
+async function testRecoveredStepClearsStuckRecord() {
+  const name = "S16 runSelfRepairOnce clears stuck state after recovery";
+  try {
+    const stateFile = "state-s16.json";
+    const mem = makeMemFs(new Map([
+      [stateFile, JSON.stringify({
+        lastScanMs: 1,
+        stuck: {
+          "gbrain-curator": {
+            count: NOT_REPRODUCIBLE_ESCALATE_AFTER,
+            firstNotReproducibleMs: 1_000,
+            escalatedMs: 2_000,
+          },
+        },
+      })],
+    ]));
+    let nowMs = 100_000_000;
+    const logs = [];
+
+    const recovered = await runSelfRepairOnce({
+      scan: async () => ({ scannedSweeps: 3, faults: [] }),
+      attemptRepair: async () => ({ outcome: "repaired" }),
+      escalate: async () => ({ alerted: true }),
+      now: () => nowMs,
+      log: (m) => logs.push(m),
+      readFile: mem.readFile,
+      writeFile: mem.writeFile,
+      appendFile: mem.appendFile,
+      stateFile,
+      evidenceLogFile: "ev-s16.jsonl",
+    });
+    assert.equal(recovered.skipped, false);
+    assert.equal(recovered.attemptsMade, 0);
+    let stateAfter = JSON.parse(mem.files.get(stateFile));
+    assert.equal(Object.prototype.hasOwnProperty.call(stateAfter.stuck || {}, "gbrain-curator"), false, "stuck entry cleared");
+    assert.ok(logs.some((l) => /gbrain-curator recovered.*cleared stuck record/.test(l)), "recovery cleanup logged");
+
+    const fault = repairableFault("gbrain-curator");
+    const escalations = [];
+    for (let i = 1; i <= NOT_REPRODUCIBLE_ESCALATE_AFTER; i++) {
+      nowMs += SCAN_MIN_INTERVAL_MS + 1;
+      await runSelfRepairOnce({
+        scan: async () => ({ scannedSweeps: 3, faults: [fault] }),
+        attemptRepair: async () => ({ outcome: "not-reproducible" }),
+        escalate: async (f) => { escalations.push(f); return { alerted: true }; },
+        now: () => nowMs,
+        log: () => {},
+        readFile: mem.readFile,
+        writeFile: mem.writeFile,
+        appendFile: mem.appendFile,
+        stateFile,
+        evidenceLogFile: "ev-s16.jsonl",
+      });
+    }
+    assert.equal(escalations.length, 1, "future failure can escalate again after fresh threshold");
+    assert.equal(escalations[0].stuckUnhealable.count, NOT_REPRODUCIBLE_ESCALATE_AFTER);
+    stateAfter = JSON.parse(mem.files.get(stateFile));
+    assert.equal(stateAfter.stuck["gbrain-curator"].count, NOT_REPRODUCIBLE_ESCALATE_AFTER);
+    assert.ok(Number.isFinite(stateAfter.stuck["gbrain-curator"].escalatedMs));
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// S17: repairable faults retain prior behavior: reverted escalates, repaired
+//      does not, and pre-threshold not-reproducible does not
+// =====================================================================
+async function testRepairableFaultOutcomesKeepOldEscalationBehavior() {
+  const name = "S17 runSelfRepairOnce keeps repairable outcome escalation behavior";
+  try {
+    async function runOutcome(outcome, suffix) {
+      const stateFile = `state-s17-${suffix}.json`;
+      const mem = makeMemFs(new Map());
+      let escalations = 0;
+      let attempts = 0;
+      const result = await runSelfRepairOnce({
+        scan: async () => ({ scannedSweeps: 3, faults: [repairableFault("gbrain-curator")] }),
+        attemptRepair: async () => { attempts += 1; return { outcome, reason: outcome === "reverted" ? "scoped-suite-red" : undefined }; },
+        escalate: async () => { escalations += 1; return { alerted: true }; },
+        now: () => 200_000_000 + suffix,
+        log: () => {},
+        readFile: mem.readFile,
+        writeFile: mem.writeFile,
+        appendFile: mem.appendFile,
+        stateFile,
+        evidenceLogFile: `ev-s17-${suffix}.jsonl`,
+      });
+      return { result, escalations, attempts };
+    }
+
+    const reverted = await runOutcome("reverted", 1);
+    assert.equal(reverted.attempts, 1);
+    assert.equal(reverted.result.outcomes[0].outcome, "reverted");
+    assert.equal(reverted.escalations, 1, "reverted still escalates");
+
+    const repaired = await runOutcome("repaired", 2);
+    assert.equal(repaired.attempts, 1);
+    assert.equal(repaired.result.outcomes[0].outcome, "repaired");
+    assert.equal(repaired.escalations, 0, "repaired still does not escalate");
+
+    const notReproducible = await runOutcome("not-reproducible", 3);
+    assert.equal(notReproducible.attempts, 1);
+    assert.equal(notReproducible.result.outcomes[0].outcome, "not-reproducible");
+    assert.equal(notReproducible.escalations, 0, "not-reproducible below threshold does not replace reverted escalation");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// S18: state writer failures and escalation sender throws do not escape or
+//      change the sweep outcome
+// =====================================================================
+async function testOnceStateWriterAndEscalationThrowCaught() {
+  const name = "S18 runSelfRepairOnce tolerates state writer and escalation sender throws";
+  try {
+    const fault = repairableFault("gbrain-curator");
+
+    const readOnlyState = JSON.stringify({
+      stuck: {
+        "gbrain-curator": {
+          count: NOT_REPRODUCIBLE_ESCALATE_AFTER - 1,
+          firstNotReproducibleMs: 1_000,
+        },
+      },
+    });
+    const writerThrowResult = await runSelfRepairOnce({
+      scan: async () => ({ scannedSweeps: 3, faults: [fault] }),
+      attemptRepair: async () => ({ outcome: "not-reproducible" }),
+      escalate: async () => ({ alerted: true }),
+      now: () => 300_000_000,
+      log: () => {},
+      readFile: async () => readOnlyState,
+      writeFile: async () => { throw new Error("state disk full"); },
+      appendFile: async () => {},
+      stateFile: "state-s18a.json",
+      evidenceLogFile: "ev-s18a.jsonl",
+    });
+    assert.equal(writerThrowResult.skipped, false, "writer-throw sweep still ran");
+    assert.equal(writerThrowResult.attemptsMade, 1);
+    assert.equal(writerThrowResult.outcomes[0].outcome, "not-reproducible");
+
+    const stateFile = "state-s18b.json";
+    const mem = makeMemFs(new Map([
+      [stateFile, readOnlyState],
+    ]));
+    const logs = [];
+    const senderThrowResult = await runSelfRepairOnce({
+      scan: async () => ({ scannedSweeps: 3, faults: [fault] }),
+      attemptRepair: async () => ({ outcome: "not-reproducible" }),
+      escalate: async () => { throw new Error("alert relay down"); },
+      now: () => 400_000_000,
+      log: (m) => logs.push(m),
+      readFile: mem.readFile,
+      writeFile: mem.writeFile,
+      appendFile: mem.appendFile,
+      stateFile,
+      evidenceLogFile: "ev-s18b.jsonl",
+    });
+    assert.equal(senderThrowResult.skipped, false, "sender-throw sweep still ran");
+    assert.equal(senderThrowResult.attemptsMade, 1);
+    assert.equal(senderThrowResult.outcomes[0].outcome, "not-reproducible");
+    assert.ok(logs.some((l) => /escalate threw for gbrain-curator/.test(l)), "sender throw logged");
+    const stateAfter = JSON.parse(mem.files.get(stateFile));
+    assert.equal(stateAfter.stuck["gbrain-curator"].count, NOT_REPRODUCIBLE_ESCALATE_AFTER);
+    assert.equal(Number.isFinite(stateAfter.stuck["gbrain-curator"].escalatedMs), false, "failed escalation is not stamped delivered");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// =====================================================================
+// S19: unhealable escalation message includes the attempt count and the reason
+//      rollback-based repair cannot help
+// =====================================================================
+async function testUnhealableEscalationMessageIncludesCountAndReason() {
+  const name = "S19 owner escalation message explains unhealable not-reproducible fault";
+  try {
+    const stateFile = "state-s19.json";
+    const mem = makeMemFs(new Map([
+      [stateFile, JSON.stringify({ escalations: {} })],
+    ]));
+    let message = "";
+    const result = await ownerEscalate({
+      name: "gbrain-curator",
+      kind: "crash",
+      stuckUnhealable: {
+        count: NOT_REPRODUCIBLE_ESCALATE_AFTER,
+        firstNotReproducibleMs: 123_000,
+        escalatedMs: 456_000,
+      },
+    }, [], {
+      now: () => 500_000_000,
+      readFile: mem.readFile,
+      writeFile: mem.writeFile,
+      stateFile,
+      postAlert: async (m) => { message = m; return { pid: 4242 }; },
+    });
+
+    assert.equal(result.alerted, true, "injected postAlert delivered");
+    assert.ok(message.includes(`${NOT_REPRODUCIBLE_ESCALATE_AFTER}x percobaan perbaikan`), "message includes attempt count");
+    assert.ok(message.includes("not-reproducible"), "message names the repeated outcome");
+    assert.ok(message.includes("suite regresi hijau"), "message explains the scoped suite is green");
+    assert.ok(message.includes("data hidup, bukan kode"), "message explains the live data/code distinction");
+    assert.ok(message.includes("rollback tidak akan pernah menyentuh akar masalah"), "message explains why rollback cannot repair it");
+    assert.ok(message.includes("berhenti mencoba step ini"), "message states auto-repair stops for this step");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
 async function main() {
   console.log("# ops-watcher self-repair regression tests");
   await testReadRecentSweeps();
@@ -521,6 +878,12 @@ async function main() {
   await testOnceEnvelopeBlockedNeverDispatched();
   await testOnceEscalateOnRevertedOnly();
   await testOnceAttemptRepairThrowCaught();
+  await testOnceNotReproducibleEscalatesExactlyOnce();
+  await testEscalatedStuckFaultBlocksBeforeCooldown();
+  await testRecoveredStepClearsStuckRecord();
+  await testRepairableFaultOutcomesKeepOldEscalationBehavior();
+  await testOnceStateWriterAndEscalationThrowCaught();
+  await testUnhealableEscalationMessageIncludesCountAndReason();
   console.log("");
   console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
   if (failed > 0) { for (const f of failures) console.log(`  FAILED: ${f}`); process.exit(1); }
