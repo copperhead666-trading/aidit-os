@@ -26,6 +26,7 @@
   "cockpit": {
     "public_base": "https://lenovo-black.tailc7b60e.ts.net",
     "local_base": "http://127.0.0.1:4200",
-    "why": "Tailscale Funnel hostname of THIS machine. Was 'asus-gray.tailc7b60e.ts.net' while the ASUS was the host; a stale value here makes --public screenshots and audits silently probe a machine this one cannot reach."
+    "why": "Tailscale hostname of THIS machine. Was asus-gray.tailc7b60e.ts.net while the ASUS was the host; a stale value here makes --public screenshots and audits silently probe a machine this one cannot reach. Reachability changed 2026-09-06 on the owner's instruction: Funnel was ON, which published the cockpit to the public internet behind nothing but a session cookie. It is now tailscale serve (tailnet only), matching the FounderOS benchmark rule that Tailscale is the only front door. The URL is unchanged; who can open it is not.",
+    "reachability": "tailnet-only"
   }
 }
