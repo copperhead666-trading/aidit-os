@@ -430,6 +430,65 @@ async function t21_failingGitCallYieldsUnknownNeverClean() {
   } catch (err) { bad(name, err); }
 }
 
+function t22_secretShapedLiteralsFalseAlarms() {
+  const name = "(22) git revisions and keyword substrings no longer false-alarm";
+  const sha = "ad9b8b3f2c1e4d5a6b7c8d9e0f1a2b3c4d5e6f70";
+  try {
+    const mustFlag = [
+      "+TELEGRAM_TOKEN=1234567890abcdefghijklmnopqrstuvwxyzABCDEF",
+      "+API_KEY=aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789",
+      "+  db_password: \"s3cr3ts3cr3ts3cr3ts3cr3ts3cr3t99\"",
+      "+const apiKey = \"pcp_abcdefghijklmnopqrstuvwxyz012345\";",
+      `+const SESSION_SECRET = "${sha}";`,
+    ];
+    for (const line of mustFlag) {
+      assert.equal(checkSecretShapedLiterals({ addedLines: [line] }).ok, false, `must FLAG: ${line}`);
+    }
+    const mustPass = [
+      `+const base = "${sha}";`,
+      "+  const short = \"8abe558\";",
+      `+expect(commit).toBe("${sha}");`,
+      "+const monkey = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\";",
+      "+keystone: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "+// TELEGRAM_TOKEN=1234567890abcdefghijklmnopqrstuvwxyzABCDEF",
+      "+The key master said hello.",
+    ];
+    for (const line of mustPass) {
+      assert.equal(checkSecretShapedLiterals({ addedLines: [line] }).ok, true, `must pass: ${line}`);
+    }
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+function t23_secretNameSegmentBoundaries() {
+  const name = "(23) the keyword must be an identifier segment, not a substring";
+  try {
+    const matches = [
+      "+const TELEGRAM_TOKEN = \"deadbeef0123456789abcdef01234567\";",
+      "+const apiKey = \"deadbeef0123456789abcdef01234567\";",
+      "+const db_password = \"deadbeef0123456789abcdef01234567\";",
+      "+const SUPABASE_SERVICE_KEY = \"deadbeef0123456789abcdef01234567\";",
+      "+const api-token = \"deadbeef0123456789abcdef01234567\";",
+      "+const token = \"deadbeef0123456789abcdef01234567\";",
+      "+const secretKey = \"deadbeef0123456789abcdef01234567\";",
+      "+const passwordless_token = \"deadbeef0123456789abcdef01234567\";",
+    ];
+    for (const line of matches) {
+      assert.equal(checkSecretShapedLiterals({ addedLines: [line] }).ok, false, `segment matches: ${line}`);
+    }
+    const nonMatches = [
+      "+const monkey = \"deadbeef0123456789abcdef01234567\";",
+      "+const keystone = \"deadbeef0123456789abcdef01234567\";",
+      "+const tokenisation = \"deadbeef0123456789abcdef01234567\";",
+      "+const passwordless = \"deadbeef0123456789abcdef01234567\";",
+    ];
+    for (const line of nonMatches) {
+      assert.equal(checkSecretShapedLiterals({ addedLines: [line] }).ok, true, `substring does not match: ${line}`);
+    }
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
 async function main() {
   console.log("# merge-steward regression tests");
   await t1_idleLaneSkipsSuite();
@@ -453,6 +512,8 @@ async function main() {
   await t19_fileListUsesThreeDotMergeBaseDiff();
   await t20_everyGitCallKeepsSafeDirectoryAndWindowsHide();
   await t21_failingGitCallYieldsUnknownNeverClean();
+  t22_secretShapedLiteralsFalseAlarms();
+  t23_secretNameSegmentBoundaries();
   console.log("");
   console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
   if (failed > 0) {
