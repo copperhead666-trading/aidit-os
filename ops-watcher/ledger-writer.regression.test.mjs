@@ -454,12 +454,12 @@ async function t17_directiveResultCommentWritesCompletionEventOnce() {
   const first = await runLedgerWriterOnce(h.deps);
   const second = await runLedgerWriterOnce(h.deps);
   const appended = h.appendedBatches[0] || [];
-  const completionEvents = appended.filter((ev) => ev.kind === KINDS.DIRECTIVE_COMPLETED);
+  const completionEvents = appended.filter((ev) => ev.kind === KINDS.EXECUTION_DONE);
 
   assert.equal(first.ok, true);
   assert.equal(first.appended, 2, "directive.created plus one completion event");
   assert.equal(first.unclassified, 2, "empty and null bodies are skipped without throwing");
-  assert.equal(completionEvents.length, 1, "exactly one directive.completed event is emitted");
+  assert.equal(completionEvents.length, 1, "exactly one execution.done event is emitted");
   assert.equal(completionEvents[0].ts, "2026-09-06T12:00:00.000Z");
   assert.equal(completionEvents[0].data.issueId, "iss-1");
   assert.equal(completionEvents[0].data.identifier, "KOL-1");

@@ -32,7 +32,6 @@ export const KINDS = Object.freeze({
   DIRECTIVE_PLAN_REFUSED: "directive.plan_refused",
   DIRECTIVE_PLAN_PARSE_FAILED: "directive.plan_parse_failed",
   DIRECTIVE_UNEXECUTABLE: "directive.unexecutable",
-  DIRECTIVE_COMPLETED: "directive.completed",
 
   // ── what the owner said ───────────────────────────────────────────
   DECISION_APPROVED: "decision.approved",
