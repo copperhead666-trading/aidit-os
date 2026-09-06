@@ -72,6 +72,12 @@ export const ALLOWED_SCRIPTS = [
   "ops-watcher/graphify-analyst.mjs",
   "ops-watcher/self-repair.mjs",
   "ops-watcher/directive-runner.mjs",
+  // SOEKARNO was the only lane missing from this list, while the registry has
+  // called it an active lane since 2026-09-01 — so headless AHMAD could not
+  // reach it at all, and the owner was paying for a lane nothing could call.
+  // Its tool surface is ["Read"] (soekarno-dispatch.mjs:79), so admitting it
+  // widens what AHMAD can ASK for, not what it can change.
+  "ops-watcher/soekarno-dispatch.mjs",
 ];
 const ALLOWED_FLAGS = new Set(["--once"]);
 const RUN_TIMEOUT_MS = 9 * 60 * 1000; // under heartbeat.mjs's 10-min per-step cap
