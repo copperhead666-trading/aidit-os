@@ -192,6 +192,9 @@ if (!PAPERCLIP_CLI_ENTRY) {
 // downstream services (Paperclip, Telegram long-poll) on a crash burst.
 
 module.exports = {
+  // PM2 v7.0.4 here reads camelCase `windowsHide` (schema + ForkMode
+  // pm2_env.windowsHide). SYSTEM-started daemon children cannot show windows,
+  // but interactive `pm2 restart` children can inherit the owner's desktop.
   apps: [
     // 1. paperclip — canonical Paperclip server for this workspace
     //    (kolega corp, company id a7011f31-8891-4581-b8fb-bbda8ac6a890).
@@ -203,6 +206,7 @@ module.exports = {
       name: "paperclip",
       script: PAPERCLIP_CLI_ENTRY,
       interpreter: NODE_SYSTEM,
+      windowsHide: true,
       // --data-dir DERIVED from ROOT. A stale literal here is worse than a crash:
       // paperclipai would happily create a brand-new empty instance at the old
       // path (or fail) instead of opening the board with 78 issues.
@@ -239,6 +243,7 @@ module.exports = {
       name: "telegram-listener",
       script: "ops-watcher/pm2-launch-telegram-listener.cjs",
       interpreter: NODE_PINNED,
+      windowsHide: true,
       cwd: ROOT,
       autorestart: true,
       max_restarts: 10,
@@ -263,6 +268,7 @@ module.exports = {
       name: "heartbeat",
       script: "ops-watcher/pm2-launch-heartbeat.cjs",
       interpreter: NODE_PINNED,
+      windowsHide: true,
       cwd: ROOT,
       autorestart: true,
       max_restarts: 10,
@@ -316,6 +322,7 @@ module.exports = {
       // cockpit comes up healthy on a port nothing is pointed at.
       args: "start -p 4200",
       interpreter: NODE_PINNED,
+      windowsHide: true,
       // cockpit/ is its own project root - repo-root rules do not apply there,
       // and Next resolves its config and .next build output from cwd.
       cwd: path.join(ROOT, "cockpit"),

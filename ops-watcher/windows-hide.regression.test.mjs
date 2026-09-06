@@ -19,11 +19,14 @@
 
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   auditRepo,
+  auditPm2Ecosystem,
   offenders,
+  pm2Offenders,
   findSpawnCallSites,
   spawnAliases,
   blankNonCode,
@@ -157,6 +160,72 @@ await t("T8 every allowlist entry names a call site that still exists", async ()
     assert.ok(String(ALLOWED_WITHOUT_WINDOWS_HIDE[key]).trim().length > 0, `${key} is exempted without a reason`);
   }
   assert.ok(REPO_ROOT);
+});
+
+async function withTempEcosystem(source, fn) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "windows-hide-"));
+  const file = path.join(dir, "ecosystem.config.cjs");
+  try {
+    if (source !== null) await fs.writeFile(file, source, "utf8");
+    await fn(file);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}
+
+await t("T9 PM2 ecosystem app without windowsHide is reported by app name", async () => {
+  await withTempEcosystem(`module.exports = {
+    apps: [
+      { name: "paperclip", script: "paperclip.js", windowsHide: true },
+      { name: "visible-terminal", script: "visible.js" }
+    ]
+  };`, async (ecosystemFile) => {
+    const result = await auditPm2Ecosystem({ ecosystemFile });
+    const bad = pm2Offenders(result);
+    assert.equal(result.apps.length, 2);
+    assert.equal(bad.length, 1);
+    assert.equal(bad[0].name, "visible-terminal");
+  });
+});
+
+await t("T10 PM2 ecosystem apps with windowsHide have zero findings", async () => {
+  await withTempEcosystem(`module.exports = {
+    apps: [
+      { name: "paperclip", script: "paperclip.js", windowsHide: true },
+      { name: "heartbeat", script: "heartbeat.js", windowsHide: true }
+    ]
+  };`, async (ecosystemFile) => {
+    const result = await auditPm2Ecosystem({ ecosystemFile });
+    assert.equal(result.apps.length, 2);
+    assert.equal(pm2Offenders(result).length, 0);
+  });
+});
+
+await t("T11 PM2 ecosystem missing or malformed reports the reason without throwing", async () => {
+  await withTempEcosystem(null, async (ecosystemFile) => {
+    const missing = await auditPm2Ecosystem({ ecosystemFile });
+    assert.equal(missing.apps.length, 0);
+    assert.equal(missing.errors.length, 1);
+    assert.match(missing.errors[0].reason, /not found|ENOENT/i);
+    assert.equal(pm2Offenders(missing).length, 1);
+  });
+
+  await withTempEcosystem(`module.exports = { apps: [`, async (ecosystemFile) => {
+    const malformed = await auditPm2Ecosystem({ ecosystemFile });
+    assert.equal(malformed.apps.length, 0);
+    assert.equal(malformed.errors.length, 1);
+    assert.match(malformed.errors[0].reason, /parse|Unexpected|malformed|SyntaxError/i);
+    assert.equal(pm2Offenders(malformed).length, 1);
+  });
+});
+
+await t("T12 repository PM2 ecosystem apps pass windowsHide", async () => {
+  const result = await auditPm2Ecosystem();
+  const bad = pm2Offenders(result);
+  const report = bad.map((s) => `  ${s.name}: ${s.reason}`).join("\n");
+  assert.equal(result.errors.length, 0, result.errors.map((e) => e.reason).join("\n"));
+  assert.equal(result.apps.length, 4, `expected the repository PM2 ecosystem to define 4 apps, found ${result.apps.length}`);
+  assert.equal(bad.length, 0, `these PM2 apps can inherit an interactive desktop without windowsHide:\n${report}`);
 });
 
 console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);

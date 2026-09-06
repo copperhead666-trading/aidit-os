@@ -18,11 +18,13 @@
 // decaying quietly the way the argv lesson did.
 
 import { promises as fsp } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(__dirname, "..");
+const require = createRequire(import.meta.url);
 
 // The child_process entry points. Any of these, under any local alias, starts a
 // process — and on Windows a process started without windowsHide can flash a
@@ -35,6 +37,7 @@ export const SPAWN_FUNCTIONS = Object.freeze([
 // sibling worktrees are not first-party source.
 export const SCAN_DIRS = Object.freeze(["ops-watcher", "scripts", "hatta", "cockpit", "agents", ".claude"]);
 const SCAN_EXTENSIONS = Object.freeze([".mjs", ".cjs", ".js"]);
+export const PM2_ECOSYSTEM_RELATIVE = "ops-watcher/ecosystem.config.cjs";
 const SKIP_DIR_NAMES = new Set([
   "node_modules", ".git", ".paperclip", "worktrees", "graphify-out", "e2e-soak",
   // Build output is generated, not written here. Auditing it would report
@@ -243,14 +246,103 @@ export function offenders(sites, allowed = ALLOWED_WITHOUT_WINDOWS_HIDE) {
   return sites.filter((s) => !s.hasWindowsHide && !((s.file + ":" + s.callee) in allowed));
 }
 
+// PM2 v7.0.4 on this machine validates and stores the camelCase schema field
+// `windowsHide`, and ForkMode reads pm2_env.windowsHide before spawning. The
+// snake_case ecosystem name would be a guess here, so the audit requires the
+// field proven by the installed PM2 source.
+function pm2AppRecord(app, index) {
+  const name = app && typeof app.name === "string" && app.name.trim()
+    ? app.name
+    : "<unnamed #" + (index + 1) + ">";
+  const hasWindowsHide = !!(app && typeof app === "object" && app.windowsHide === true);
+  return {
+    name,
+    hasWindowsHide,
+    reason: hasWindowsHide
+      ? ""
+      : "missing windowsHide: true; installed PM2 v7.0.4 reads pm2_env.windowsHide",
+  };
+}
+
+/**
+ * PM2 app declarations in the ecosystem file, with parse/read errors captured
+ * as findings instead of thrown. A missing or malformed ecosystem config must
+ * never make the call-site audit silently pass.
+ */
+export async function auditPm2Ecosystem({
+  repoRoot = REPO_ROOT,
+  ecosystemFile = path.join(repoRoot, PM2_ECOSYSTEM_RELATIVE),
+} = {}) {
+  const file = path.resolve(ecosystemFile);
+  const displayFile = path.relative(repoRoot, file).replace(/\\/g, "/");
+
+  try {
+    await fsp.access(file);
+  } catch (e) {
+    return {
+      file: displayFile,
+      apps: [],
+      errors: [{ file: displayFile, reason: "ecosystem config not found: " + (e.code || e.message) }],
+    };
+  }
+
+  let config;
+  try {
+    const resolved = require.resolve(file);
+    delete require.cache[resolved];
+    config = require(resolved);
+  } catch (e) {
+    return {
+      file: displayFile,
+      apps: [],
+      errors: [{ file: displayFile, reason: "ecosystem config could not be parsed: " + (e.message || String(e)) }],
+    };
+  }
+
+  if (!config || !Array.isArray(config.apps)) {
+    return {
+      file: displayFile,
+      apps: [],
+      errors: [{ file: displayFile, reason: "ecosystem config does not export an apps array" }],
+    };
+  }
+
+  return {
+    file: displayFile,
+    apps: config.apps.map(pm2AppRecord),
+    errors: [],
+  };
+}
+
+export function pm2Offenders(result) {
+  return [
+    ...(result.errors || []).map((e) => ({
+      name: result.file || e.file || PM2_ECOSYSTEM_RELATIVE,
+      hasWindowsHide: false,
+      reason: e.reason,
+    })),
+    ...(result.apps || []).filter((app) => !app.hasWindowsHide),
+  ];
+}
+
 if (path.resolve(process.argv[1] || "") === fileURLToPath(import.meta.url)) {
   const sites = await auditRepo();
   const bad = offenders(sites);
+  const pm2 = await auditPm2Ecosystem();
+  const pm2Bad = pm2Offenders(pm2);
   for (const s of sites) {
     const mark = s.hasWindowsHide ? "ok  " : "MISS";
     const suffix = s.via && s.via !== "inline" ? " [via " + s.via + "]" : "";
     console.log(mark + " " + s.file + ":" + s.line + " " + s.callee + "(" + s.snippet + ")" + suffix);
   }
   console.log("\n" + sites.length + " call sites, " + bad.length + " without windowsHide");
-  process.exit(bad.length ? 1 : 0);
+  for (const app of pm2.apps) {
+    const mark = app.hasWindowsHide ? "ok  " : "MISS";
+    console.log(mark + " PM2 app " + app.name + (app.reason ? " (" + app.reason + ")" : ""));
+  }
+  for (const e of pm2.errors) {
+    console.log("MISS PM2 ecosystem " + pm2.file + " (" + e.reason + ")");
+  }
+  console.log(pm2.apps.length + " PM2 apps, " + pm2Bad.length + " without windowsHide");
+  process.exit(bad.length || pm2Bad.length ? 1 : 0);
 }
