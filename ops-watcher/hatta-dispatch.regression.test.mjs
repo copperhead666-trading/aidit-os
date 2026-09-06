@@ -272,8 +272,15 @@ await t("a workspace with no harness falls back LOUDLY, never silently", () => {
 // leftover fixture from the harness security suite. A timeout would have
 // recovered that fixture and reported it as this run's own evidence.
 await t("the evidence file read is the one in the workspace that ran", () => {
-  const inWorktree = harnessEvidenceFileFor("D:/AI/worktrees/lane-hatta").split(path.sep).join("/");
-  assert.equal(inWorktree, "D:/AI/worktrees/lane-hatta/hatta/.harness-evidence.json");
+  // DERIVED from REPO_ROOT, never hardcoded. The first version of this test
+  // wrote "D:/AI/worktrees/lane-hatta" as its example worktree, which is a real
+  // worktree on this machine -- so when the suite ran INSIDE that worktree,
+  // REPO_ROOT was that same path and "these two must differ" failed against
+  // itself. merge-steward runs the suite inside lane worktrees, so the false
+  // failure would have surfaced there on every sweep.
+  const worktree = path.join(REPO_ROOT, "..", "worktrees", "lane-example");
+  const inWorktree = harnessEvidenceFileFor(worktree).split(path.sep).join("/");
+  assert.ok(inWorktree.endsWith("/worktrees/lane-example/hatta/.harness-evidence.json"), inWorktree);
 
   const shared = harnessEvidenceFileFor(REPO_ROOT).split(path.sep).join("/");
   assert.notEqual(inWorktree, shared, "an isolated run must not read the shared tree's evidence");
