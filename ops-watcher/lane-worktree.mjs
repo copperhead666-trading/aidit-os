@@ -111,7 +111,11 @@ export function ensureLaneWorktree(lane, deps = {}) {
     target = worktreePathFor(lane, { root, sourceRepo: deps.sourceRepo });
     branch = branchNameFor(lane);
   } catch (err) {
-    return { path: sourceRepo, branch: null, created: false, isolated: false, dirty: null, reason: `bad lane name: ${err.message}` };
+    const message = err && err.message ? err.message : String(err);
+    const isSourceRepoError = message.includes("sourceRepo directory name is required");
+    const reason = isSourceRepoError ? `bad sourceRepo: ${message}` : `bad lane name: ${message}`;
+    const fallbackPath = isSourceRepoError ? path.resolve(deps.repoRoot || REPO_ROOT) : sourceRepo;
+    return { path: fallbackPath, branch: null, created: false, isolated: false, dirty: null, reason };
   }
 
   try {

@@ -270,6 +270,15 @@ async function t6_neverThrows() {
     const r2 = ensureLaneWorktree("", { _fs: fakeFs(), _exec: () => "" });
     assert.equal(r2.isolated, false);
     assert.match(r2.reason, /bad lane name/);
+    assert.match(r2.reason, /lane name/);
+
+    // An invalid sourceRepo is also reported separately, not as a lane-name problem.
+    const r3 = ensureLaneWorktree("corleone", { sourceRepo: "///", _fs: fakeFs(), _exec: () => "" });
+    assert.equal(r3.isolated, false);
+    assert.equal(r3.path, path.resolve(REPO_ROOT), "invalid sourceRepo falls back to the source repo");
+    assert.ok(r3.reason);
+    assert.match(r3.reason, /sourceRepo/);
+    assert.doesNotMatch(r3.reason, /lane name/);
     ok(name);
   } catch (err) { bad(name, err); }
 }
