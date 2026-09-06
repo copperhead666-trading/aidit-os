@@ -202,7 +202,10 @@ export function checkSecretShapedLiterals(input) {
     // Hex is a subset of [A-Za-z0-9+/=], so a hex run is consumed by the
     // first alternative and never reaches the second.
     const longValue = /[A-Za-z0-9+/=]{32,}|[a-fA-F0-9]{32,}/;
-    const longRuns = /[A-Za-z0-9+/=]{32,}/g;
+    // Rule 3 scans unquoted runs: "/" is excluded so the segments of a file
+    // path or URL cannot merge into a fake 32+ char literal
+    // ("watcher/some/.../names" is a path, not a credential).
+    const longRuns = /[A-Za-z0-9+=]{32,}/g;
     // A git object id is exactly 40 (sha-1) or 64 (sha-256) hex chars, or
     // an abbreviation of 7 to 12. Length-anchored, not "roughly that long":
     // a 41- or 48-char run is not a revision.
