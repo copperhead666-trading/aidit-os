@@ -74,17 +74,70 @@ function git(args, { cwd = REPO_ROOT, _exec = execFileSync } = {}) {
 }
 
 /**
+ * Runtime-state paths: tracked files that a RUNNING PROCESS appends to, not
+ * work a lane did. Their presence in `git status` must not count as dirt:
+ * `state/ledger.jsonl` is tracked in git AND appended to by ops-watcher/ledger.mjs
+ * ("the single writer for the FounderOS event ledger") at runtime, so every
+ * lane worktree carries it permanently dirty — and a permanently dirty tree
+ * that also falls behind main gets refused by the staleness guard on dirt
+ * that is not work and never was. That is how the guard gets switched off.
+ *
+ * EXPLICIT PATHS ONLY, never a pattern like "anything under state/": a
+ * pattern would silently excuse a future file under state/ that IS work.
+ * Every entry here must be a file shown to be written by a running process
+ * rather than by a lane. Untracked files never match this list: a lane that
+ * wrote a new file has done work, whatever the file is called.
+ */
+export const RUNTIME_STATE_PATHS = ["state/ledger.jsonl"];
+
+function porcelainEntryPath(line) {
+  // The shared git() helper trims the WHOLE output, which strips the leading
+  // space of the first porcelain line (" M path" -> "M path"), so positions
+  // are not reliable. Porcelain is always XY<space>PATH; capture PATH with a
+  // regex instead of fixed offsets.
+  const m = /^.. (.*)$/.exec(line);
+  let p = m ? m[1] : line;
+  // Renames look like "R  old -> new"; the entry names the NEW path.
+  const arrow = p.indexOf(" -> ");
+  if (arrow !== -1) p = p.slice(arrow + 4);
+  return p.replace(/^"|"$/g, "").replace(/\\/g, "/");
+}
+
+function isRuntimeStatePath(relPath) {
+  return RUNTIME_STATE_PATHS.includes(relPath);
+}
+
+/**
  * How many uncommitted entries a worktree is carrying, as `git status
- * --porcelain` counts them. Returns null — not 0 — when git cannot answer, so
+ * --porcelain` counts them, SPLIT into work and runtime state. Returns
+ * { work: null, runtimeState: null } — not zeros — when git cannot answer, so
  * "no dirt" and "could not look" stay different facts.
+ *
+ * `work` is the count of real uncommitted work: tracked modifications to
+ * anything, and ALL untracked files (a new file is work whatever it is
+ * called). `runtimeState` is how many of the entries were tracked
+ * modifications to a RUNTIME_STATE_PATHS entry only — dirt that is not work.
+ * A tree whose only entries are runtime state reports work 0 and is treated
+ * as clean, but the reason string says so rather than reporting zero silently.
  */
 export function dirtyEntryCount(cwd, { _exec = execFileSync } = {}) {
   try {
     const out = git(["status", "--porcelain"], { cwd, _exec });
-    if (!out) return 0;
-    return out.split(/\r?\n/).filter((line) => line.trim()).length;
+    if (!out) return { work: 0, runtimeState: 0 };
+    let work = 0;
+    let runtimeState = 0;
+    for (const line of out.split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      const pathPart = porcelainEntryPath(line);
+      if (!line.startsWith("??") && isRuntimeStatePath(pathPart)) {
+        runtimeState++;
+      } else {
+        work++;
+      }
+    }
+    return { work, runtimeState };
   } catch {
-    return null;
+    return { work: null, runtimeState: null };
   }
 }
 
@@ -134,8 +187,10 @@ export function behindCount(cwd, { _exec = execFileSync } = {}) {
 /**
  * The worktree for `lane`, creating it if absent. Returns
  * { path, branch, created, dirty, head, checkedOutBranch, behind, reason }.
- * `dirty` is the number of uncommitted entries in a REUSED worktree (0 when
- * clean, null when git could not be asked), and 0 for one just created.
+ * `dirty` is the number of uncommitted WORK entries in a REUSED worktree —
+ * runtime-state-only changes (RUNTIME_STATE_PATHS, e.g. state/ledger.jsonl)
+ * do not count (0 when clean, null when git could not be asked), and 0 for
+ * one just created.
  * `head` is the commit the tree is actually on, `checkedOutBranch` what it is
  * really checked out on (which may differ from `branch`), and `behind` how
  * many commits origin/main is ahead of it (null when it cannot be measured).
@@ -176,7 +231,9 @@ export function ensureLaneWorktree(lane, deps = {}) {
       // work a lane already did, and deleting them to make a status line tidy is
       // how real work disappears. The dirt is REPORTED instead, so the caller
       // decides, and so it is visible in the log rather than inherited silently.
-      const dirty = dirtyEntryCount(target, { _exec });
+      const dirt = dirtyEntryCount(target, { _exec });
+      const dirty = dirt.work;
+      const runtimeStateOnly = dirt.runtimeState;
       const head = headCommit(target, { _exec });
       const checkedOutBranch = checkedOutBranchName(target, { _exec });
       const behind = behindCount(target, { _exec });
@@ -199,6 +256,13 @@ export function ensureLaneWorktree(lane, deps = {}) {
         notes.push(`checked out on "${checkedOutBranch}", not "${branch}"`);
       }
       const noteSuffix = notes.length ? ` (${notes.join("; ")})` : "";
+      // Dirt that is only runtime state (e.g. state/ledger.jsonl appended by a
+      // running process) is not work: the tree counts as clean, but the reason
+      // says so out loud so "clean" and "dirty only in runtime state" stay
+      // distinguishable in the log.
+      const runtimeSuffix = runtimeStateOnly > 0
+        ? `; runtime-state change${runtimeStateOnly === 1 ? "" : "s"} present (${RUNTIME_STATE_PATHS.join(", ")}), not counted as work`
+        : "";
 
       if (dirty === 0 && stale) {
         try {
@@ -216,7 +280,7 @@ export function ensureLaneWorktree(lane, deps = {}) {
             head,
             checkedOutBranch,
             behind,
-            reason: `existing worktree reused; ${behind} commits behind origin/main but not fast-forwardable, left as-is${noteSuffix}`,
+            reason: `existing worktree reused; ${behind} commits behind origin/main but not fast-forwardable, left as-is${noteSuffix}${runtimeSuffix}`,
           };
         }
         return {
@@ -228,7 +292,7 @@ export function ensureLaneWorktree(lane, deps = {}) {
           head,
           checkedOutBranch,
           behind,
-          reason: `existing worktree reused; fast-forwarded ${behind} commit${behind === 1 ? "" : "s"} to origin/main${noteSuffix}`,
+          reason: `existing worktree reused; fast-forwarded ${behind} commit${behind === 1 ? "" : "s"} to origin/main${noteSuffix}${runtimeSuffix}`,
         };
       }
 
@@ -261,7 +325,7 @@ export function ensureLaneWorktree(lane, deps = {}) {
         behind,
         reason: dirty > 0
           ? `existing worktree reused, and it is NOT clean: ${dirty} uncommitted entr${dirty === 1 ? "y" : "ies"} left by an earlier run${noteSuffix}`
-          : `existing worktree reused${noteSuffix}`,
+          : `existing worktree reused${runtimeSuffix}${noteSuffix}`,
       };
     }
     _fs.mkdirSync(root, { recursive: true });
