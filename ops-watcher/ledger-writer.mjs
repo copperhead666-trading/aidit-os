@@ -354,13 +354,13 @@ function eventsAlreadyPresent(events) {
 }
 
 function normalizeListResult(listResult) {
-  if (Array.isArray(listResult)) return { issues: listResult, errors: [] };
-  if (Array.isArray(listResult?.issues)) return { issues: listResult.issues, errors: [] };
-  if (Array.isArray(listResult?.body)) return { issues: listResult.body, errors: [] };
   if (listResult?.networkError) {
     return { issues: [], errors: [`issues list network error: ${listResult.networkErrorMessage || "unknown"}`] };
   }
   if (listResult?.authRequired) return { issues: [], errors: ["issues list auth required"] };
+  if (Array.isArray(listResult)) return { issues: listResult, errors: [] };
+  if (Array.isArray(listResult?.issues)) return { issues: listResult.issues, errors: [] };
+  if (Array.isArray(listResult?.body)) return { issues: listResult.body, errors: [] };
   return { issues: [], errors: ["issues list returned no issues array"] };
 }
 
