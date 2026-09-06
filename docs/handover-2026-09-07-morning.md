@@ -444,3 +444,53 @@ perbedaan yang malam ini dibuat: eskalasi palsu di KOL-81 dan KOL-94 dicabut
 setelah sebabnya diperbaiki, bukan dijawab.
 
 Reconcile hijau pada ketiga pemeriksaannya. Suite 86/86 pada setiap merge.
+
+---
+
+## Ditemukan SETELAH laporan di atas ditulis, dan ini penting
+
+Pukul 19:24 CORLEONE berjalan sendiri dan monitor mencatat `LANE OK`.
+Worktree-nya saat itu 40 commit di belakang main dan kotor. Enam menit kemudian
+saya bertanya kepada penjaga yang digabungkan malam ini, dan ia menjawab persis
+benar:
+
+```
+isolated: false
+dirty: 2   behind: 40
+reason: existing worktree is dirty (2 uncommitted entries) and stale (40 commits
+        behind origin/main); refusing to run a lane against old code
+        (checked out on "lane/hands", not "lane/corleone")
+```
+
+Penjaganya bicara. **Tidak ada yang mendengar.** Setiap dispatcher menuliskan
+`isolated: false` ke stderr lalu jalan terus:
+
+```js
+// corleone-dispatch.mjs:331
+if (!workspace.isolated) process.stderr.write(`corleone-dispatch: ${workspace.reason}\n`);
+```
+
+Dan itu benar menurut kontrak LAMA — komentar di atas baris itu menjelaskannya:
+`isolated:false` dulu hanya berarti "saya jatuh ke root bersama", keadaan yang
+menurun tapi tetap bisa dipakai, dan menolak di situ akan menghentikan pekerjaan
+tanpa keuntungan keamanan apa pun. Flag yang sama sekarang membawa arti kedua
+yang tidak sejalan, dan pemanggilnya hanya menerapkan yang lama.
+
+**Ini cacat di packet yang saya tulis, bukan di pekerjaan lane mana pun.** Saya
+menentukan bentuk kembaliannya dan tidak pernah menentukan bahwa pemanggil wajib
+mematuhinya. Penolakan yang tidak dipatuhi siapa pun bukan penolakan; ia baris
+log, dan seluruh malam ini justru tentang perbedaan itu.
+
+**Ditangani malam ini, tanpa kode:** ketiga worktree lane yang hidup dibersihkan
+dan disinkronkan dengan tangan. Ketiganya sekarang `isolated=true dirty=0
+behind=0`, jadi tidak ada yang berjalan di kode basi sementara ini.
+
+**Perbaikannya:** `docs/packets/PACKET-HONOUR-THE-REFUSAL.md`, belum dikirim.
+SJAHRIR kehabisan kuota kimi lima jam saat packet ini ditulis, dan packet ini
+menyentuh lima berkas — di luar ukuran yang terbukti sanggup didaratkan HATTA
+malam ini. Ia sengaja ditinggalkan untuk dikirim pagi, bukan dipaksakan ke lane
+yang sudah terukur akan gagal.
+
+Satu hal yang packet itu larang keras: tidak ada flag untuk memaksa jalan
+menembus penolakan. Kalau ada, ia akan dipakai, dan penjaganya kembali jadi
+hiasan.
