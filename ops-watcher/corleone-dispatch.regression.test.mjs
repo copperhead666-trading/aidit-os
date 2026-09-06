@@ -380,6 +380,42 @@ async function t21_sourceResolverFailureStillSpawnsInAiditWorktree() {
   ok("T21: source resolver failure falls back to the Aidit OS worktree and still spawns");
 }
 
+async function t22_worktreeRefusalDoesNotSpawnAndLogsFailure() {
+  const reason = "existing worktree is dirty (2 uncommitted entries) and stale (13 commits behind origin/main); refusing to run a lane against old code";
+  const deps = makeDeps({ status: 0, stdout: "must not run", stderr: "" }, {
+    ensureLaneWorktree: (lane, options = {}) => {
+      deps.worktrees.push({ lane, options });
+      return { path: "D:/tmp/lane-corleone", isolated: true, refused: true, dirty: 2, reason };
+    },
+  });
+  const result = await mod.dispatchCorleone("refused worktree", deps);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.exitCode, 1);
+  assert.equal(deps.calls.length, 0, "Codex is never spawned for a refused worktree");
+  assert.equal(deps.outcomes[0].outcome.stderr, reason);
+  assert.equal(deps.usage[0].ok, false);
+  assert.equal(deps.usage[0].exitCode, 1);
+  assert.equal(deps.usage[0].stderr, reason);
+  assert.deepEqual(deps.usage[0].extra, { refused: true, reason });
+  ok("T22: refused worktrees are recorded as failures and do not spawn Codex");
+}
+
+async function t23_nonIsolatedFallbackStillSpawns() {
+  const deps = makeDeps({ status: 0, stdout: "", stderr: "" }, {
+    ensureLaneWorktree: (lane, options = {}) => {
+      deps.worktrees.push({ lane, options });
+      return { path: "D:/repo", isolated: false, dirty: null, reason: "worktree unavailable, falling back to the source repo" };
+    },
+  });
+  const result = await mod.dispatchCorleone("fallback worktree", deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(deps.calls.length, 1, "Codex still spawns for a non-refused fallback");
+  assert.equal(deps.calls[0].options.cwd, "D:/repo");
+  ok("T23: non-isolated fallback remains usable");
+}
+
 async function main() {
   console.log("# corleone-dispatch regression tests");
   const tests = [
@@ -388,6 +424,8 @@ async function main() {
     t19_venturePromptCutsWorktreeFromSourceRepo,
     t20_plainPromptKeepsWorktreeOptionsWithoutSourceRepoKey,
     t21_sourceResolverFailureStillSpawnsInAiditWorktree,
+    t22_worktreeRefusalDoesNotSpawnAndLogsFailure,
+    t23_nonIsolatedFallbackStillSpawns,
     t16_agentMessageItemIsTheAnswer,
     t1_buildsNodeBackedInvocationForWindowsShim,
     t2_buildsDirectCodexInvocationWithoutShim,

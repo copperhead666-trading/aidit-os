@@ -181,6 +181,25 @@ export async function dispatchSjahrir(prompt, deps = {}) {
     else if (source.ventureId) process.stderr.write(`sjahrir-dispatch: ${source.reason}; continuing in Aidit OS\n`);
     if (!workspace.isolated) process.stderr.write(`sjahrir-dispatch: ${workspace.reason}
 `);
+    if (workspace.refused === true) {
+      const reason = workspace.reason || "lane worktree refused";
+      _log(`sjahrir-dispatch: ${reason}`);
+      await _recordLaneOutcome("sjahrir", { ok: false, stdout: "", stderr: reason });
+      await _logLaneUsage({
+        lane: "sjahrir",
+        runId,
+        promptLength: prompt.length,
+        ok: false,
+        exitCode: 1,
+        durationMs: 0,
+        turns: null,
+        stdout: "",
+        stderr: reason,
+        cli: null,
+        extra: { refused: true, reason },
+      });
+      return { ok: false, refused: true, reason, stdout: "", stderr: reason, exitCode: 1, runId };
+    }
     // Isolation is not the only thing worth saying out loud. A reused worktree
     // may still hold an earlier run's files, and this lane's diff would then
     // contain work nobody asked it to do. Nothing is cleaned here: those files

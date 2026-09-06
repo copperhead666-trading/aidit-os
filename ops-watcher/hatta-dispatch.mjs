@@ -236,6 +236,23 @@ export async function dispatchHatta(prompt, deps = {}) {
   if (source.sourceRepo) _stderr(`hatta-dispatch: ${source.reason}; worktree ${workspace.path}\n`);
   else if (source.ventureId) _stderr(`hatta-dispatch: ${source.reason}; continuing in Aidit OS\n`);
   if (!workspace.isolated) _stderr(`hatta-dispatch: ${workspace.reason}\n`);
+  if (workspace.refused === true) {
+    const reason = workspace.reason || "lane worktree refused";
+    _stderr(`hatta-dispatch: ${reason}\n`);
+    await _recordLaneOutcome("hatta", { ok: false, stdout: "", stderr: reason });
+    await _logLaneUsage({
+      lane: "hatta",
+      runId,
+      promptLength: prompt.length,
+      ok: false,
+      exitCode: 1,
+      durationMs: 0,
+      stdout: "",
+      stderr: reason,
+      extra: { refused: true, reason },
+    });
+    return { ok: false, refused: true, reason, stdout: "", stderr: reason, exitCode: 1, runId };
+  }
   // Isolation is not the only thing worth saying out loud. A reused worktree
   // may still hold an earlier run's files, and this lane's diff would then
   // contain work nobody asked it to do. Nothing is cleaned here: those files

@@ -375,7 +375,42 @@ await t("H21 guard skip returns exitCode 3 and does not spawn", async () => {
   assert.deepEqual(deps.usage[0].extra, { skipped: true, reason: "cooldown" });
 });
 
-await t("H22 flash dispatch derives its model from MODEL_TIERS.light, no own literal", async () => {
+await t("H22 refused worktrees are recorded as failures and do not spawn", async () => {
+  const reason = "existing worktree is dirty (2 uncommitted entries) and stale (13 commits behind origin/main); refusing to run a lane against old code";
+  const deps = makeDispatchDeps({ status: 0, stdout: "must not run", stderr: "" }, {
+    ensureLaneWorktree: (lane, options = {}) => {
+      deps.worktrees.push({ lane, options });
+      return { path: "D:/tmp/lane-hatta", isolated: true, refused: true, dirty: 2, reason };
+    },
+  });
+  const result = await dispatchHatta("refused worktree", deps);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.exitCode, 1);
+  assert.equal(deps.calls.length, 0, "harness is never spawned for a refused worktree");
+  assert.equal(deps.outcomes[0].outcome.stderr, reason);
+  assert.equal(deps.usage[0].ok, false);
+  assert.equal(deps.usage[0].exitCode, 1);
+  assert.equal(deps.usage[0].stderr, reason);
+  assert.deepEqual(deps.usage[0].extra, { refused: true, reason });
+  assert.match(deps.err.join(""), /refusing to run a lane against old code/);
+});
+
+await t("H23 non-isolated fallback remains usable", async () => {
+  const deps = makeDispatchDeps({ status: 0, stdout: JSON.stringify({ ok: true, iterations: 1 }), stderr: "" }, {
+    ensureLaneWorktree: (lane, options = {}) => {
+      deps.worktrees.push({ lane, options });
+      return { path: "D:/repo", isolated: false, dirty: null, reason: "worktree unavailable, falling back to the source repo" };
+    },
+  });
+  const result = await dispatchHatta("fallback worktree", deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(deps.calls.length, 1, "harness still spawns for a non-refused fallback");
+  assert.equal(deps.calls[0].options.cwd, "D:/repo");
+});
+
+await t("H24 flash dispatch derives its model from MODEL_TIERS.light, no own literal", async () => {
   const { FLASH_MODEL } = await import("./hatta-flash-dispatch.mjs");
   const { MODEL_TIERS } = await import("../hatta/harness.mjs");
   assert.equal(FLASH_MODEL, MODEL_TIERS.light);

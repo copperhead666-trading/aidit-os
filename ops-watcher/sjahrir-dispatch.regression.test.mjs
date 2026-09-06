@@ -308,6 +308,40 @@ await runAsync("T10: source resolver failure falls back to Aidit OS and still sp
   assert.equal(Object.prototype.hasOwnProperty.call(deps.worktrees[0].options, "sourceRepo"), false);
 });
 
+await runAsync("T11: refused worktrees are recorded as failures and do not spawn", async () => {
+  const reason = "existing worktree is dirty (2 uncommitted entries) and stale (13 commits behind origin/main); refusing to run a lane against old code";
+  const deps = makeDispatchDeps({ status: 0, stdout: "must not run", stderr: "" }, {
+    ensureLaneWorktree: (lane, options = {}) => {
+      deps.worktrees.push({ lane, options });
+      return { path: "D:/tmp/lane-sjahrir", isolated: true, refused: true, dirty: 2, reason };
+    },
+  });
+  const result = await dispatchSjahrir("refused worktree", deps);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.exitCode, 1);
+  assert.equal(deps.calls.length, 0, "Kimi is never spawned for a refused worktree");
+  assert.equal(deps.outcomes[0].outcome.stderr, reason);
+  assert.equal(deps.usage[0].ok, false);
+  assert.equal(deps.usage[0].exitCode, 1);
+  assert.equal(deps.usage[0].stderr, reason);
+  assert.deepEqual(deps.usage[0].extra, { refused: true, reason });
+});
+
+await runAsync("T12: non-isolated fallback remains usable", async () => {
+  const deps = makeDispatchDeps({ status: 0, stdout: JSON.stringify({ type: "assistant", content: "ok" }), stderr: "" }, {
+    ensureLaneWorktree: (lane, options = {}) => {
+      deps.worktrees.push({ lane, options });
+      return { path: "D:/repo", isolated: false, dirty: null, reason: "worktree unavailable, falling back to the source repo" };
+    },
+  });
+  const result = await dispatchSjahrir("fallback worktree", deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(deps.calls.length, 1, "Kimi still spawns for a non-refused fallback");
+  assert.equal(deps.calls[0].options.cwd, "D:/repo");
+});
+
 // ---------------------------------------------------------------------------
 console.log("");
 if (failed > 0) {

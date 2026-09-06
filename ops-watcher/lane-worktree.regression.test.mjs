@@ -206,6 +206,7 @@ async function t3d_sourceRepoControlsGitCwdTargetAndFallback() {
     const fallback = ensureLaneWorktree("corleone", { sourceRepo, _fs: fs, _exec: failing.exec });
     assert.equal(fallback.path, resolvedSourceRepo, "failure falls back to the source repo, not Aidit OS");
     assert.equal(fallback.isolated, false);
+    assert.equal(fallback.refused, undefined, "fallback is degraded but still usable");
     assert.ok(fallback.reason, "fallback reason names what went wrong");
     ok(name);
   } catch (err) { bad(name, err); }
@@ -288,6 +289,7 @@ async function t5_fallbackIsReportedNotSilent() {
     // A SILENT fallback would recreate the exact bug this module prevents, with
     // a module in place that everyone assumes is protecting them.
     assert.equal(r.isolated, false, "and it does not claim to be isolated");
+    assert.equal(r.refused, undefined, "fallback is not a refusal");
     assert.match(r.reason, /falling back/, "and the reason says so out loud");
     ok(name);
   } catch (err) { bad(name, err); }
@@ -374,6 +376,7 @@ async function t9_cleanAndCurrentStaysPut() {
     const { fs, ex } = reuseDeps("sjahrir", { behind: "0" });
     const r = ensureLaneWorktree("sjahrir", { _fs: fs, _exec: ex.exec });
     assert.equal(r.isolated, true);
+    assert.equal(r.refused, undefined, "clean and current is usable");
     assert.equal(r.behind, 0, "origin/main is not ahead");
     assert.equal(ex.calls.some((c) => c.args[2] === "merge"), false, "no fast-forward attempted when there is nothing to pull");
     assert.equal(r.reason, "existing worktree reused", "a clean current tree gets no warning to ignore");
@@ -388,6 +391,7 @@ async function t10_dirtyAndCurrentStillReused() {
     const { fs, ex } = reuseDeps("corleone", { status: " M ops-watcher/x.mjs\n?? scratch.txt", behind: "0" });
     const r = ensureLaneWorktree("corleone", { _fs: fs, _exec: ex.exec });
     assert.equal(r.isolated, true, "dirt alone never costs a lane its tree");
+    assert.equal(r.refused, undefined, "dirty but current is still usable");
     assert.equal(r.dirty, 2, "the dirt count is still reported");
     assert.match(r.reason, /NOT clean/, "the warning still says it out loud");
     assert.equal(ex.calls.some((c) => c.args[2] === "merge"), false, "a dirty tree is never fast-forwarded");
@@ -401,7 +405,8 @@ async function t11_dirtyAndBehindRefuses() {
   try {
     const { fs, ex } = reuseDeps("hatta", { status: " M a.mjs\n?? b.txt", behind: "13" });
     const r = ensureLaneWorktree("hatta", { _fs: fs, _exec: ex.exec });
-    assert.equal(r.isolated, false, "the dispatcher must decline, not run old code");
+    assert.equal(r.isolated, true, "isolation still only says which tree was returned");
+    assert.equal(r.refused, true, "dirty and stale is a refusal");
     assert.match(r.reason, /2 uncommitted entries/, "the reason names the dirt count");
     assert.match(r.reason, /13 commits behind origin\/main/, "the reason names the behind count");
     assert.equal(ex.calls.some((c) => c.args[2] === "merge"), false, "a dirty tree is never updated behind its dirt");
@@ -582,7 +587,8 @@ async function t21_workPlusStaleStillRefuses() {
   try {
     const { fs, ex } = reuseDeps("hatta", { status: " M state/ledger.jsonl\n M a.mjs\n?? b.txt", behind: "13" });
     const r = ensureLaneWorktree("hatta", { _fs: fs, _exec: ex.exec });
-    assert.equal(r.isolated, false, "the dispatcher must decline, not run old code");
+    assert.equal(r.isolated, true, "isolation still only says which tree was returned");
+    assert.equal(r.refused, true, "work plus stale is a refusal");
     assert.equal(r.dirty, 2, "the count is the real work only, runtime state excluded");
     assert.match(r.reason, /2 uncommitted entries/, "the reason names the work count");
     assert.match(r.reason, /13 commits behind origin\/main/, "the reason names the behind count");
