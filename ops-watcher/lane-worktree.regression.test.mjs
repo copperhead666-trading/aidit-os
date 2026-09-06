@@ -55,6 +55,39 @@ function fakeExec(handler) {
   };
 }
 
+// Route git calls by their verb line ("status --porcelain", "rev-parse HEAD",
+// ...). A value may be a string to return or a function to call, so a single
+// command can be made to fail while the rest answer. Any unlisted call throws,
+// which surfaces accidental extra git invocations as test failures instead of
+// silent "" answers.
+function gitResponder(responses) {
+  return fakeExec((args) => {
+    const key = args.slice(2).join(" ");
+    if (Object.prototype.hasOwnProperty.call(responses, key)) {
+      const value = responses[key];
+      return typeof value === "function" ? value() : value;
+    }
+    throw new Error(`unexpected git call: ${key}`);
+  });
+}
+
+// A reused-worktree setup: fake fs says the tree exists, git answers the four
+// read-only probes plus whatever extras the scenario needs (e.g. the
+// fast-forward).
+function reuseDeps(lane, { status = "", head = "abc123", onBranch = null, behind = "0", extra = {} } = {}) {
+  const fs = fakeFs({ exists: (p) => String(p).endsWith(".git") });
+  const ex = gitResponder({
+    "status --porcelain": status,
+    "rev-parse HEAD": head,
+    "rev-parse --abbrev-ref HEAD": onBranch === null ? `lane/${lane}` : onBranch,
+    "rev-list --count HEAD..origin/main": behind,
+    ...extra,
+  });
+  return { fs, ex };
+}
+
+const DESTRUCTIVE_VERB = /(^| )(clean|reset|stash|switch)( |$)|checkout/;
+
 function assertGitCallIsSafe(call, expectedCwd) {
   assert.equal(call.cmd, "git");
   assert.equal(call.args[0], "-c", "git call starts with a per-command config override");
@@ -206,11 +239,16 @@ async function t4_reusesAnExistingWorktree() {
     assert.equal(r.created, false);
     assert.equal(ex.calls.some((c) => c.args[0] === "worktree" && c.args[1] === "add"), false,
       "an existing tree is never recreated");
-    // The one git call it MAY make is a read: how dirty is the tree it is about
-    // to hand over. Reused does not mean clean, and a lane that inherits another
-    // run's leftovers produces a diff containing work nobody asked it to do.
-    assert.deepEqual(ex.calls.map((c) => c.args.slice(2).join(" ")), ["status --porcelain"],
-      "reuse asks exactly one read-only question and mutates nothing");
+    // The git calls it MAY make are reads: how dirty is the tree, what commit
+    // and branch is it really on, how far behind origin/main. Reused does not
+    // mean clean or current, and a lane that inherits another run's leftovers
+    // produces a diff containing work nobody asked it to do.
+    assert.deepEqual(ex.calls.map((c) => c.args.slice(2).join(" ")), [
+      "status --porcelain",
+      "rev-parse HEAD",
+      "rev-parse --abbrev-ref HEAD",
+      "rev-list --count HEAD..origin/main",
+    ], "reuse asks only read-only questions and mutates nothing");
     assertGitCallIsSafe(ex.calls[0], worktreePathFor("sjahrir"));
     ok(name);
   } catch (err) { bad(name, err); }
@@ -305,6 +343,152 @@ async function t7_listParsesPorcelain() {
   } catch (err) { bad(name, err); }
 }
 
+// === Base revision: measured, fast-forwarded, and refused when unsafe ===
+// PACKET-LANE-BASE-REVISION: a lane ran, passed, and reported against a copy
+// of the code from thirteen commits ago because nothing measured staleness and
+// the returned branch name was never checked against the real checkout.
+
+// Packet test 1: clean and 5 behind -> fast-forwarded, behind reported.
+async function t8_cleanAndBehindFastForwards() {
+  const name = "W8 a clean stale worktree is fast-forwarded to origin/main";
+  try {
+    const { fs, ex } = reuseDeps("hatta", { behind: "5", extra: { "merge --ff-only origin/main": "" } });
+    const r = ensureLaneWorktree("hatta", { _fs: fs, _exec: ex.exec });
+    assert.equal(r.isolated, true, "a clean tree that fast-forwards stays usable");
+    assert.equal(r.created, false);
+    assert.equal(r.behind, 5, "the measured gap is reported");
+    assert.equal(r.head, "abc123", "the actual HEAD is reported");
+    assert.equal(r.checkedOutBranch, "lane/hatta", "the real checkout matches the lane branch here");
+    const ff = ex.calls.find((c) => c.args[2] === "merge");
+    assert.ok(ff, "a fast-forward was attempted");
+    assert.deepEqual(ff.args.slice(2), ["merge", "--ff-only", "origin/main"], "and it was ff-only, never a merge commit");
+    assert.match(r.reason, /fast-forwarded 5 commits/, "the reason carries the number");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// Packet test 2: clean and current -> nothing to do, no fast-forward attempted.
+async function t9_cleanAndCurrentStaysPut() {
+  const name = "W9 a clean current worktree is not touched";
+  try {
+    const { fs, ex } = reuseDeps("sjahrir", { behind: "0" });
+    const r = ensureLaneWorktree("sjahrir", { _fs: fs, _exec: ex.exec });
+    assert.equal(r.isolated, true);
+    assert.equal(r.behind, 0, "origin/main is not ahead");
+    assert.equal(ex.calls.some((c) => c.args[2] === "merge"), false, "no fast-forward attempted when there is nothing to pull");
+    assert.equal(r.reason, "existing worktree reused", "a clean current tree gets no warning to ignore");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// Packet test 3: dirty and current -> the pre-existing behaviour, unregressed.
+async function t10_dirtyAndCurrentStillReused() {
+  const name = "W10 a dirty current worktree is still handed over with its dirt reported";
+  try {
+    const { fs, ex } = reuseDeps("corleone", { status: " M ops-watcher/x.mjs\n?? scratch.txt", behind: "0" });
+    const r = ensureLaneWorktree("corleone", { _fs: fs, _exec: ex.exec });
+    assert.equal(r.isolated, true, "dirt alone never costs a lane its tree");
+    assert.equal(r.dirty, 2, "the dirt count is still reported");
+    assert.match(r.reason, /NOT clean/, "the warning still says it out loud");
+    assert.equal(ex.calls.some((c) => c.args[2] === "merge"), false, "a dirty tree is never fast-forwarded");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// Packet test 4: dirty AND behind -> refuse, naming both numbers.
+async function t11_dirtyAndBehindRefuses() {
+  const name = "W11 a dirty stale worktree is refused, with the dirt and the gap both named";
+  try {
+    const { fs, ex } = reuseDeps("hatta", { status: " M a.mjs\n?? b.txt", behind: "13" });
+    const r = ensureLaneWorktree("hatta", { _fs: fs, _exec: ex.exec });
+    assert.equal(r.isolated, false, "the dispatcher must decline, not run old code");
+    assert.match(r.reason, /2 uncommitted entries/, "the reason names the dirt count");
+    assert.match(r.reason, /13 commits behind origin\/main/, "the reason names the behind count");
+    assert.equal(ex.calls.some((c) => c.args[2] === "merge"), false, "a dirty tree is never updated behind its dirt");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// Packet test 5: the checkout is not the lane branch -> reported, never switched.
+async function t12_branchMismatchIsReportedNotFixed() {
+  const name = "W12 a worktree on the wrong branch is reported and never switched";
+  try {
+    const { fs, ex } = reuseDeps("hatta", { onBranch: "lane/p0-probe", behind: "0" });
+    const r = ensureLaneWorktree("hatta", { _fs: fs, _exec: ex.exec });
+    assert.equal(r.checkedOutBranch, "lane/p0-probe", "the real checkout is reported");
+    assert.match(r.reason, /lane\/p0-probe/, "and named in the reason");
+    assert.match(r.reason, /lane\/hatta/, "alongside the branch the caller was promised");
+    for (const call of ex.calls) {
+      const verbs = call.args.slice(2);
+      assert.notEqual(verbs[0], "checkout", "no checkout is executed");
+      assert.notEqual(verbs[0], "switch", "no branch switch is executed");
+    }
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// Packet test 6: the behind measurement itself fails -> null, still no throw.
+async function t13_unmeasurableBehindIsNullNotZero() {
+  const name = "W13 an unmeasurable behind is null, and the call still returns";
+  try {
+    const { fs, ex } = reuseDeps("corleone", {
+      behind: () => { throw new Error("fatal: bad revision 'origin/main'"); },
+    });
+    let r;
+    assert.doesNotThrow(() => { r = ensureLaneWorktree("corleone", { _fs: fs, _exec: ex.exec }); });
+    assert.equal(r.behind, null, "could not look is not the same fact as in sync");
+    assert.equal(r.dirty, 0);
+    assert.equal(r.isolated, true, "an unknown gap does not cost the lane its tree");
+    assert.equal(ex.calls.some((c) => c.args[2] === "merge"), false, "nothing is fast-forwarded on a guess");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// Packet test 7: a freshly created worktree starts at HEAD, zero behind.
+async function t14_createdWorktreeIsCurrent() {
+  const name = "W14 a newly created worktree reports behind 0 and created true";
+  try {
+    const fs = fakeFs({ exists: () => false });
+    const ex = fakeExec();
+    const r = ensureLaneWorktree("corleone", { _fs: fs, _exec: ex.exec });
+    assert.equal(r.created, true);
+    assert.equal(r.isolated, true);
+    assert.equal(r.behind, 0, "a tree just created at HEAD is not stale");
+    assert.equal(r.dirty, 0);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+// Packet test 8: across every path, no destructive git verb is ever executed.
+async function t15_noDestructiveGitVerbEver() {
+  const name = "W15 no path ever runs clean, reset, checkout --, stash, or switch";
+  try {
+    const runs = [];
+    // Clean + stale: fast-forward path.
+    runs.push(reuseDeps("hatta", { behind: "5", extra: { "merge --ff-only origin/main": "" } }));
+    // Clean + current.
+    runs.push(reuseDeps("sjahrir", { behind: "0" }));
+    // Dirty + current.
+    runs.push(reuseDeps("corleone", { status: " M a.mjs", behind: "0" }));
+    // Dirty + stale: refusal path.
+    runs.push(reuseDeps("hatta", { status: " M a.mjs\n?? b.txt", behind: "13" }));
+    // Branch mismatch.
+    runs.push(reuseDeps("hatta", { onBranch: "lane/p0-probe", behind: "3" }));
+    // Clean + stale but not fast-forwardable: merge --ff-only fails.
+    runs.push(reuseDeps("w2", { behind: "8", extra: { "merge --ff-only origin/main": () => { throw new Error("Not possible to fast-forward, aborting."); } } }));
+
+    for (const { fs, ex } of runs) {
+      ensureLaneWorktree("hatta", { _fs: fs, _exec: ex.exec });
+      for (const call of ex.calls) {
+        const verbLine = call.args.slice(2).join(" ");
+        assert.doesNotMatch(verbLine, DESTRUCTIVE_VERB,
+          `no destructive verb in: ${verbLine}`);
+      }
+    }
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
 async function main() {
   console.log("# ops-watcher lane-worktree regression tests");
   await t1_eachLaneGetsItsOwnPathAndBranch();
@@ -319,6 +503,14 @@ async function main() {
   await t5_fallbackIsReportedNotSilent();
   await t6_neverThrows();
   await t7_listParsesPorcelain();
+  await t8_cleanAndBehindFastForwards();
+  await t9_cleanAndCurrentStaysPut();
+  await t10_dirtyAndCurrentStillReused();
+  await t11_dirtyAndBehindRefuses();
+  await t12_branchMismatchIsReportedNotFixed();
+  await t13_unmeasurableBehindIsNullNotZero();
+  await t14_createdWorktreeIsCurrent();
+  await t15_noDestructiveGitVerbEver();
   console.log("");
   console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
   if (failed > 0) { for (const f of failures) console.log(`  FAILED: ${f}`); process.exit(1); }
