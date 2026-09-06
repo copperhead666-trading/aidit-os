@@ -194,7 +194,7 @@ const STEP_RECORD_EXCERPT_MAX = 300;
 // a human would type after `node` (the script path relative to repo root + any
 // flags). This is a literal, hand-maintained list of the safe pipeline — NOT
 // derived from a directory scan, so a stray file can never sneak in.
-const STEPS = [
+export const STEPS = [
   { name: "watcher",           argv: ["ops-watcher/watcher.mjs", "--once"] },
   { name: "test-runner",       argv: ["ops-watcher/test-runner.mjs", "--once"] },
   { name: "review-runner",     argv: ["ops-watcher/review-runner.mjs", "--once"] },
@@ -232,6 +232,7 @@ const STEPS = [
   { name: "ledger-writer",     argv: ["ops-watcher/ledger-writer.mjs", "--once"] },
   { name: "reconcile",         argv: ["ops-watcher/reconcile.mjs", "--once"] },
   { name: "directive-runner",  argv: ["ops-watcher/directive-runner.mjs", "--once"] },
+  { name: "merge-steward",     argv: ["ops-watcher/merge-steward.mjs", "--once"] },
 ];
 
 const iso = () => new Date().toISOString();
@@ -464,7 +465,7 @@ async function getPauseState(checkPause) {
 }
 
 // Core sweep, dependency-injected for testability.
-// deps: { runStep, shouldRunTelegramListenerStep, checkPause, log, now,
+// deps: { runStep, steps, shouldRunTelegramListenerStep, checkPause, log, now,
 //         appendStepLog, stepLogFile, lockFile, acquireLock, releaseLock,
 //         isAlive, lockPid, _fs }
 // runStep: async (argv) => { code, stdout, stderr, error, timedOut }
@@ -476,6 +477,7 @@ async function getPauseState(checkPause) {
 export async function runHeartbeatOnce(deps = {}) {
   const {
     runStep = runStepReal,
+    steps = STEPS,
     shouldRunTelegramListenerStep = shouldRunTelegramListenerStepReal,
     checkPause = checkPauseReal,
     log = (m) => console.log(m),
@@ -504,7 +506,7 @@ export async function runHeartbeatOnce(deps = {}) {
         startedAt,
         finishedAt,
         durationMs: finishedAt - startedAt,
-        total: STEPS.length,
+        total: steps.length,
         succeeded: 0,
         failed: 0,
         paused: true,
@@ -521,7 +523,7 @@ export async function runHeartbeatOnce(deps = {}) {
       results: [],
       succeeded: 0,
       failed: 0,
-      total: STEPS.length,
+      total: steps.length,
       startedAt,
       finishedAt,
       paused: true,
@@ -542,7 +544,7 @@ export async function runHeartbeatOnce(deps = {}) {
       results: [],
       succeeded: 0,
       failed: 0,
-      total: STEPS.length,
+      total: steps.length,
       startedAt,
       finishedAt,
       refused: true,
@@ -556,7 +558,7 @@ export async function runHeartbeatOnce(deps = {}) {
       results: [],
       succeeded: 0,
       failed: 0,
-      total: STEPS.length,
+      total: steps.length,
       startedAt,
       finishedAt,
       refused: true,
@@ -565,7 +567,7 @@ export async function runHeartbeatOnce(deps = {}) {
   }
   log(`heartbeat --once: acquired sweep lock (pid=${lock.pid}) at ${iso()}`);
 
-  log(`heartbeat --once START ${new Date(startedAt).toISOString()} (${STEPS.length} steps)`);
+  log(`heartbeat --once START ${new Date(startedAt).toISOString()} (${steps.length} steps)`);
 
   const results = [];
   // Per-step metadata kept in PARALLEL to results so the results array's shape
@@ -575,7 +577,7 @@ export async function runHeartbeatOnce(deps = {}) {
   let failed = 0;
 
   try {
-    for (const step of STEPS) {
+    for (const step of steps) {
       let res;
       let skippedHealthy = false;
       const stepStart = now();
@@ -634,14 +636,14 @@ export async function runHeartbeatOnce(deps = {}) {
     }
 
     const finishedAt = now();
-    log(`heartbeat --once DONE ${new Date(finishedAt).toISOString()} — succeeded=${succeeded}/${STEPS.length} failed=${failed}/${STEPS.length} (took ${Math.round((finishedAt - startedAt) / 1000)}s)`);
+    log(`heartbeat --once DONE ${new Date(finishedAt).toISOString()} — succeeded=${succeeded}/${steps.length} failed=${failed}/${steps.length} (took ${Math.round((finishedAt - startedAt) / 1000)}s)`);
 
     // Durable, machine-readable record of every step's outcome. ONE JSON line per
     // sweep. Best-effort: a failure here MUST NEVER fail the sweep — the sweep's
     // return value and exit code are already determined by the steps above.
     try {
-      const steps = results.map((r, i) =>
-        buildStepRecord(STEPS[i], { code: r.code, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut, error: r.error }, {
+      const stepRecords = results.map((r, i) =>
+        buildStepRecord(steps[i], { code: r.code, stdout: r.stdout, stderr: r.stderr, timedOut: r.timedOut, error: r.error }, {
           okStep: r.ok,
           skippedHealthy: stepMeta[i].skippedHealthy,
           durationMs: stepMeta[i].durationMs,
@@ -653,17 +655,17 @@ export async function runHeartbeatOnce(deps = {}) {
         startedAt,
         finishedAt,
         durationMs: finishedAt - startedAt,
-        total: STEPS.length,
+        total: steps.length,
         succeeded,
         failed,
-        steps,
+        steps: stepRecords,
       };
       await appendStepLog(sweepRecord, { file: stepLogFile });
     } catch (err) {
       log(`heartbeat: WARN could not append step log (${err && (err.code || err.message) || String(err)})`);
     }
 
-    return { results, succeeded, failed, total: STEPS.length, startedAt, finishedAt };
+    return { results, succeeded, failed, total: steps.length, startedAt, finishedAt };
   } finally {
     try {
       await _releaseLock({ lockFile, _fs });

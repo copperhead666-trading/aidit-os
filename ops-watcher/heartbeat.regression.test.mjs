@@ -57,6 +57,7 @@ import {
   buildStepRecord,
   rotateStepLogFile,
   STEP_LOG_KEEP_LINES,
+  STEPS as HEARTBEAT_STEPS,
 } from "./heartbeat.mjs";
 import {
   acquireLock as acquireLockPrimitive,
@@ -223,6 +224,7 @@ function runHeartbeatOnce(deps = {}) {
     acquireLock: noopAcquireLock,
     releaseLock: noopReleaseLock,
     lockFile: "fake-heartbeat.lock",
+    steps: STEPS,
     ...deps,
   });
 }
@@ -1196,8 +1198,55 @@ async function testThrowingPauseCheckFailsClosed() {
     ok(name);
   } catch (err) { bad(name, err); }
 }
+
+function testRealStepListIncludesMergeSteward() {
+  const name = "H13 real STEPS includes merge-steward with mandated argv";
+  try {
+    const step = HEARTBEAT_STEPS.find((s) => s.name === "merge-steward");
+    assert.ok(step, "merge-steward step exists in the real heartbeat pipeline");
+    assert.deepEqual(step.argv, ["ops-watcher/merge-steward.mjs", "--once"], "merge-steward argv is the mandated --once invocation");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+function testRealStepListMergeStewardIsLast() {
+  const name = "H14 real STEPS ends with merge-steward";
+  try {
+    assert.equal(HEARTBEAT_STEPS.at(-1).name, "merge-steward", "merge-steward is the final heartbeat step");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+function testRealStepNamesAreUnique() {
+  const name = "H15 real STEPS has unique names";
+  try {
+    const names = HEARTBEAT_STEPS.map((step) => step.name);
+    assert.equal(new Set(names).size, names.length, "each real heartbeat step name is unique");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+function testRealStepScriptsStayUnderOpsWatcher() {
+  const name = "H16 real STEPS argv scripts stay under ops-watcher mjs files";
+  try {
+    for (const step of HEARTBEAT_STEPS) {
+      const script = step.argv[0];
+      assert.equal(typeof script, "string", `${step.name} argv[0] is a string`);
+      assert.ok(script.startsWith("ops-watcher/"), `${step.name} argv[0] stays under ops-watcher/`);
+      assert.ok(script.endsWith(".mjs"), `${step.name} argv[0] ends in .mjs`);
+      assert.equal(script.includes(".."), false, `${step.name} argv[0] does not traverse upward`);
+      assert.equal(script.includes("\\"), false, `${step.name} argv[0] uses repo-relative forward slashes`);
+    }
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
 async function main() {
   console.log("# ops-watcher PHASE-8 heartbeat regression tests");
+  testRealStepListIncludesMergeSteward();
+  testRealStepListMergeStewardIsLast();
+  testRealStepNamesAreUnique();
+  testRealStepScriptsStayUnderOpsWatcher();
   await testHeartbeatLockFreeRunsAndReleases();
   await testHeartbeatLiveLockRefusesSuccessfully();
   await testHeartbeatDeadLockIsReclaimedBySharedPrimitive();
