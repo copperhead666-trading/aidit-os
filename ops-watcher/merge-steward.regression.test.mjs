@@ -28,7 +28,7 @@ const bad = (n, e) => {
 function execFixture(responses = {}) {
   const calls = [];
   const exec = (cmd, args, options = {}) => {
-    calls.push({ cmd, args: [...(args || [])], cwd: options.cwd });
+    calls.push({ cmd, args: [...(args || [])], cwd: options.cwd, windowsHide: options.windowsHide });
     const key = Array.isArray(args) ? args.slice(2).join(" ") : "";
     const response = responses[key];
     if (response instanceof Error) throw response;
@@ -156,7 +156,7 @@ async function t8_slowCheckSkippedAfterEarlierFailure() {
     let suiteCalls = 0;
     const ex = execFixture({
       "rev-list --count origin/main..HEAD": "1\n",
-      "diff --name-only origin/main --": ".env.local\n",
+      "diff --name-only origin/main...HEAD --": ".env.local\n",
       "diff --unified=0 origin/main --": "+TOKEN=notneeded\n",
     });
     const report = await reviewLanes(laneDeps({
@@ -201,7 +201,7 @@ function t11_parseArgsRecognisesNoSuite() {
 function cleanLaneFixture() {
   return execFixture({
     "rev-list --count origin/main..HEAD": "1\n",
-    "diff --name-only origin/main --": "ops-watcher/foo.mjs\nops-watcher/foo.test.mjs\n",
+    "diff --name-only origin/main...HEAD --": "ops-watcher/foo.mjs\nops-watcher/foo.test.mjs\n",
     "diff --unified=0 origin/main --": "",
   });
 }
@@ -254,7 +254,7 @@ async function t14_blockedEitherWaySuiteNeverRuns() {
       let suiteCalls = 0;
       const ex = execFixture({
         "rev-list --count origin/main..HEAD": "1\n",
-        "diff --name-only origin/main --": ".env.local\n",
+        "diff --name-only origin/main...HEAD --": ".env.local\n",
         "diff --unified=0 origin/main --": "+TOKEN=notneeded\n",
       });
       const report = await reviewLanes(laneDeps({
@@ -284,6 +284,146 @@ function t10_exportedSurfaceHasNoMutators() {
   } catch (err) { bad(name, err); }
 }
 
+async function t15_staleLaneWithDirtListsOnlyItsOwnFiles() {
+  const name = "(15) aheadOfMain 0 with two uncommitted files yields exactly those two, never a list drawn from origin/main";
+  try {
+    const ex = execFixture({
+      "rev-list --count origin/main..HEAD": "0\n",
+      "diff --name-only HEAD --": "ops-watcher/one.mjs\nops-watcher/two.mjs\n",
+      "status --porcelain": " M ops-watcher/one.mjs\n M ops-watcher/two.mjs\n",
+      "diff --name-only origin/main...HEAD --": "",
+      "diff --unified=0 origin/main --": "",
+    });
+    const report = await reviewLanes(laneDeps({ dirty: 2, exec: ex.exec, suiteRunner: () => "SUITES: 85/85 passed" }));
+    const tree = report.worktrees[0];
+    assert.notEqual(tree.verdict, "idle");
+    assert.deepEqual(tree.changedFiles, ["ops-watcher/one.mjs", "ops-watcher/two.mjs"]);
+    const keys = ex.calls.map((call) => call.args.slice(2).join(" "));
+    assert.ok(!keys.some((key) => key === "diff --name-only origin/main --" || key.startsWith("diff --name-only origin/main..HEAD")),
+      "the file list must not be drawn from a two-dot diff against origin/main");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function t16_idleLaneNeverRunsSyntaxCheck() {
+  const name = "(16) aheadOfMain 0 with no uncommitted files stays idle and no syntax check is attempted";
+  try {
+    let suiteCalls = 0;
+    const ex = execFixture({ "rev-list --count origin/main..HEAD": "0\n" });
+    const report = await reviewLanes(laneDeps({
+      dirty: 0,
+      exec: ex.exec,
+      suiteRunner: () => { suiteCalls++; return "SUITES: 85/85 passed"; },
+    }));
+    const tree = report.worktrees[0];
+    assert.equal(tree.verdict, "idle");
+    assert.deepEqual(tree.changedFiles, []);
+    assert.equal(suiteCalls, 0);
+    assert.ok(ex.calls.every((call) => !(call.args || []).includes("--check")),
+      "the injected exec was never asked to run node --check");
+    assert.equal(ex.calls.length, 1, "an idle lane is answered with a single rev-list call");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function t17_aheadCommitsUnionWithUncommittedNoDuplicates() {
+  const name = "(17) a branch ahead by two commits reports the union of its commits' files and its uncommitted files, with no duplicates";
+  try {
+    const ex = execFixture({
+      "rev-list --count origin/main..HEAD": "2\n",
+      "diff --name-only HEAD --": "src/b.mjs\nsrc/c.mjs\n",
+      "status --porcelain": " M src/b.mjs\n M src/c.mjs\n",
+      "diff --name-only origin/main...HEAD --": "src/a.mjs\nsrc/b.mjs\n",
+      "diff --unified=0 origin/main --": "",
+    });
+    const report = await reviewLanes(laneDeps({ dirty: 2, exec: ex.exec, suiteRunner: () => "SUITES: 85/85 passed" }));
+    const tree = report.worktrees[0];
+    assert.equal(tree.aheadOfMain, 2);
+    assert.deepEqual(tree.changedFiles, ["src/a.mjs", "src/b.mjs", "src/c.mjs"]);
+    assert.equal(tree.changedFiles.length, 3, "no duplicates in the union");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function t18_untrackedNewFileAppearsInChangedFiles() {
+  const name = "(18) an untracked new file appears in the list so tests-accompany-behaviour still sees it";
+  try {
+    const ex = execFixture({
+      "rev-list --count origin/main..HEAD": "0\n",
+      "diff --name-only HEAD --": "",
+      "status --porcelain": "?? ops-watcher/new-module.mjs\n",
+      "diff --name-only origin/main...HEAD --": "",
+      "diff --unified=0 origin/main --": "",
+    });
+    const report = await reviewLanes(laneDeps({ dirty: 1, exec: ex.exec, suiteRunner: () => "SUITES: 85/85 passed" }));
+    const tree = report.worktrees[0];
+    assert.ok(tree.changedFiles.includes("ops-watcher/new-module.mjs"),
+      "untracked file is in changedFiles: " + JSON.stringify(tree.changedFiles));
+    const accompany = tree.checks.find((check) => check.name === "tests-accompany-behaviour");
+    assert.ok(accompany, "tests-accompany-behaviour check is present");
+    assert.equal(accompany.ok, false, "a new module without a test is still caught");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function t19_fileListUsesThreeDotMergeBaseDiff() {
+  const name = "(19) the three-dot form is used for the ahead-of-main file list and the two-dot form never returns";
+  try {
+    const ex = execFixture({
+      "rev-list --count origin/main..HEAD": "1\n",
+      "diff --name-only origin/main...HEAD --": "src/a.mjs\n",
+      "diff --unified=0 origin/main --": "",
+    });
+    await reviewLanes(laneDeps({ dirty: 0, exec: ex.exec, suiteRunner: () => "SUITES: 85/85 passed" }));
+    const keys = ex.calls.map((call) => call.args.slice(2).join(" "));
+    assert.ok(keys.includes("diff --name-only origin/main...HEAD --"),
+      "recorded git arguments include the three-dot merge-base diff: " + JSON.stringify(keys));
+    assert.ok(!keys.some((key) => key.startsWith("diff --name-only origin/main..HEAD") || key === "diff --name-only origin/main --"),
+      "no two-dot or tree-diff name-only call against origin/main: " + JSON.stringify(keys));
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function t20_everyGitCallKeepsSafeDirectoryAndWindowsHide() {
+  const name = "(20) every git invocation still begins with -c safe.directory= and still passes windowsHide: true";
+  try {
+    const ex = execFixture({
+      "rev-list --count origin/main..HEAD": "1\n",
+      "diff --name-only HEAD --": "src/a.mjs\n",
+      "status --porcelain": " M src/a.mjs\n",
+      "diff --name-only origin/main...HEAD --": "src/a.mjs\n",
+      "diff --unified=0 origin/main --": "",
+    });
+    await reviewLanes(laneDeps({ dirty: 1, exec: ex.exec, suiteRunner: () => "SUITES: 85/85 passed" }));
+    assert.ok(ex.calls.length > 0, "the injected exec was exercised");
+    for (const call of ex.calls) {
+      assert.equal(call.windowsHide, true, "windowsHide stays true for " + call.args.slice(2).join(" "));
+      if (call.cmd === "git") {
+        assert.equal(call.args[0], "-c", "git call begins with -c: " + call.args.slice(2).join(" "));
+        assert.ok(String(call.args[1]).startsWith("safe.directory="),
+          "git call carries safe.directory: " + call.args.slice(2).join(" "));
+      }
+    }
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function t21_failingGitCallYieldsUnknownNeverClean() {
+  const name = "(21) a git call that fails still yields unknown with a reason, never clean";
+  try {
+    const ex = execFixture({
+      "rev-list --count origin/main..HEAD": new Error("fatal: not a git repository"),
+    });
+    const report = await reviewLanes(laneDeps({ dirty: 0, exec: ex.exec, suiteRunner: () => "SUITES: 85/85 passed" }));
+    const tree = report.worktrees[0];
+    assert.equal(tree.verdict, "unknown");
+    assert.notEqual(tree.verdict, "clean");
+    assert.match(tree.reason, /git could not inspect worktree/);
+    assert.ok(!Array.isArray(tree.checks) || tree.checks.length === 0, "no checks are fabricated after git failed");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
 async function main() {
   console.log("# merge-steward regression tests");
   await t1_idleLaneSkipsSuite();
@@ -300,6 +440,13 @@ async function main() {
   await t12_noSuiteSkipsRunnerAndIsNotClean();
   await t13_withoutFlagSuiteStillRuns();
   await t14_blockedEitherWaySuiteNeverRuns();
+  await t15_staleLaneWithDirtListsOnlyItsOwnFiles();
+  await t16_idleLaneNeverRunsSyntaxCheck();
+  await t17_aheadCommitsUnionWithUncommittedNoDuplicates();
+  await t18_untrackedNewFileAppearsInChangedFiles();
+  await t19_fileListUsesThreeDotMergeBaseDiff();
+  await t20_everyGitCallKeepsSafeDirectoryAndWindowsHide();
+  await t21_failingGitCallYieldsUnknownNeverClean();
   console.log("");
   console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
   if (failed > 0) {
