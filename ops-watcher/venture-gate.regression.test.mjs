@@ -303,6 +303,96 @@ await t("G4 pre-flight: a plan that ASKS for a git write is refused before dispa
 });
 
 // ---------------------------------------------------------------------------
+// G4 pre-flight precision (KOL-92): the fence keeps its boundary and loses
+// its false match on hyphenated module names like merge-steward.
+// Refusals first: a gate that stops refusing is worse than one that
+// over-refuses.
+// ---------------------------------------------------------------------------
+
+await t("G4 precision: a real git write is still refused - commit in a step", () => {
+  const r = checkPlanForVentureGitWrites({ steps: ["git commit -m \"x\""] });
+  assert.equal(r.ok, false);
+  assert.match(r.violations[0], /plan asks for a git write/);
+  assert.match(r.violations[0], /git commit/, "the refusal names what was matched");
+});
+
+await t("G4 precision: git push origin main is still refused", () => {
+  const r = checkPlanForVentureGitWrites({ steps: ["git push origin main"] });
+  assert.equal(r.ok, false);
+  assert.match(r.violations[0], /git push/);
+});
+
+await t("G4 precision: git merge main in a plan objective is still refused", () => {
+  const r = checkPlanForVentureGitWrites({ objective: "git merge main" });
+  assert.equal(r.ok, false);
+  assert.match(r.violations[0], /git merge/);
+});
+
+await t("G4 precision: git reset --hard HEAD~1 is still refused", () => {
+  const r = checkPlanForVentureGitWrites({ steps: ["git reset --hard HEAD~1"] });
+  assert.equal(r.ok, false);
+  assert.match(r.violations[0], /git reset/);
+});
+
+await t("G4 precision: Indonesian prose around the verbs is still refused", () => {
+  const r = checkPlanForVentureGitWrites({ steps: ["jalankan git rebase lalu git push"] });
+  assert.equal(r.ok, false);
+  assert.match(r.violations[0], /git rebase/);
+});
+
+await t("G4 precision: flags between git and the verb are still refused", () => {
+  const r = checkPlanForVentureGitWrites({ steps: ["git -C ventures/caveman-trading-os commit"] });
+  assert.equal(r.ok, false);
+  assert.match(r.violations[0], /commit/);
+});
+
+await t("G4 precision: a verb reached through several words on one line is still refused", () => {
+  // KEPT DELIBERATELY: the unbounded gap between "git" and the verb ("git ...
+  // then commit the result") is what makes this pattern loose. Tightening the
+  // gap would catch hyphenated names less, but it would also miss flags and
+  // prose between "git" and the verb, which must stay refused. The hyphen
+  // guards below are what precision comes from, not a shorter gap.
+  const r = checkPlanForVentureGitWrites({ steps: ["git log the state then commit the result"] });
+  assert.equal(r.ok, false);
+  assert.match(r.violations[0], /commit/);
+});
+
+await t("G4 precision: the exact KOL-92 sentence is no longer refused", () => {
+  const r = checkPlanForVentureGitWrites({
+    steps: ["Memperbaiki false positive deteksi secret-shaped-literals pada git SHA di merge-steward sambil mempertahankan deteksi kredensial"],
+  });
+  assert.equal(r.ok, true, "merge-steward is a module name, not a git merge");
+  assert.deepEqual(r.violations, []);
+});
+
+await t("G4 precision: merge-steward.mjs plus a read-only git status is allowed", () => {
+  const r = checkPlanForVentureGitWrites({ steps: ["perbarui ops-watcher/merge-steward.mjs dan jalankan git status"] });
+  assert.equal(r.ok, true, "status is not a write verb and the module name must not create one");
+});
+
+await t("G4 precision: git log plus apply-patch-helper.mjs is allowed", () => {
+  const r = checkPlanForVentureGitWrites({ steps: ["baca git log lalu perbaiki apply-patch-helper.mjs"] });
+  assert.equal(r.ok, true, "apply followed by a hyphen is a filename, not git apply");
+});
+
+await t("G4 precision: no git word at all, hyphenated name containing reset is allowed", () => {
+  const r = checkPlanForVentureGitWrites({ steps: ["perbarui ops-watcher/reset-guard.mjs lalu jalankan verifikasi"] });
+  assert.equal(r.ok, true);
+});
+
+await t("G4 precision: the check's shape is unchanged - null, undefined, numeric and array plans never throw", () => {
+  for (const plan of [null, undefined, 42, ["git push"], {}]) {
+    const r = checkPlanForVentureGitWrites(plan);
+    assert.equal(typeof r.ok, "boolean");
+    assert.ok(Array.isArray(r.violations));
+  }
+  const r = checkPlanForVentureGitWrites({ steps: ["git push origin main"], verify: "", objective: "" });
+  assert.equal(typeof r.ok, "boolean");
+  assert.equal(r.ok, false);
+  assert.match(r.violations[0], /git push/, "a refusal message still names what was matched");
+});
+
+// ---------------------------------------------------------------------------
 // Live, against the real venture repository.
 // ---------------------------------------------------------------------------
 
