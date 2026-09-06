@@ -304,7 +304,7 @@ export function compareVentureGitPosition(before, after) {
 // Plans that ASK for a git write are refused before a lane ever sees them. This
 // is the cheap pre-flight; compareVentureGitPosition is the one that actually
 // holds, because it does not depend on the plan saying what it will do.
-const GIT_WRITE_VERBS = /\bgit\b[^\n]*\b(push|commit|merge|rebase|reset|cherry-pick|tag|am|apply|revert)\b/i;
+const GIT_WRITE_VERBS = /\bgit\b[^\n]*?(?<!-)\b(push|commit|merge|rebase|reset|cherry-pick|tag|am|apply|revert)\b(?!-)/i;
 
 export function checkPlanForVentureGitWrites(plan) {
   const violations = [];
