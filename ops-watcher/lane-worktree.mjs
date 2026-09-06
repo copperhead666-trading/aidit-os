@@ -41,16 +41,28 @@ export const REPO_ROOT = path.resolve(__dirname, "..");
 // reasons nobody intended.
 export const WORKTREE_ROOT = path.resolve(REPO_ROOT, "..", "worktrees");
 
+function safeSegment(value) {
+  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+}
+
+function sourceRepoDirectoryName(sourceRepo) {
+  const raw = String(sourceRepo || "").split(/[\\/]+/).filter(Boolean).pop();
+  const safe = safeSegment(raw);
+  if (!safe) throw new Error("worktreePathFor: sourceRepo directory name is required");
+  return safe;
+}
+
 /** Directory a given lane owns. One lane, one tree, always the same one. */
-export function worktreePathFor(lane, { root = WORKTREE_ROOT } = {}) {
-  const safe = String(lane || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+export function worktreePathFor(lane, { root = WORKTREE_ROOT, sourceRepo } = {}) {
+  const safe = safeSegment(lane);
   if (!safe) throw new Error("worktreePathFor: lane name is required");
+  if (sourceRepo) return path.join(root, sourceRepoDirectoryName(sourceRepo), `lane-${safe}`);
   return path.join(root, `lane-${safe}`);
 }
 
 /** Branch a given lane commits on. Never main; that is the integration owner's. */
 export function branchNameFor(lane) {
-  const safe = String(lane || "").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+  const safe = safeSegment(lane);
   if (!safe) throw new Error("branchNameFor: lane name is required");
   return `lane/${safe}`;
 }
@@ -91,15 +103,15 @@ export function ensureLaneWorktree(lane, deps = {}) {
   const _exec = deps._exec || execFileSync;
   const _fs = deps._fs || fs;
   const root = deps.root || WORKTREE_ROOT;
-  const repoRoot = deps.repoRoot || REPO_ROOT;
+  const sourceRepo = path.resolve(deps.sourceRepo || deps.repoRoot || REPO_ROOT);
 
   let target;
   let branch;
   try {
-    target = worktreePathFor(lane, { root });
+    target = worktreePathFor(lane, { root, sourceRepo: deps.sourceRepo });
     branch = branchNameFor(lane);
   } catch (err) {
-    return { path: repoRoot, branch: null, created: false, isolated: false, dirty: null, reason: `bad lane name: ${err.message}` };
+    return { path: sourceRepo, branch: null, created: false, isolated: false, dirty: null, reason: `bad lane name: ${err.message}` };
   }
 
   try {
@@ -131,19 +143,19 @@ export function ensureLaneWorktree(lane, deps = {}) {
     // -B so a re-run after the directory was deleted by hand still works: the
     // branch may survive its worktree, and `git worktree add -b` on an existing
     // branch fails outright.
-    git(["worktree", "add", "-B", branch, target, "HEAD"], { cwd: repoRoot, _exec });
+    git(["worktree", "add", "-B", branch, target, "HEAD"], { cwd: sourceRepo, _exec });
     return { path: target, branch, created: true, isolated: true, dirty: 0, reason: "worktree created" };
   } catch (err) {
-    // Fall back to the shared root, and SAY SO. A silent fallback here would
+    // Fall back to the source repo, and SAY SO. A silent fallback here would
     // recreate the exact bug this module exists to prevent, with a module in
     // place that everyone assumes is protecting them.
     return {
-      path: repoRoot,
+      path: sourceRepo,
       branch: null,
       created: false,
       isolated: false,
       dirty: null,
-      reason: `worktree unavailable, falling back to the shared repo root: ${err && err.message ? err.message : err}`,
+      reason: `worktree unavailable, falling back to the source repo: ${err && err.message ? err.message : err}`,
     };
   }
 }

@@ -121,6 +121,81 @@ async function t3_createsTheWorktreeWhenAbsent() {
   } catch (err) { bad(name, err); }
 }
 
+async function t3b_withoutSourceRepoKeepsTheOldPathAndCwd() {
+  const name = "W3b omitting sourceRepo keeps the original target path and git cwd";
+  try {
+    const fs = fakeFs({ exists: () => false });
+    const ex = fakeExec();
+    const r = ensureLaneWorktree("corleone", { _fs: fs, _exec: ex.exec });
+    const oldTarget = path.join(WORKTREE_ROOT, "lane-corleone");
+
+    assert.equal(worktreePathFor("corleone"), oldTarget, "the no-sourceRepo path remains byte-identical");
+    assert.equal(r.path, oldTarget, "ensureLaneWorktree still targets the old lane path");
+
+    const add = ex.calls.find((c) => c.args.slice(2, 4).join(" ") === "worktree add");
+    assert.ok(add, "git worktree add was called");
+    assert.equal(add.cwd, REPO_ROOT, "the default source repository is still Aidit OS");
+    assertGitCallIsSafe(add, REPO_ROOT);
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function t3c_sourceRepoGetsItsOwnSafeWorktreeDirectory() {
+  const name = "W3c sourceRepo adds a sanitized repo directory under the worktree root";
+  try {
+    const sourceRepo = "D:\\AI\\Aidit OS\\ventures\\caveman-trading-os";
+    const p = worktreePathFor("corleone", { sourceRepo });
+    assert.equal(p, path.join(WORKTREE_ROOT, "caveman-trading-os", "lane-corleone"));
+    assert.equal(path.relative(WORKTREE_ROOT, p).startsWith(".."), false, "target stays under the worktree root");
+    assert.equal(path.isAbsolute(path.relative(WORKTREE_ROOT, p)), false, "target does not escape through an absolute segment");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function t3d_sourceRepoControlsGitCwdTargetAndFallback() {
+  const name = "W3d sourceRepo controls git cwd while keeping the lane branch name";
+  try {
+    const sourceRepo = "D:\\AI\\Aidit OS\\ventures\\sjs-superapps";
+    const resolvedSourceRepo = path.resolve(sourceRepo);
+    const fs = fakeFs({ exists: () => false });
+    const ex = fakeExec();
+    const r = ensureLaneWorktree("corleone", { sourceRepo, _fs: fs, _exec: ex.exec });
+    const add = ex.calls.find((c) => c.args.slice(2, 4).join(" ") === "worktree add");
+
+    assert.equal(r.path, path.join(WORKTREE_ROOT, "sjs-superapps", "lane-corleone"));
+    assert.equal(r.branch, "lane/corleone", "the branch name is still repo-local");
+    assert.ok(add, "git worktree add was called");
+    assert.equal(add.cwd, resolvedSourceRepo, "worktree add runs in the source repo");
+    assert.equal(add.args[5], "lane/corleone", "the branch argument omits the repo name");
+    assertGitCallIsSafe(add, resolvedSourceRepo);
+
+    const failing = fakeExec(() => { throw new Error("fatal: not a git repository"); });
+    const fallback = ensureLaneWorktree("corleone", { sourceRepo, _fs: fs, _exec: failing.exec });
+    assert.equal(fallback.path, resolvedSourceRepo, "failure falls back to the source repo, not Aidit OS");
+    assert.equal(fallback.isolated, false);
+    assert.ok(fallback.reason, "fallback reason names what went wrong");
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
+async function t3e_sourceRepoSegmentCannotEscapeTheWorktreeRoot() {
+  const name = "W3e hostile sourceRepo endings become one safe directory segment";
+  try {
+    for (const [sourceRepo, safeSegment] of [
+      ["D:\\AI\\Aidit OS\\ventures\\SJS Super Apps", "sjs-super-apps"],
+      ["D:\\AI\\Aidit OS\\ventures\\..", "--"],
+    ]) {
+      const p = worktreePathFor("corleone", { sourceRepo });
+      const rel = path.relative(WORKTREE_ROOT, p);
+      assert.equal(path.isAbsolute(rel), false, `${sourceRepo} stays relative to the root`);
+      assert.equal(rel.startsWith(".."), false, `${sourceRepo} does not walk above the root`);
+      assert.equal(rel.split(path.sep)[0], safeSegment, `${sourceRepo} uses one sanitized repo segment`);
+      assert.equal(path.basename(path.dirname(p)), safeSegment, `${sourceRepo} cannot introduce separators`);
+    }
+    ok(name);
+  } catch (err) { bad(name, err); }
+}
+
 async function t4_reusesAnExistingWorktree() {
   const name = "W4 an existing worktree is reused, not recreated";
   try {
@@ -226,6 +301,10 @@ async function main() {
   await t1_eachLaneGetsItsOwnPathAndBranch();
   await t2_laneNamesAreSanitised();
   await t3_createsTheWorktreeWhenAbsent();
+  await t3b_withoutSourceRepoKeepsTheOldPathAndCwd();
+  await t3c_sourceRepoGetsItsOwnSafeWorktreeDirectory();
+  await t3d_sourceRepoControlsGitCwdTargetAndFallback();
+  await t3e_sourceRepoSegmentCannotEscapeTheWorktreeRoot();
   await t4_reusesAnExistingWorktree();
   await t4b_reuseReportsTheDirtItIsHandingOver();
   await t5_fallbackIsReportedNotSilent();
