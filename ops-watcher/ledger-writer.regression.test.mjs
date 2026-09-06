@@ -306,6 +306,82 @@ async function t10_eventIdentityDoesNotDependOnSeq() {
   ok("T10: event identity ignores seq");
 }
 
+async function t11_authRequiredListResultIsAnErrorNotAnEmptyBoard() {
+  const h = harness({
+    entries: [],
+    extraDeps: {
+      listIssues: async () => ({ issues: [], networkError: false, authRequired: true }),
+    },
+  });
+
+  const result = await runLedgerWriterOnce(h.deps);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.appended, 0);
+  assert.match(result.errors.join("\n"), /issues list auth required/);
+  assert.equal(h.appendedBatches.length, 0, "auth failure must not be treated as a clean empty board");
+  ok("T11: list authRequired is reported as an error before empty issues");
+}
+
+async function t12_networkErrorListResultIsAnErrorNotAnEmptyBoard() {
+  const h = harness({
+    entries: [],
+    extraDeps: {
+      listIssues: async () => ({ issues: [], networkError: true, networkErrorMessage: "ECONNREFUSED" }),
+    },
+  });
+
+  const result = await runLedgerWriterOnce(h.deps);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.appended, 0);
+  assert.match(result.errors.join("\n"), /issues list network error: ECONNREFUSED/);
+  assert.equal(h.appendedBatches.length, 0, "network failure must not be treated as a clean empty board");
+  ok("T12: list networkError is reported as an error before empty issues");
+}
+
+async function t13_legitimateEmptyIssueListStillSucceeds() {
+  const h = harness({
+    entries: [],
+    extraDeps: {
+      listIssues: async () => ({ issues: [], networkError: false, authRequired: false }),
+    },
+  });
+
+  const result = await runLedgerWriterOnce(h.deps);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.derived, 0);
+  assert.equal(result.appended, 0);
+  assert.deepEqual(result.errors, []);
+  ok("T13: legitimate empty issue list remains a successful empty board");
+}
+
+async function t14_legacyListResultShapesStillReadIssues() {
+  const shapes = [
+    { name: "bare array", value: [{ issue: issue({ id: "iss-array", identifier: "KOL-ARRAY" }), comments: [] }] },
+    { name: "issues property", value: { issues: [{ issue: issue({ id: "iss-issues", identifier: "KOL-ISSUES" }), comments: [] }] } },
+    { name: "body property", value: { body: [{ issue: issue({ id: "iss-body", identifier: "KOL-BODY" }), comments: [] }] } },
+  ];
+
+  for (const shape of shapes) {
+    const h = harness({
+      entries: [],
+      extraDeps: {
+        listIssues: async () => shape.value,
+      },
+    });
+
+    const result = await runLedgerWriterOnce(h.deps);
+
+    assert.equal(result.ok, true, `${shape.name} should remain accepted`);
+    assert.equal(result.derived, 1, `${shape.name} should expose one issue`);
+    assert.equal(result.appended, 1, `${shape.name} should append the derived directive`);
+    assert.equal(h.appendedBatches[0][0].kind, KINDS.DIRECTIVE_CREATED);
+  }
+  ok("T14: legacy list result shapes still read issues");
+}
+
 async function main() {
   console.log("# ledger-writer regression tests");
   const tests = [
@@ -319,6 +395,10 @@ async function main() {
     t8_fetchesCommentsWhenListIssuesDoesNotEmbedThem,
     t9_discoveryUsesTheMeasuredRetryContract,
     t10_eventIdentityDoesNotDependOnSeq,
+    t11_authRequiredListResultIsAnErrorNotAnEmptyBoard,
+    t12_networkErrorListResultIsAnErrorNotAnEmptyBoard,
+    t13_legitimateEmptyIssueListStillSucceeds,
+    t14_legacyListResultShapesStillReadIssues,
   ];
 
   for (const test of tests) {

@@ -45,24 +45,23 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // silently lost its token the moment the checkout moved or was renamed.
 const SECRETS_DIR = path.resolve(__dirname, "..", ".paperclip", "instances", "default", "secrets");
 
-// ---- Board/owner token resolution (reuses watcher.mjs's secrets-dir pattern) ----
-// watcher.mjs keeps resolvePaperclipToken() private; rather than duplicate the
-// logic and risk drift, we re-implement the identical pattern here (it is tiny and
-// the secrets-dir layout is a stable contract of this instance). Returns null on
-// any failure — never throws.
-export async function resolvePaperclipToken() {
+// ---- Board/owner token resolution ----
+// Returns null on any failure — never throws. This deliberately does not fall
+// back to arbitrary non-dot files in the secrets dir.
+export async function resolvePaperclipToken({ secretsDir = SECRETS_DIR } = {}) {
   let entries;
   try {
-    entries = await fs.readdir(SECRETS_DIR);
+    entries = await fs.readdir(secretsDir);
   } catch {
     return null;
   }
-  const pick =
-    entries.find((f) => /token/i.test(f)) ||
-    entries.find((f) => !f.startsWith("."));
+  // In local_trusted mode, no Authorization header is safer than inventing one:
+  // only a filename that explicitly names a token is eligible, never another
+  // secret such as a signing or master key.
+  const pick = entries.find((f) => /(^|[._-])token([._-]|$)/i.test(f));
   if (!pick) return null;
   try {
-    return (await fs.readFile(path.join(SECRETS_DIR, pick), "utf8")).trim() || null;
+    return (await fs.readFile(path.join(secretsDir, pick), "utf8")).trim() || null;
   } catch {
     return null;
   }

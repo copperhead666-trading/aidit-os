@@ -6,9 +6,12 @@
 //   node ops-watcher/paperclip-write-client.regression.test.mjs
 
 import assert from "node:assert/strict";
+import { promises as fs } from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import {
-  httpPost, httpPatch, ensureLabel, listLabels, postComment, patchIssue,
+  httpPost, httpPatch, ensureLabel, listLabels, postComment, patchIssue, resolvePaperclipToken,
 } from "./paperclip-write-client.mjs";
 
 let passed = 0, failed = 0;
@@ -144,6 +147,59 @@ async function testListLabelsNetworkErrorNoCrash() {
   } catch (e) { bad(name, e); }
 }
 
+async function withTempDir(fn) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pcp-token-test-"));
+  try {
+    return await fn(dir);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function testResolvePaperclipTokenDoesNotGuessNonTokenSecrets() {
+  const name = "(g) resolvePaperclipToken ignores non-token secret files";
+  try {
+    await withTempDir(async (dir) => {
+      await fs.writeFile(path.join(dir, "decision-signing.key"), "not-a-board-token", "utf8");
+      await fs.writeFile(path.join(dir, "master.key"), "also-not-a-board-token", "utf8");
+
+      const token = await resolvePaperclipToken({ secretsDir: dir });
+
+      assert.ok(token === null, "expected non-token secret files to be ignored");
+    });
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testResolvePaperclipTokenReadsNamedTokenFile() {
+  const name = "(h) resolvePaperclipToken reads a file whose name is token";
+  try {
+    await withTempDir(async (dir) => {
+      await fs.writeFile(path.join(dir, "board-token"), "test-board-token\n", "utf8");
+
+      const token = await resolvePaperclipToken({ secretsDir: dir });
+
+      assert.ok(token === "test-board-token", "expected named token file to be returned");
+    });
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
+async function testResolvePaperclipTokenUnreadableDirectoryReturnsNull() {
+  const name = "(i) resolvePaperclipToken unreadable directory -> null, no throw";
+  try {
+    await withTempDir(async (dir) => {
+      const notDirectory = path.join(dir, "not-a-directory");
+      await fs.writeFile(notDirectory, "x", "utf8");
+
+      const token = await resolvePaperclipToken({ secretsDir: notDirectory });
+
+      assert.ok(token === null, "expected unreadable secrets directory to return null");
+    });
+    ok(name);
+  } catch (e) { bad(name, e); }
+}
+
 async function main() {
   console.log("# paperclip-write-client regression tests");
   await testHttpPostHappy();
@@ -152,6 +208,9 @@ async function main() {
   await testEnsureLabelCreatesThenIdempotent();
   await testPostCommentAndPatchIssue();
   await testListLabelsNetworkErrorNoCrash();
+  await testResolvePaperclipTokenDoesNotGuessNonTokenSecrets();
+  await testResolvePaperclipTokenReadsNamedTokenFile();
+  await testResolvePaperclipTokenUnreadableDirectoryReturnsNull();
   console.log("");
   console.log(`REGRESSION RESULT: ${passed} passed, ${failed} failed`);
   if (failed > 0) { for (const f of failures) console.log(`  FAILED: ${f}`); process.exit(1); }
