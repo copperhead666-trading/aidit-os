@@ -442,7 +442,7 @@ export function classifyDirective(issue, comments, { now = Date.now, stalledAfte
     return { state: "done", reason: status === "done" ? "status done" : "result marker present", lastCommentAt };
   }
   if (!isDirective) return { state: "ignored", reason: "missing DIRECTIVE label", lastCommentAt };
-  if (cmts.some((c) => bodyOf(c).includes(REFUSED_MARKER))) {
+  if (cmts.some((c) => bodyOf(c).trim().startsWith(REFUSED_MARKER))) {
     return { state: "rejected", reason: "plan refused marker present", lastCommentAt };
   }
 
@@ -462,7 +462,7 @@ export function classifyDirective(issue, comments, { now = Date.now, stalledAfte
     return { state: "awaiting-approval", reason: "plan posted, awaiting owner decision", lastCommentAt };
   }
 
-  const hasWake = cmts.some((c) => bodyOf(c).includes(DISPATCH_MARKER));
+  const hasWake = cmts.some((c) => bodyOf(c).trim().startsWith(DISPATCH_MARKER));
   if (hasWake && newest && asMs(now) - newest.t >= stalledAfterMs) {
     return { state: "stalled", reason: "wake marker present and newest comment is stale", lastCommentAt };
   }
