@@ -56,7 +56,11 @@ function loadRegisterEntries() {
     const m = /^-\s*(.+?)\s*$/.exec(t);
     if (!m || (section !== 'forbidden_ai_fillers' && section !== 'forbidden_english_leftovers')) continue;
     const phrase = m[1].replace(/^['"]|['"]$/g, '');
-    entries.push({ token: phrase, pattern: new RegExp(escapeRe(phrase), 'gi'), say: say[phrase] || 'ganti dengan Bahasa Indonesia formal', isEnglish: section === 'forbidden_english_leftovers' });
+    // Whole-word match: "Sir" must not reject "kasir", "sangat" must not
+    // reject "sangatlah"-free text like "pemasangan" (v5 fix, 2026-09-14).
+    const word = /^[\p{L}\p{N}]/u.test(phrase) && /[\p{L}\p{N}]$/u.test(phrase);
+    const src = word ? `(?<![\\p{L}\\p{N}])${escapeRe(phrase)}(?![\\p{L}\\p{N}])` : escapeRe(phrase);
+    entries.push({ token: phrase, pattern: new RegExp(src, 'giu'), say: say[phrase] || 'ganti dengan Bahasa Indonesia formal', isEnglish: section === 'forbidden_english_leftovers' });
   }
   return entries;
 }
