@@ -26,7 +26,7 @@ function appendAsk(row) {
 /** Ask: title + body lines + default if silent. Buttons SETUJU/TOLAK/NANTI/JELASKAN. */
 export async function ask({ id, title, lines = [], defaultIfSilent, options = [], allowTechnical = false }) {
   const existing = listAsks({ openOnly: false }).find((a) => a.id === id);
-  if (existing) return { sent: false, duplicate: true, ask: existing };
+  if (existing && existing.sent) return { sent: false, duplicate: true, ask: existing };
   const text = [
     `*${title}*`,
     ...lines,
