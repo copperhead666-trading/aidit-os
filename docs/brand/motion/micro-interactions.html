@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="id"><head><meta charset="utf-8"><title>Aidit OS — motion: micro-interactions</title>
+<link rel="stylesheet" href="../tokens/tokens.css">
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+  body{margin:0;background:var(--ao-bg-canvas);color:var(--ao-text-primary);font:var(--ao-text-body-m);font-family:var(--ao-font-body);padding:48px}
+  h1{font:var(--ao-text-heading-l);font-family:var(--ao-font-display);letter-spacing:var(--ao-tracking-heading-l);margin:0 0 6px}
+  .sub{color:var(--ao-text-muted);margin:0 0 32px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px}
+  .demo{background:var(--ao-bg-surface);border:1px solid var(--ao-border-subtle);border-radius:var(--ao-radius-l);padding:20px;display:grid;gap:14px;align-content:start}
+  .demo h2{font:var(--ao-text-label);letter-spacing:var(--ao-tracking-label);text-transform:uppercase;color:var(--ao-accent);margin:0}
+  .demo p{margin:0;color:var(--ao-text-secondary);font:var(--ao-text-body-s)}
+  code{font:var(--ao-text-data-s);color:var(--ao-text-muted)}
+
+  /* 1. Button — press sinks 1px, hover lifts tone; 160 ms standard; focus ring gold */
+  .btn{font:var(--ao-text-body-m);font-weight:600;font-family:var(--ao-font-body);padding:10px 18px;border-radius:var(--ao-radius-m);border:1px solid transparent;cursor:pointer;
+       transition:background var(--ao-duration-fast) var(--ao-ease-standard),transform var(--ao-duration-instant) var(--ao-ease-standard),box-shadow var(--ao-duration-fast)}
+  .btn:active{transform:translateY(1px)}
+  .btn:focus-visible{outline:none;box-shadow:var(--ao-shadow-glow)}
+  .btn-primary{background:var(--ao-accent);color:var(--ao-accent-text-on)}.btn-primary:hover{background:var(--ao-accent-hover)}
+  .btn-brand{background:var(--ao-brand);color:var(--ao-brand-text-on)}.btn-brand:hover{background:var(--ao-brand-hover)}
+  .btn-ghost{background:transparent;color:var(--ao-text-primary);border-color:var(--ao-border-strong)}.btn-ghost:hover{background:var(--ao-bg-elevated)}
+
+  /* 2. Card — hover raises 2px + border warms; 240 ms enter easing */
+  .card{background:var(--ao-bg-elevated);border:1px solid var(--ao-border-subtle);border-radius:var(--ao-radius-m);padding:16px;
+        transition:transform var(--ao-duration-base) var(--ao-ease-enter),border-color var(--ao-duration-base),box-shadow var(--ao-duration-base)}
+  .card:hover{transform:translateY(-2px);border-color:var(--ao-border-strong);box-shadow:var(--ao-shadow-m)}
+  .card b{display:block;font:var(--ao-text-heading-s);font-family:var(--ao-font-display)}
+  .card span{color:var(--ao-text-muted);font:var(--ao-text-data-s)}
+
+  /* 3. Status chip — live = slow breathing dot (2.4 s), never blinking; waiting = static gold; blocked = static red */
+  .chip{display:inline-flex;align-items:center;gap:8px;padding:4px 10px;border-radius:var(--ao-radius-pill);background:var(--ao-bg-elevated);border:1px solid var(--ao-border-subtle);font:var(--ao-text-label);letter-spacing:var(--ao-tracking-label);text-transform:uppercase}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--c)}
+  .chip-live{--c:var(--ao-status-live)}.chip-live .dot{animation:breathe 2.4s var(--ao-ease-standard) infinite}
+  .chip-wait{--c:var(--ao-status-waiting)}.chip-block{--c:var(--ao-status-blocked)}.chip-idle{--c:var(--ao-status-idle)}
+  @keyframes breathe{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--c) 45%,transparent)}50%{box-shadow:0 0 0 6px transparent}}
+
+  /* 4. Decision confirm — the gate: card settles, a gold line draws left→right (320 ms), then the check fades in. One-way, no bounce. */
+  .decision{position:relative;overflow:hidden}
+  .decision::after{content:"";position:absolute;left:0;right:0;bottom:0;height:2px;background:var(--ao-accent);transform:scaleX(0);transform-origin:left;transition:transform var(--ao-duration-slow) var(--ao-ease-enter)}
+  .decision.is-confirmed::after{transform:scaleX(1)}
+  .decision .check{opacity:0;color:var(--ao-status-live);transition:opacity var(--ao-duration-base) var(--ao-ease-standard) var(--ao-duration-slow)}
+  .decision.is-confirmed .check{opacity:1}
+
+  /* 5. Loading — a thin gold sweep, 1.6 s, easeInOut, no spinner */
+  .sweep{height:3px;border-radius:2px;background:var(--ao-bg-elevated);overflow:hidden}
+  .sweep i{display:block;height:100%;width:35%;background:linear-gradient(90deg,transparent,var(--ao-accent),transparent);animation:sweep 1.6s var(--ao-ease-standard) infinite}
+  @keyframes sweep{from{transform:translateX(-100%)}to{transform:translateX(300%)}}
+
+  /* 6. Panel enter — content rises 8px and fades, 240 ms; stagger 40 ms per item */
+  .list>div{opacity:0;transform:translateY(8px);animation:in var(--ao-duration-base) var(--ao-ease-enter) forwards}
+  .list>div:nth-child(2){animation-delay:40ms}.list>div:nth-child(3){animation-delay:80ms}.list>div:nth-child(4){animation-delay:120ms}
+  @keyframes in{to{opacity:1;transform:none}}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style></head><body>
+<h1>Motion — micro-interactions</h1>
+<p class="sub">Prinsip: tenang di bawah beban. Durasi 80–320 ms, masuk pakai <code>ease-enter</code>, keluar <code>ease-exit</code>, tidak ada bounce, tidak ada blink. Reveal logo 900 ms hanya sekali saat buka.</p>
+<div class="grid">
+  <section class="demo"><h2>1 · Button</h2><p>Hover ubah tone, tekan turun 1 px, fokus = cincin emas.</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap"><button class="btn btn-primary">Setujui</button><button class="btn btn-brand">Jalankan</button><button class="btn btn-ghost">Tunda</button></div>
+    <code>--ao-duration-fast · --ao-ease-standard</code></section>
+  <section class="demo"><h2>2 · Card hover</h2><p>Naik 2 px, border menguat, bayangan m.</p>
+    <div class="card"><b>Venture planner</b><span>3 usulan · menunggu owner</span></div>
+    <code>--ao-duration-base · --ao-ease-enter</code></section>
+  <section class="demo"><h2>3 · Status chip</h2><p>Live bernapas 2,4 s; status lain diam.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><span class="chip chip-live"><i class="dot"></i>Live</span><span class="chip chip-wait"><i class="dot"></i>Menunggu</span><span class="chip chip-block"><i class="dot"></i>Terhenti</span><span class="chip chip-idle"><i class="dot"></i>Idle</span></div></section>
+  <section class="demo"><h2>4 · Decision confirm</h2><p>Garis emas menutup gerbang, lalu centang muncul.</p>
+    <div class="card decision" id="d"><b>Prioritaskan backlog 46</b><span>Keputusan owner</span><div class="check" style="margin-top:8px">✓ Disetujui · dicatat di ledger</div></div>
+    <button class="btn btn-primary" onclick="document.getElementById('d').classList.toggle('is-confirmed')">Konfirmasi</button></section>
+  <section class="demo"><h2>5 · Loading</h2><p>Sapuan emas tipis, bukan spinner.</p><div class="sweep"><i></i></div></section>
+  <section class="demo"><h2>6 · Panel enter</h2><p>Item naik 8 px + fade, stagger 40 ms.</p>
+    <div class="list"><div class="card"><b>Digest harian</b></div><div class="card"><b>Dispatch</b></div><div class="card"><b>Ledger</b></div></div></section>
+</div>
+</body></html>

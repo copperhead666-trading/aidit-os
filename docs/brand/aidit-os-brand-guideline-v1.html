@@ -1,0 +1,239 @@
+<!doctype html><html lang="id"><head><meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0A0B0E;--panel:#0F1116;--panel2:#14171E;--line:#ffffff14;
+  --ink:#EDEFF3;--mut:#9AA0AD;--dim:#5b616e;
+  --emerald:#1E5A46;--emerald2:#2F7D5E;--gold:#C6A860;--gold2:#E0C784;--ivory:#EFE7D6;--terra:#B0603A;
+  --mono:'JetBrains Mono',monospace;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{width:1360px;background:var(--bg);color:var(--ink);font-family:Inter,system-ui,sans-serif}
+.sec{padding:66px 76px;border-bottom:1px solid var(--line);position:relative}
+.tag{font:600 12px/1 var(--mono);letter-spacing:.26em;color:var(--gold);text-transform:uppercase}
+h2{font-family:Sora;font-weight:800;font-size:32px;letter-spacing:-.02em;margin:14px 0 6px}
+.lead{color:var(--mut);font-size:16px;line-height:1.6;max-width:760px}
+.weave{position:absolute;inset:0;opacity:.045;background:repeating-linear-gradient(45deg,var(--gold) 0 1px,transparent 1px 26px),repeating-linear-gradient(-45deg,var(--emerald2) 0 1px,transparent 1px 26px);pointer-events:none}
+/* logo mark */
+.mark{display:inline-block}
+svg.mk{display:block}
+/* cover */
+.cover{padding:88px 76px;display:flex;align-items:center;gap:56px;background:radial-gradient(700px 500px at 82% 20%,#12331f55,transparent 70%)}
+.cover .id{flex:0 0 auto}
+.cover h1{font-family:Sora;font-weight:800;font-size:76px;letter-spacing:-.03em;line-height:.95}
+.cover h1 b{color:var(--gold)}
+.cover .wm{font:600 13px/1 var(--mono);letter-spacing:.4em;color:var(--dim);margin-top:14px}
+.cover .tl{font-size:20px;color:var(--mut);margin-top:22px;max-width:520px;line-height:1.5}
+.cover .ver{margin-top:26px;font:600 12px/1 var(--mono);letter-spacing:.2em;color:var(--gold);border:1px solid var(--gold);display:inline-block;padding:8px 14px;border-radius:8px}
+/* grid helpers */
+.row{display:flex;gap:22px;margin-top:30px;flex-wrap:wrap}
+.card{background:linear-gradient(165deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:18px;padding:26px}
+.k{font:600 11px/1 var(--mono);letter-spacing:.18em;color:var(--dim);text-transform:uppercase}
+/* meaning */
+.mean{display:flex;gap:40px;align-items:center;margin-top:30px}
+.mean .diagram{flex:0 0 auto}
+.mean ul{list-style:none;display:flex;flex-direction:column;gap:18px}
+.mean li{display:flex;gap:16px;align-items:flex-start}
+.mean li .dot{width:12px;height:12px;border-radius:3px;margin-top:5px;flex:0 0 auto}
+.mean li h4{font-family:Sora;font-weight:700;font-size:17px}
+.mean li p{color:var(--mut);font-size:14px;line-height:1.5;margin-top:4px;max-width:560px}
+/* vision */
+.vm{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:30px}
+.vm .card h3{font-family:Sora;font-weight:700;font-size:20px;margin:10px 0 10px;color:var(--gold2)}
+.vm .card p{color:var(--ink);font-size:16px;line-height:1.6}
+.vm .card .sub{color:var(--mut);font-size:13.5px;line-height:1.55;margin-top:12px}
+/* values */
+.vals{display:grid;grid-template-columns:repeat(5,1fr);gap:16px;margin-top:30px}
+.val{background:linear-gradient(165deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:16px;padding:22px 18px}
+.val .n{font-family:Sora;font-weight:800;font-size:15px;color:var(--gold2)}
+.val .en{font:600 10px/1 var(--mono);letter-spacing:.14em;color:var(--dim);text-transform:uppercase;margin-top:5px}
+.val p{color:var(--mut);font-size:12.5px;line-height:1.5;margin-top:12px}
+/* logo system */
+.ls{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;margin-top:30px}
+.lb{border:1px solid var(--line);border-radius:16px;padding:28px;display:flex;flex-direction:column;align-items:center;gap:16px;justify-content:center;min-height:210px}
+.lb .cap{font:600 10.5px/1 var(--mono);letter-spacing:.12em;color:var(--dim);text-transform:uppercase;text-align:center}
+.lock{display:flex;align-items:center;gap:16px}
+.lock .wm2{font-family:Sora;font-weight:800;font-size:26px;letter-spacing:-.01em}
+.lock .wm2 b{color:var(--gold)}
+/* colors */
+.sw{display:grid;grid-template-columns:repeat(6,1fr);gap:14px;margin-top:30px}
+.chip{border-radius:14px;height:120px;border:1px solid var(--line);position:relative;overflow:hidden;display:flex;align-items:flex-end}
+.chip .meta{background:#0009;backdrop-filter:blur(2px);width:100%;padding:10px 12px}
+.chip .nm{font:600 12px/1 Inter}
+.chip .hx{font:500 11px/1 var(--mono);color:#ffffffcc;margin-top:5px}
+.chip .role{font:500 10px/1 var(--mono);color:#ffffff88;margin-top:4px}
+/* type */
+.ty{display:flex;flex-direction:column;gap:8px;margin-top:26px}
+.ty .r{display:flex;align-items:baseline;gap:22px;border-bottom:1px dashed var(--line);padding-bottom:12px}
+.ty .r .lab{font:600 11px/1 var(--mono);letter-spacing:.12em;color:var(--dim);width:180px;flex:0 0 auto;text-transform:uppercase}
+.dd{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:30px}
+.dd .col h4{font:600 12px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;margin-bottom:14px}
+.dd .do h4{color:var(--emerald2)}.dd .dont h4{color:var(--terra)}
+.dd ul{list-style:none;display:flex;flex-direction:column;gap:9px}
+.dd li{font-size:14px;color:var(--mut);padding-left:22px;position:relative;line-height:1.45}
+.dd .do li:before{content:'✓';position:absolute;left:0;color:var(--emerald2);font-weight:700}
+.dd .dont li:before{content:'✕';position:absolute;left:0;color:var(--terra);font-weight:700}
+.foot{padding:40px 76px;color:var(--dim);font:500 12px/1.6 var(--mono);letter-spacing:.04em}
+</style></head><body>
+
+<!-- MARK definition reused -->
+<!-- COVER -->
+<section class="cover">
+  <div class="weave"></div>
+  <div class="id mark">
+    <svg class="mk" width="180" height="180" viewBox="0 0 100 100" fill="none">
+      <rect x="10" y="10" width="80" height="80" rx="20" stroke="#1E5A46" stroke-width="6.5"/>
+      <path d="M30 66 A20 20 0 0 1 70 66" stroke="#C6A860" stroke-width="6.5" stroke-linecap="round"/>
+      <line x1="50" y1="30" x2="50" y2="46" stroke="#C6A860" stroke-width="6.5" stroke-linecap="round"/>
+    </svg>
+  </div>
+  <div>
+    <h1>AIDIT <b>OS</b></h1>
+    <div class="wm">AUTONOMOUS · FOUNDER · SYSTEM</div>
+    <div class="tl">Sistem otonom yang menjalankan usaha — kamu tetap memegang komando.</div>
+    <div class="ver">BRAND GUIDELINE · v1 · 2026</div>
+  </div>
+</section>
+
+<!-- ARTI LOGO -->
+<section class="sec">
+  <div class="tag">01 · Arti Logo</div>
+  <h2>Gerbang yang terbangun</h2>
+  <p class="lead">Logo Aidit OS adalah sebuah <b>gerbang di dalam bingkai</b>: struktur yang kokoh melindungi cahaya yang sedang naik. Bukan gambar literal — sebuah tanda tentang cara kerja sistem ini.</p>
+  <div class="mean">
+    <div class="diagram">
+      <svg width="230" height="230" viewBox="0 0 100 100" fill="none">
+        <rect x="10" y="10" width="80" height="80" rx="20" stroke="#2F7D5E" stroke-width="6.5"/>
+        <path d="M30 66 A20 20 0 0 1 70 66" stroke="#E0C784" stroke-width="6.5" stroke-linecap="round"/>
+        <line x1="50" y1="30" x2="50" y2="46" stroke="#E0C784" stroke-width="6.5" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <ul>
+      <li><span class="dot" style="background:#2F7D5E"></span><div><h4>Bingkai emerald — Sistem</h4><p>Kotak yang membingkai = struktur, tata kelola, dan “operating system”. Ia menahan kekacauan agar kerja mengalir rapi. Sudut membulat = manusiawi, bukan mesin dingin. Emerald = tumbuh, tenang, dapat dipercaya.</p></div></li>
+      <li><span class="dot" style="background:#C6A860"></span><div><h4>Lengkungan emas — Gerbang & fajar</h4><p>Arch yang naik = ambang menuju babak baru, sekaligus atap yang menaungi. Emas = nilai, warisan rumah makan, dan hal berharga yang diangkat. Garis tegak = sumbu / komando yang tetap di tangan pemilik.</p></div></li>
+      <li><span class="dot" style="background:#EFE7D6"></span><div><h4>Maknanya utuh</h4><p>“Sistem yang memberi struktur, dan mengangkat yang berharga.” Aidit OS bekerja di dalam bingkai yang aman; yang naik ke atas adalah founder dan keluarganya.</p></div></li>
+    </ul>
+  </div>
+</section>
+
+<!-- VISI MISI -->
+<section class="sec">
+  <div class="tag">02 · Visi & Misi</div>
+  <h2>Untuk apa Aidit OS ada</h2>
+  <div class="vm">
+    <div class="card">
+      <div class="k">Visi</div>
+      <h3>Satu founder, sekelas institusi.</h3>
+      <p>Dunia di mana satu orang — bukan korporasi besar — bisa menjalankan banyak usaha dengan ketenangan dan presisi sebuah institusi, karena AI otonom yang bekerja untuknya sementara ia hidup dan membesarkan keluarganya.</p>
+      <div class="sub">Kedaulatan teknologi: pada akhirnya Aidit OS berdiri di atas AI milik sendiri, bukan menyewa kecerdasan orang lain selamanya.</div>
+    </div>
+    <div class="card">
+      <div class="k">Misi</div>
+      <h3>Mengubah niat jadi hasil yang terverifikasi.</h3>
+      <p>Aidit OS menerima maksud pemilik, merutekan pekerjaan ke agen-agen AI lewat gerbang keselamatan, memverifikasi dan mengintegrasikan hasilnya, lalu hanya memunculkan keputusan yang benar-benar butuh manusia.</p>
+      <div class="sub">Dibuat untuk dioperasikan oleh founder — bukan hanya engineer. Angka tak pernah dikarang; keputusan berisiko berhenti di pemilik.</div>
+    </div>
+  </div>
+</section>
+
+<!-- NILAI -->
+<section class="sec">
+  <div class="tag">03 · Nilai</div>
+  <h2>Lima nilai yang memandu</h2>
+  <div class="vals">
+    <div class="val"><div class="n">Amanah</div><div class="en">Stewardship</div><p>Menjaga usaha & keluarga seperti titipan. Data pribadi tak pernah disentuh; kepercayaan di atas kecepatan.</p></div>
+    <div class="val"><div class="n">Ketelitian</div><div class="en">Precision</div><p>Semua diverifikasi lewat gerbang. Angka nyata, bukan tebakan. Yang gagal tidak pernah diintegrasikan.</p></div>
+    <div class="val"><div class="n">Ketenangan</div><div class="en">Calm under load</div><p>Tenang saat beban tinggi. Antarmuka yang menenangkan, bukan membanjiri; founder tetap fokus.</p></div>
+    <div class="val"><div class="n">Kedaulatan</div><div class="en">Sovereignty</div><p>Memiliki alat sendiri. Menuju AI/LLM milik sendiri agar tak selamanya bergantung pada AI berbayar.</p></div>
+    <div class="val"><div class="n">Berakar</div><div class="en">Rooted</div><p>Lahir dari rumah makan keluarga. Teknologi tinggi yang tidak melupakan tanah, keluarga, dan asal.</p></div>
+  </div>
+</section>
+
+<!-- SISTEM LOGO -->
+<section class="sec">
+  <div class="tag">04 · Sistem Logo</div>
+  <h2>Satu tanda, banyak konteks</h2>
+  <p class="lead">Mark utama di gelap. Inverse untuk latar terang. Monokrom untuk satu warna. Favicon untuk ukuran kecil. Lockup horizontal dengan wordmark untuk header.</p>
+  <div class="ls">
+    <div class="lb" style="background:#0A0B0E">
+      <svg width="90" height="90" viewBox="0 0 100 100" fill="none"><rect x="10" y="10" width="80" height="80" rx="20" stroke="#1E5A46" stroke-width="6.5"/><path d="M30 66 A20 20 0 0 1 70 66" stroke="#C6A860" stroke-width="6.5" stroke-linecap="round"/><line x1="50" y1="30" x2="50" y2="46" stroke="#C6A860" stroke-width="6.5" stroke-linecap="round"/></svg>
+      <div class="cap">Primary · on dark</div>
+    </div>
+    <div class="lb" style="background:#EFE7D6">
+      <svg width="90" height="90" viewBox="0 0 100 100" fill="none"><rect x="10" y="10" width="80" height="80" rx="20" stroke="#1E5A46" stroke-width="6.5"/><path d="M30 66 A20 20 0 0 1 70 66" stroke="#B08A2E" stroke-width="6.5" stroke-linecap="round"/><line x1="50" y1="30" x2="50" y2="46" stroke="#B08A2E" stroke-width="6.5" stroke-linecap="round"/></svg>
+      <div class="cap" style="color:#5b616e">Inverse · on ivory</div>
+    </div>
+    <div class="lb" style="background:#14171E">
+      <svg width="90" height="90" viewBox="0 0 100 100" fill="none"><rect x="10" y="10" width="80" height="80" rx="20" stroke="#EDEFF3" stroke-width="6.5"/><path d="M30 66 A20 20 0 0 1 70 66" stroke="#EDEFF3" stroke-width="6.5" stroke-linecap="round"/><line x1="50" y1="30" x2="50" y2="46" stroke="#EDEFF3" stroke-width="6.5" stroke-linecap="round"/></svg>
+      <div class="cap">Mono · one color</div>
+    </div>
+    <div class="lb" style="background:#0A0B0E">
+      <div style="display:flex;gap:14px;align-items:center">
+        <svg width="46" height="46" viewBox="0 0 100 100" fill="none"><rect x="10" y="10" width="80" height="80" rx="22" fill="#0F1116" stroke="#1E5A46" stroke-width="8"/><path d="M32 64 A18 18 0 0 1 68 64" stroke="#C6A860" stroke-width="8" stroke-linecap="round"/></svg>
+        <svg width="28" height="28" viewBox="0 0 100 100" fill="none"><rect x="8" y="8" width="84" height="84" rx="24" fill="#0F1116" stroke="#1E5A46" stroke-width="10"/><path d="M32 62 A18 18 0 0 1 68 62" stroke="#C6A860" stroke-width="10" stroke-linecap="round"/></svg>
+      </div>
+      <div class="cap">Favicon · 32 / 16 px</div>
+    </div>
+  </div>
+  <div class="row">
+    <div class="card" style="flex:1;display:flex;align-items:center;justify-content:center;gap:20px;background:#0A0B0E">
+      <svg width="64" height="64" viewBox="0 0 100 100" fill="none"><rect x="10" y="10" width="80" height="80" rx="20" stroke="#1E5A46" stroke-width="6.5"/><path d="M30 66 A20 20 0 0 1 70 66" stroke="#C6A860" stroke-width="6.5" stroke-linecap="round"/><line x1="50" y1="30" x2="50" y2="46" stroke="#C6A860" stroke-width="6.5" stroke-linecap="round"/></svg>
+      <div class="lock"><span class="wm2">AIDIT <b>OS</b></span></div>
+    </div>
+    <div class="card" style="flex:0 0 320px">
+      <div class="k">Clear space & min size</div>
+      <p style="color:var(--mut);font-size:13.5px;line-height:1.55;margin-top:12px">Ruang bebas minimal = ½ tinggi mark di setiap sisi. Ukuran minimal: 24 px (layar), 10 mm (cetak). Jangan letakkan elemen lain di dalam ruang bebas.</p>
+    </div>
+  </div>
+</section>
+
+<!-- WARNA -->
+<section class="sec">
+  <div class="tag">05 · Warna</div>
+  <h2>Palet</h2>
+  <p class="lead">Dasar gelap yang tenang, aksen heritage emas & emerald, ivory untuk kehangatan. Kontras tinggi, hemat warna.</p>
+  <div class="sw">
+    <div class="chip" style="background:#0A0B0E"><div class="meta"><div class="nm">Charcoal</div><div class="hx">#0A0B0E</div><div class="role">bg / dasar</div></div></div>
+    <div class="chip" style="background:#14171E"><div class="meta"><div class="nm">Panel</div><div class="hx">#14171E</div><div class="role">permukaan</div></div></div>
+    <div class="chip" style="background:#1E5A46"><div class="meta"><div class="nm">Emerald</div><div class="hx">#1E5A46</div><div class="role">primer / sistem</div></div></div>
+    <div class="chip" style="background:#C6A860"><div class="meta"><div class="nm">Champagne Gold</div><div class="hx">#C6A860</div><div class="role">aksen / nilai</div></div></div>
+    <div class="chip" style="background:#EFE7D6"><div class="meta"><div class="nm" style="color:#101311">Ivory</div><div class="hx" style="color:#101311cc">#EFE7D6</div><div class="role" style="color:#10131188">hangat / terang</div></div></div>
+    <div class="chip" style="background:#B0603A"><div class="meta"><div class="nm">Terracotta</div><div class="hx">#B0603A</div><div class="role">peringatan</div></div></div>
+  </div>
+</section>
+
+<!-- TIPOGRAFI -->
+<section class="sec">
+  <div class="tag">06 · Tipografi</div>
+  <h2>Tiga suara huruf</h2>
+  <div class="ty">
+    <div class="r"><div class="lab">Sora · Display</div><div style="font-family:Sora;font-weight:800;font-size:40px;letter-spacing:-.02em">Mesin otonom yang berakar</div></div>
+    <div class="r"><div class="lab">Inter · Body</div><div style="font-size:17px;color:var(--mut);max-width:640px">Teks isi memakai Inter — bersih, netral, mudah dibaca founder non-engineer di layar mana pun.</div></div>
+    <div class="r"><div class="lab">JetBrains Mono · Data</div><div style="font-family:var(--mono);font-size:15px;color:var(--gold2)">COVERAGE 94.7% · OUTSIDE_LEASE 0 · BACKLOG 46</div></div>
+  </div>
+  <p class="lead" style="margin-top:22px">Skala: 12 · 14 · 16 · 20 · 28 · 40 · 64. Judul rapat (-2% tracking), label mono renggang (+18%). Angka & status selalu mono.</p>
+</section>
+
+<!-- DO DONT -->
+<section class="sec">
+  <div class="tag">07 · Penerapan</div>
+  <h2>Boleh & jangan</h2>
+  <div class="dd">
+    <div class="col do"><h4>Boleh</h4><ul>
+      <li>Beri ruang napas; biarkan mark berdiri sendiri.</li>
+      <li>Emas untuk aksen kecil — bukan bidang besar.</li>
+      <li>Latar gelap sebagai default; ivory untuk konteks terang.</li>
+      <li>Pakai mono saat satu warna atau ukuran kecil.</li>
+    </ul></div>
+    <div class="col dont"><h4>Jangan</h4><ul>
+      <li>Jangan miringkan, regangkan, atau putar mark.</li>
+      <li>Jangan tambah gradient ramai atau bayangan tebal.</li>
+      <li>Jangan taruh mark di foto ramai tanpa panel.</li>
+      <li>Jangan ganti warna di luar palet resmi.</li>
+    </ul></div>
+  </div>
+</section>
+
+<div class="foot">AIDIT OS · Brand Guideline v1 · 2026 — dokumen hidup, akan berkembang bersama produk. Logo & sistem visual ini milik pemilik Aidit OS.</div>
+</body></html>

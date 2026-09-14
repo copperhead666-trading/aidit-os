@@ -1,0 +1,69 @@
+{
+  "$schema": "./company.schema.json",
+  "version": 5,
+  "company": {
+    "id": "aidit-os",
+    "name": "Aidit OS",
+    "owner": { "name": "Aditya", "address": "Bapak", "telegramChatId": "8987077084", "language": "id-ID" },
+    "persona": { "name": "JARVIS", "botUsername": "ahmadsuperbot", "register": "config/persona/register.yaml", "lexicon": "config/persona/lexicon.json" },
+    "timezone": "Asia/Jakarta",
+    "reportHours": [7, 19]
+  },
+  "ventures": [
+    {
+      "id": "sjs-superapps",
+      "name": "SJS SuperApps",
+      "repo": "https://github.com/copperhead666-trading/sjs-superapps",
+      "localPath": "D:/AI/AIdit OS/ventures/sjs-superapps",
+      "stack": "Next.js static + Supabase + Netlify",
+      "staging": { "branch": "dev", "host": "netlify" },
+      "goal": "Satu-satunya aplikasi operasional (menggantikan LOKA kasir); cutover 2026-09-21",
+      "milestones": [
+        { "date": "2026-09-15", "what": "PRD SJS v5 diajukan ke owner (Ask)" },
+        { "date": "2026-09-18", "what": "Alur inti kasir shift-jual-tutup, stok, pembelian, kas, approval" },
+        { "date": "2026-09-19", "what": "Impor data master + panduan operator (GIF/video)" },
+        { "date": "2026-09-20", "what": "Uji paralel dengan LOKA" },
+        { "date": "2026-09-21", "what": "Cutover bila owner SETUJU" }
+      ],
+      "status": "active"
+    },
+    {
+      "id": "caveman-trading-os",
+      "name": "Caveman Trading OS",
+      "repo": "https://github.com/copperhead666-trading/caveman-trading-os",
+      "localPath": "D:/AI/AIdit OS/ventures/caveman-trading-os",
+      "stack": "fase 1: arsitektur/kontrak",
+      "goal": "Modul pertama tanpa uang nyata (backtest/paper) 2026-10-01; broker/kredensial tidak pernah disentuh mesin",
+      "milestones": [
+        { "date": "2026-09-20", "what": "README owner (tujuan, batasan) diminta lewat Ask" },
+        { "date": "2026-10-01", "what": "Modul pertama paper/backtest" }
+      ],
+      "forbiddenPaths": ["MT5 Credentials.env", "**/*.env"],
+      "status": "waiting-owner-readme"
+    }
+  ],
+  "departments": [
+    { "id": "product", "name": "Product/PM", "order": 1, "head": { "id": "head-product", "laneChain": ["claude-sonnet", "claude-opus"] }, "workers": ["kimi-k27", "codex"], "mission": "README/PRD venture -> backlog tiket -> prioritas; ajukan PRD ke owner" },
+    { "id": "engineering", "name": "Engineering", "order": 2, "head": { "id": "head-engineering", "laneChain": ["claude-sonnet"] }, "workers": ["codex", "kimi-k27", "glm-51"], "mission": "kode, tes, PR, merge bila QA hijau, deploy staging" },
+    { "id": "design", "name": "Design", "order": 3, "head": { "id": "head-design", "laneChain": ["kimi-k3", "gpt-6-astra", "claude-sonnet", "kimi-k27"] }, "workers": ["canva-hand", "imagegen"], "mission": "UI, aset, deck, video/GIF demo" },
+    { "id": "qa", "name": "QA/Review", "order": 4, "head": { "id": "head-qa", "laneChain": ["kimi-k3", "gpt-6-astra", "claude-sonnet", "kimi-k27"] }, "workers": ["gibran-hermes", "tests"], "mission": "gerbang merge; menolak PR tanpa tes/acceptance" },
+    { "id": "ops", "name": "Ops/Infra", "order": 5, "head": { "id": "head-ops", "laneChain": ["kimi-k3", "gpt-6-astra", "claude-sonnet", "kimi-k27"] }, "workers": ["scripts", "glm-53-flash"], "mission": "self-repair, probe lane, disk/RAM, bersih-bersih Lenovo" },
+    { "id": "finance", "name": "Finance/Kuota", "order": 6, "head": { "id": "head-finance", "laneChain": ["kimi-k3", "gpt-6-astra", "claude-sonnet", "kimi-k27"] }, "workers": ["glm-53-flash"], "mission": "pemakaian Claude/Codex/Ollama/Kimi per hari & per venture; Ask hanya bila menyentuh uang" },
+    { "id": "marketing", "name": "Marketing/Content", "order": 7, "head": { "id": "head-marketing", "laneChain": ["kimi-k3", "gpt-6-astra", "claude-sonnet", "kimi-k27"] }, "workers": ["canva-hand", "glm-52"], "mission": "funnel & konten venture (setelah produk ada)" },
+    { "id": "research", "name": "Research", "order": 8, "head": { "id": "head-research", "laneChain": ["kimi-k3", "gpt-6-astra", "claude-sonnet", "kimi-k27"] }, "workers": ["gibran-survey", "web"], "mission": "riset pasar/teknologi -> gbrain" }
+  ],
+  "conductor": {
+    "id": "conductor",
+    "name": "JARVIS",
+    "intervalMinutes": 30,
+    "routineModel": "sonnet",
+    "decisionModel": "opus",
+    "opusTurnsPerDay": 40,
+    "gitAuthor": { "name": "CONDUCTOR", "email": "conductor@aidit-os.local" }
+  },
+  "autonomy": {
+    "withoutAsk": ["kode+tes+PR di repo venture", "merge ke main bila tes+QA hijau", "deploy staging (SJS dev->Netlify, migrasi Supabase staging)", "desain/aset", "restart layanan", "bunuh lane macet", "jalankan ulang task", "hapus cache/temp/worktree lama saat disk < 10%", "rotasi log", "alokasi lane dari probe", "restart Lenovo bila macet total"],
+    "requireAsk": ["produksi venture", "uang", "orang luar (email/DM/pembayaran)", "perubahan amplop ini", "pembelian"],
+    "forbidden": ["membaca kredensial broker", "menghapus dokumen pribadi/akademik/foto", "membuka port ke internet (hanya Tailscale)", "meter per-token"]
+  }
+}

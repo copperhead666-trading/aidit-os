@@ -1,0 +1,31 @@
+{
+  "forbidden": [
+    { "token": "pm2",       "pattern": "\\bpm2\\b",           "say": "the engine" },
+    { "token": "resurrect", "pattern": "\\bresurrect\\b",      "say": "restarted" },
+    { "token": "worktree",  "pattern": "\\bworktree\\b",       "say": "workspace" },
+    { "token": "KOL-\\d+",  "pattern": "\\bKOL-\\d+\\b",       "say": "the task" },
+    { "token": "PATCH",      "pattern": "\\bPATCH\\b",          "say": "update" },
+    { "token": "POST",       "pattern": "\\bPOST\\b",           "say": "submit" },
+    { "token": "lane",       "pattern": "\\blane\\b",           "say": "worker" },
+    { "token": "cooldown",  "pattern": "\\bcooldown\\b",       "say": "resting" },
+    { "token": "heartbeat", "pattern": "\\bheartbeat\\b",      "say": "the engine" },
+    { "token": "daemon",    "pattern": "\\bdaemon\\b",          "say": "background service" },
+    { "token": "merge",     "pattern": "\\bmerge\\b",           "say": "combine" },
+    { "token": "commit",    "pattern": "\\bcommit\\b",           "say": "save" },
+    { "token": "branch",    "pattern": "\\bbranch\\b",           "say": "version line" },
+    { "token": "regex",     "pattern": "\\bregex\\b",            "say": "pattern" },
+    { "token": "401",       "pattern": "\\b401\\b",              "say": "access denied" },
+    { "token": "exit_\\d+", "pattern": "\\bexit_\\d+\\b",       "say": "an exit code" },
+    { "token": "stdout",    "pattern": "\\bstdout\\b",          "say": "output" },
+    { "token": "JSON",      "pattern": "\\bJSON\\b",            "say": "structured data" },
+    { "token": "MCP",       "pattern": "\\bMCP\\b",              "say": "the protocol" },
+    { "token": "dispatch",  "pattern": "\\bdispatch\\b",          "say": "send" },
+    { "token": "sweep",    "pattern": "\\bsweep\\b",            "say": "scan" },
+    { "token": "runner",    "pattern": "\\brunner\\b",           "say": "worker" },
+    { "token": "label",    "pattern": "\\blabel\\b",             "say": "tag" },
+    { "token": "status:todo",     "pattern": "\\bstatus:?\\s*todo\\b",      "say": "to-do" },
+    { "token": "status:backlog",  "pattern": "\\bstatus:?\\s*backlog\\b",  "say": "backlog" },
+    { "token": "in_review",       "pattern": "\\bin_review\\b",           "say": "under review" },
+    { "token": "PR",         "pattern": "\\bPR\\b",              "say": "the pull request" }
+  ]
+}

@@ -1,0 +1,244 @@
+{
+  "department": "design",
+  "version": 1,
+  "preference": [
+    "canva-hand (when authorised)",
+    "imagegen (free, keyless, lower quality)",
+    "HTML/SVG built in-repo (render-design, build-mark)"
+  ],
+  "hands": [
+    {
+      "id": "canva-hand",
+      "script": "scripts/design/canva-hand.mjs",
+      "usage": "node scripts/design/canva-hand.mjs <brief.md|\"prompt\"> <outDir> [--n 4] [--type logo|social|presentation] [--dry-run]",
+      "purpose": "Generate design candidates through the Canva MCP under the owner's Pro account, headlessly: spawns `claude -p --strict-mcp-config` with only the canva server and the six generate/candidates/create/export tools, parses the lane's final {candidates,usage} block, downloads each presigned export_url to canva-<i>.png, writes canva.json (prompt, type, candidates, usage, ms, cliExit). Never fetches design.canva.ai thumbnails.",
+      "inputs": [
+        "prompt string or image-brief .md",
+        "Canva MCP registered in .mcp.json and authorised once via /mcp"
+      ],
+      "outputs": [
+        "<outDir>/canva-<i>.png",
+        "<outDir>/canva.json"
+      ],
+      "cost": "owner's Canva Pro quota only; no purchase, no key in repo",
+      "requires": "canva authorized (mcp-probe)",
+      "exit_codes": {
+        "0": "ok",
+        "1": "usage",
+        "2": "CLI/parse/download failure",
+        "3": "Canva belum login: jalankan /mcp di Claude Code (sekali)"
+      },
+      "test": "node --test scripts/design/canva-hand.test.mjs (offline; CANVA_HAND_CLI fake)"
+    },
+    {
+      "id": "build-tokens",
+      "script": "scripts/design/build-tokens.mjs",
+      "usage": "node scripts/design/build-tokens.mjs [outDir=docs/brand/tokens]",
+      "purpose": "Regenerate the design tokens (OKLCH colour ramps from the locked brand hexes, semantic dark/light aliases, type scale, space, radius, shadow, motion) and the WCAG contrast table.",
+      "inputs": [
+        "locked brand hexes (inline in the script)"
+      ],
+      "outputs": [
+        "tokens.json",
+        "tokens.css",
+        "contrast.json"
+      ],
+      "cost": "local"
+    },
+    {
+      "id": "build-mark",
+      "script": "scripts/design/build-mark.mjs",
+      "usage": "node scripts/design/build-mark.mjs <params.json> <out.svg> [brand|faithful|mask|mono:#hex|inverse]",
+      "purpose": "Rebuild the Aidit OS 'A' arch mark as clean vector geometry from the owner-approved fit parameters. Never hand-drawn; the params were fitted to the owner's approved raster.",
+      "inputs": [
+        "docs/brand/logo/aidit-os-mark.params.json"
+      ],
+      "outputs": [
+        "one mark SVG in the chosen colour mode"
+      ],
+      "cost": "local"
+    },
+    {
+      "id": "build-logo-kit",
+      "script": "scripts/design/build-logo-kit.mjs",
+      "usage": "node scripts/design/build-logo-kit.mjs [outDir=docs/brand/logo] [fontsDir=scripts/design/fonts]",
+      "purpose": "Generate the whole logo system: 9 mark variants, wordmark (Sora 800 outlines), horizontal/vertical lockups dark+light, favicon/PWA/apple/maskable/OG/Telegram icons, site.webmanifest and head snippet.",
+      "inputs": [
+        "<outDir>/aidit-os-mark.params.json",
+        "scripts/design/fonts/sora-800.woff"
+      ],
+      "outputs": [
+        "*.svg marks, wordmarks, lockups",
+        "icons/*.png",
+        "icons/favicon.svg",
+        "icons/site.webmanifest",
+        "icons/head-snippet.html"
+      ],
+      "cost": "local"
+    },
+    {
+      "id": "text2path",
+      "script": "scripts/design/text2path.mjs",
+      "usage": "node scripts/design/text2path.mjs <font.woff> <text> [fontSize=100] [letterSpacingEm=0]",
+      "purpose": "Convert a string to SVG path outlines with a bundled font (opentype.js), so wordmarks and lockups need no font at render time.",
+      "inputs": [
+        "scripts/design/fonts/*.woff"
+      ],
+      "outputs": [
+        "JSON { d, width, ascender, descender, capHeight, family } on stdout"
+      ],
+      "cost": "local"
+    },
+    {
+      "id": "render-design",
+      "script": "scripts/design/render-design.mjs",
+      "usage": "node scripts/design/render-design.mjs <input.html> <output.png> [width=1280] [height=720] [scale=2]",
+      "purpose": "Rasterize an HTML design (slide, card, poster, cockpit page) to a fixed-viewport PNG via headless Chromium.",
+      "inputs": [
+        "HTML file"
+      ],
+      "outputs": [
+        "PNG"
+      ],
+      "cost": "local"
+    },
+    {
+      "id": "render-full",
+      "script": "scripts/design/render-full.mjs",
+      "usage": "node scripts/design/render-full.mjs <input.html> <output.png> [width=1360]",
+      "purpose": "Full-page 2x screenshot of a tall HTML document (brand guideline, long decks).",
+      "inputs": [
+        "HTML file"
+      ],
+      "outputs": [
+        "PNG"
+      ],
+      "cost": "local"
+    },
+    {
+      "id": "capture-motion",
+      "script": "scripts/design/capture-motion.mjs",
+      "usage": "node scripts/design/capture-motion.mjs <input.html> <out.png> <videoDir> [w=1440] [h=1024] [ms=4800]",
+      "purpose": "Record the load-time motion of an HTML page to .webm and save the settled frame as PNG (poster for preview-sheet).",
+      "inputs": [
+        "HTML file with CSS/JS motion"
+      ],
+      "outputs": [
+        "PNG still",
+        "<videoDir>/*.webm"
+      ],
+      "cost": "local"
+    },
+    {
+      "id": "svg2png",
+      "script": "scripts/design/svg2png.mjs",
+      "usage": "node scripts/design/svg2png.mjs <in.svg> <out.png> [bg=#0A0B0E]",
+      "purpose": "Rasterize an SVG centred on a 600x600 canvas at 2x for quick review.",
+      "inputs": [
+        "SVG"
+      ],
+      "outputs": [
+        "PNG 1200x1200"
+      ],
+      "cost": "local"
+    },
+    {
+      "id": "crop",
+      "script": "scripts/design/crop.mjs",
+      "usage": "node scripts/design/crop.mjs <in.png> <out.png> <x> <y> <w> <h>",
+      "purpose": "Crop a rectangle out of a PNG (for example one candidate out of a Canva 4-up export). Image is laid out at 2000x2000; clip is in those units.",
+      "inputs": [
+        "PNG"
+      ],
+      "outputs": [
+        "PNG"
+      ],
+      "cost": "local"
+    },
+    {
+      "id": "vectorize",
+      "script": "scripts/design/vectorize.mjs",
+      "usage": "node scripts/design/vectorize.mjs <in.png> <out.svg>",
+      "purpose": "Trace a Canva raster export into a flat-colour SVG (imagetracerjs). Use to fit params or as a stop-gap vector; final marks go through build-mark.",
+      "inputs": [
+        "PNG (owner-exported)"
+      ],
+      "outputs": [
+        "SVG"
+      ],
+      "cost": "local",
+      "note": "loads imagetracerjs from jsDelivr; needs network, no paid spend"
+    },
+    {
+      "id": "preview-sheet",
+      "script": "scripts/design/preview-sheet.mjs",
+      "usage": "node scripts/design/preview-sheet.mjs <artifactDir> <out.png> [--title \"...\"] [--max 12]",
+      "purpose": "Contact sheet of a run's artifacts (from manifest.json or a glob) as one dark-theme PNG <= 1.5 MB for Telegram, plus <out>.json listing the tiles. Every deliverable ends with this.",
+      "inputs": [
+        "<artifactDir>/manifest.json (optional)",
+        "png/svg/html/webm/md artifacts"
+      ],
+      "outputs": [
+        "preview PNG",
+        "preview PNG .json"
+      ],
+      "cost": "local"
+    },
+    {
+      "id": "image-brief",
+      "script": "scripts/design/image-brief.mjs",
+      "usage": "node scripts/design/image-brief.mjs <brief.json> <out.md> [--canva]",
+      "purpose": "Turn a short brief into the 10-part art-directed prompt (docs/brand/DESIGN-PROMPT-STANDARD.md) with brand defaults filled in, as the .md imagegen consumes. --canva appends manual Canva instructions for the rare case the owner wants to run it; nothing depends on it.",
+      "inputs": [
+        "brief.json { goal, kind?, concept, composition, elements, palette, texture, typography, language, avoid, direction, variations? }"
+      ],
+      "outputs": [
+        "markdown whose first fenced block is the prompt + provenance"
+      ],
+      "cost": "local"
+    },
+    {
+      "id": "imagegen",
+      "script": "scripts/design/imagegen.mjs",
+      "usage": "node scripts/design/imagegen.mjs <brief.md|\"prompt\"> <outDir> [--n 4] [--size 1024] [--seed N] [--model flux]",
+      "purpose": "Generate raster candidates the system can produce itself: GET https://image.pollinations.ai/prompt/<prompt>?width&height&seed&nologo=true&model=flux (free, keyless). One retry on non-200, 60 s timeout. Writes cand-<seed>.png|jpg and imagegen.json (prompt, model, seeds, bytes, ms, errors). Exits 2 with a clear error when nothing was produced; never falls back.",
+      "inputs": [
+        "prompt string or image-brief .md"
+      ],
+      "outputs": [
+        "<outDir>/cand-<seed>.png|jpg",
+        "<outDir>/imagegen.json"
+      ],
+      "cost": "network, free, no key",
+      "known_limits": [
+        "endpoint answers JPEG even when PNG is asked; the true extension is kept",
+        "a 'pollinations.ai' watermark appears bottom-right despite nologo=true — crop it (crop.mjs) or use mark-from-raster --ignore-bottom 0.08",
+        "quality on 2026-09-12 test: mood-board grade, not logo-source grade; intermittent HTTP 500 on some seeds"
+      ]
+    },
+    {
+      "id": "mark-from-raster",
+      "script": "scripts/design/mark-from-raster.mjs",
+      "usage": "node scripts/design/mark-from-raster.mjs <in.png|jpg|svg> <out.svg> [--thr 0.12] [--colors 8] [--pad 0.04] [--no-snap] [--allow-terracotta] [--ignore-bottom 0.08]",
+      "purpose": "Fallback vector path when a geometric rebuild is not feasible: crop to the mark bbox (luminance/colour threshold vs the corner-sampled background), auto-trace (imagetracerjs), snap fills to the nearest locked brand hex (terracotta excluded unless allowed), transparent background, report path and colour counts to <out>.svg.json.",
+      "inputs": [
+        "PNG/JPG, or a Canva SVG that wraps a PNG"
+      ],
+      "outputs": [
+        "<out>.svg",
+        "<out>.svg.json"
+      ],
+      "cost": "local (imagetracerjs from jsDelivr, free)",
+      "known_limits": [
+        "gradients become 2-3 flat bands",
+        "edges are only as clean as the raster (a 264 px source traces rough)",
+        "does not invent geometry; for the Aidit mark use build-mark"
+      ]
+    }
+  ],
+  "rules": [
+    "never hand-draw a logo; rebuild from an owner-approved raster via build-mark params, or trace it with mark-from-raster",
+    "every deliverable ends with a preview PNG for the owner",
+    "no paid spend and no keys; the system generates candidates itself (imagegen) and curates them via the reviewer lane's vision; the owner only approves or rejects with a note"
+  ]
+}

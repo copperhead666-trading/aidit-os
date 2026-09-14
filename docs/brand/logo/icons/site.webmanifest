@@ -1,0 +1,25 @@
+{
+  "name": "Aidit OS",
+  "short_name": "Aidit",
+  "theme_color": "#0A0B0E",
+  "background_color": "#0A0B0E",
+  "display": "standalone",
+  "icons": [
+    {
+      "src": "pwa-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "pwa-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

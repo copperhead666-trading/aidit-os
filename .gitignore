@@ -18,3 +18,8 @@ dir-sidebar.jpeg
 .env
 .env.local
 .env.*.local
+
+# Paperclip instance (DB creds, secrets, logs)
+.paperclip/
+config/*.local.txt
+state/

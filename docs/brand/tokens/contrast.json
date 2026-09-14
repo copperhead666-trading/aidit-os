@@ -1,0 +1,516 @@
+[
+  {
+    "theme": "dark",
+    "fg": "text-primary",
+    "bg": "bg-canvas",
+    "ratio": 16,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": true
+  },
+  {
+    "theme": "dark",
+    "fg": "text-secondary",
+    "bg": "bg-canvas",
+    "ratio": 9.35,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": true
+  },
+  {
+    "theme": "dark",
+    "fg": "text-muted",
+    "bg": "bg-canvas",
+    "ratio": 6.21,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "dark",
+    "fg": "accent",
+    "bg": "bg-canvas",
+    "ratio": 8.59,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": true
+  },
+  {
+    "theme": "dark",
+    "fg": "brand",
+    "bg": "bg-canvas",
+    "ratio": 2.44,
+    "aa": false,
+    "aaLarge": false,
+    "aaa": false
+  },
+  {
+    "theme": "dark",
+    "fg": "success",
+    "bg": "bg-canvas",
+    "ratio": 6.31,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "dark",
+    "fg": "warning",
+    "bg": "bg-canvas",
+    "ratio": 4.29,
+    "aa": false,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "dark",
+    "fg": "danger",
+    "bg": "bg-canvas",
+    "ratio": 4.07,
+    "aa": false,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "dark",
+    "fg": "info",
+    "bg": "bg-canvas",
+    "ratio": 6.09,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "dark",
+    "fg": "text-primary",
+    "bg": "bg-surface",
+    "ratio": 14.58,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": true
+  },
+  {
+    "theme": "dark",
+    "fg": "text-secondary",
+    "bg": "bg-surface",
+    "ratio": 8.52,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": true
+  },
+  {
+    "theme": "dark",
+    "fg": "text-muted",
+    "bg": "bg-surface",
+    "ratio": 5.66,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "dark",
+    "fg": "accent",
+    "bg": "bg-surface",
+    "ratio": 7.83,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": true
+  },
+  {
+    "theme": "dark",
+    "fg": "brand",
+    "bg": "bg-surface",
+    "ratio": 2.23,
+    "aa": false,
+    "aaLarge": false,
+    "aaa": false
+  },
+  {
+    "theme": "dark",
+    "fg": "success",
+    "bg": "bg-surface",
+    "ratio": 5.75,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "dark",
+    "fg": "warning",
+    "bg": "bg-surface",
+    "ratio": 3.91,
+    "aa": false,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "dark",
+    "fg": "danger",
+    "bg": "bg-surface",
+    "ratio": 3.71,
+    "aa": false,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "dark",
+    "fg": "info",
+    "bg": "bg-surface",
+    "ratio": 5.55,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "dark",
+    "fg": "text-primary",
+    "bg": "bg-elevated",
+    "ratio": 13.41,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": true
+  },
+  {
+    "theme": "dark",
+    "fg": "text-secondary",
+    "bg": "bg-elevated",
+    "ratio": 7.84,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": true
+  },
+  {
+    "theme": "dark",
+    "fg": "text-muted",
+    "bg": "bg-elevated",
+    "ratio": 5.2,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "dark",
+    "fg": "accent",
+    "bg": "bg-elevated",
+    "ratio": 7.2,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": true
+  },
+  {
+    "theme": "dark",
+    "fg": "brand",
+    "bg": "bg-elevated",
+    "ratio": 2.05,
+    "aa": false,
+    "aaLarge": false,
+    "aaa": false
+  },
+  {
+    "theme": "dark",
+    "fg": "success",
+    "bg": "bg-elevated",
+    "ratio": 5.29,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "dark",
+    "fg": "warning",
+    "bg": "bg-elevated",
+    "ratio": 3.6,
+    "aa": false,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "dark",
+    "fg": "danger",
+    "bg": "bg-elevated",
+    "ratio": 3.41,
+    "aa": false,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "dark",
+    "fg": "info",
+    "bg": "bg-elevated",
+    "ratio": 5.11,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "dark",
+    "fg": "accent-text-on",
+    "bg": "accent",
+    "ratio": 8.59,
+    "aa": true
+  },
+  {
+    "theme": "dark",
+    "fg": "brand-text-on",
+    "bg": "brand",
+    "ratio": 7.03,
+    "aa": true
+  },
+  {
+    "theme": "light",
+    "fg": "text-primary",
+    "bg": "bg-canvas",
+    "ratio": 17.17,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": true
+  },
+  {
+    "theme": "light",
+    "fg": "text-secondary",
+    "bg": "bg-canvas",
+    "ratio": 9.95,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": true
+  },
+  {
+    "theme": "light",
+    "fg": "text-muted",
+    "bg": "bg-canvas",
+    "ratio": 6.84,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "light",
+    "fg": "accent",
+    "bg": "bg-canvas",
+    "ratio": 5.72,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "light",
+    "fg": "brand",
+    "bg": "bg-canvas",
+    "ratio": 7.03,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": true
+  },
+  {
+    "theme": "light",
+    "fg": "success",
+    "bg": "bg-canvas",
+    "ratio": 4.61,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "light",
+    "fg": "warning",
+    "bg": "bg-canvas",
+    "ratio": 5.94,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "light",
+    "fg": "danger",
+    "bg": "bg-canvas",
+    "ratio": 5.78,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "light",
+    "fg": "info",
+    "bg": "bg-canvas",
+    "ratio": 5.16,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "light",
+    "fg": "text-primary",
+    "bg": "bg-surface",
+    "ratio": 18.39,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": true
+  },
+  {
+    "theme": "light",
+    "fg": "text-secondary",
+    "bg": "bg-surface",
+    "ratio": 10.65,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": true
+  },
+  {
+    "theme": "light",
+    "fg": "text-muted",
+    "bg": "bg-surface",
+    "ratio": 7.33,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": true
+  },
+  {
+    "theme": "light",
+    "fg": "accent",
+    "bg": "bg-surface",
+    "ratio": 6.13,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "light",
+    "fg": "brand",
+    "bg": "bg-surface",
+    "ratio": 7.53,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": true
+  },
+  {
+    "theme": "light",
+    "fg": "success",
+    "bg": "bg-surface",
+    "ratio": 4.94,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "light",
+    "fg": "warning",
+    "bg": "bg-surface",
+    "ratio": 6.36,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "light",
+    "fg": "danger",
+    "bg": "bg-surface",
+    "ratio": 6.19,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "light",
+    "fg": "info",
+    "bg": "bg-surface",
+    "ratio": 5.52,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "light",
+    "fg": "text-primary",
+    "bg": "bg-elevated",
+    "ratio": 19.68,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": true
+  },
+  {
+    "theme": "light",
+    "fg": "text-secondary",
+    "bg": "bg-elevated",
+    "ratio": 11.4,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": true
+  },
+  {
+    "theme": "light",
+    "fg": "text-muted",
+    "bg": "bg-elevated",
+    "ratio": 7.84,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": true
+  },
+  {
+    "theme": "light",
+    "fg": "accent",
+    "bg": "bg-elevated",
+    "ratio": 6.56,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "light",
+    "fg": "brand",
+    "bg": "bg-elevated",
+    "ratio": 8.06,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": true
+  },
+  {
+    "theme": "light",
+    "fg": "success",
+    "bg": "bg-elevated",
+    "ratio": 5.29,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "light",
+    "fg": "warning",
+    "bg": "bg-elevated",
+    "ratio": 6.8,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "light",
+    "fg": "danger",
+    "bg": "bg-elevated",
+    "ratio": 6.63,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "light",
+    "fg": "info",
+    "bg": "bg-elevated",
+    "ratio": 5.91,
+    "aa": true,
+    "aaLarge": true,
+    "aaa": false
+  },
+  {
+    "theme": "light",
+    "fg": "accent-text-on",
+    "bg": "accent",
+    "ratio": 6.13,
+    "aa": true
+  },
+  {
+    "theme": "light",
+    "fg": "brand-text-on",
+    "bg": "brand",
+    "ratio": 7.03,
+    "aa": true
+  }
+]

@@ -1,0 +1,34 @@
+language: id
+address: Bapak
+spoken:
+  language: en
+  address: Sir
+style:
+  - Kalimat pendek dan aktif.
+  - Nada formal, tenang, dan langsung.
+  - Angka dan waktu memakai WIB, contoh: pukul 17.00 WIB.
+mandatory_phrases:
+  silence: Jika Bapak tidak menjawab dalam 24 jam, ...
+buttons:
+  approve: SETUJU
+  reject: TOLAK
+  later: NANTI
+  details: JELASKAN
+options:
+  - A
+  - B
+  - C
+forbidden_ai_fillers:
+  - tentu
+  - dengan senang hati
+  - jangan ragu
+  - mari kita
+  - sangat
+  - semoga membantu
+  - silakan hubungi
+forbidden_english_leftovers:
+  - Sir
+  - Done:
+  - Waiting on you
+  - Stuck:
+  - Good morning
