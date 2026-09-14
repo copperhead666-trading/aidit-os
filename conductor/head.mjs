@@ -105,12 +105,37 @@ async function commitWorkspace(ws, issue, dept) {
   return { committed: r.code === 0, sha, files: changed };
 }
 
+const LOCK_DIR = path.join(STATE, 'locks');
+function acquireLock() {
+  fs.mkdirSync(LOCK_DIR, { recursive: true });
+  const f = path.join(LOCK_DIR, `head-${DEPT}.lock`);
+  const prev = readJson(f, null);
+  if (prev && Date.now() - Date.parse(prev.at) < 2 * 3600000) {
+    try { process.kill(prev.pid, 0); return null; } catch { /* stale */ }
+  }
+  writeJson(f, { pid: process.pid, at: new Date().toISOString() });
+  return f;
+}
+
 async function main() {
   const dept = co.departments.find((d) => d.id === DEPT);
   if (!dept) { console.error('unknown --department'); process.exit(2); }
   if (isPaused()) { console.log('paused'); return; }
+  const lock = acquireLock();
+  if (!lock) { console.log(JSON.stringify({ dept: DEPT, busy: true })); return; }
+  try {
+    // one head works its queue sequentially: at most 4 issues per wake
+    for (let n = 0; n < 4; n++) {
+      const more = await workOne(dept);
+      if (!more || ISSUE) break;
+    }
+  } finally { try { fs.unlinkSync(lock); } catch {} }
+}
+
+/** Work the next assigned issue; returns true when one was processed. */
+async function workOne(dept) {
   const issue = await pickIssue();
-  if (!issue) { console.log(JSON.stringify({ dept: DEPT, idle: true })); return; }
+  if (!issue) { console.log(JSON.stringify({ dept: DEPT, idle: true })); return false; }
   const vent = ventureFor(issue);
   ledgerAppend({ kind: 'head.start', dept: DEPT, issue: issue.identifier, venture: vent.key, runId: process.env.PAPERCLIP_RUN_ID || null });
   if (!DRY) await api('PATCH', `/api/issues/${issue.id}`, { status: 'in_progress' });
@@ -119,11 +144,11 @@ async function main() {
   try { ws = await ensureWorkspace(issue, vent); } catch (e) {
     ledgerAppend({ kind: 'head.error', dept: DEPT, issue: issue.identifier, error: e.message });
     if (!DRY) { await api('POST', `/api/issues/${issue.id}/comments`, { body: `[Kepala ${dept.name}] Workspace gagal: ${e.message.slice(0, 300)}` }); await api('PATCH', `/api/issues/${issue.id}`, { status: 'todo' }); }
-    console.log(JSON.stringify({ ok: false, error: e.message })); process.exit(1);
+    console.log(JSON.stringify({ ok: false, error: e.message })); return false;
   }
   const packet = packetFor(issue, dept, Array.isArray(comments) ? comments : [], ws, vent);
   const role = ['product', 'engineering'].includes(dept.id) ? 'head-claude' : 'head-other';
-  if (DRY) { console.log(JSON.stringify({ issue: issue.identifier, role, ws, packet }, null, 1)); return; }
+  if (DRY) { console.log(JSON.stringify({ issue: issue.identifier, role, ws, packet }, null, 1)); return false; }
   const r = await runOnChain(role, packet, { workspace: ws.dir });
   let commit = { committed: false, files: [] };
   if (r.ok && !packet.readOnly) commit = await commitWorkspace(ws, issue, dept);
@@ -139,7 +164,7 @@ async function main() {
   await api('PATCH', `/api/issues/${issue.id}`, { status: r.ok ? 'in_review' : 'todo' });
   ledgerAppend({ kind: 'head.done', dept: DEPT, issue: issue.identifier, ok: r.ok, lane: r.lane, sha: commit.sha || null, tried: r.tried });
   console.log(JSON.stringify({ ok: r.ok, issue: issue.identifier, lane: r.lane, sha: commit.sha || null }));
-  if (!r.ok) process.exit(1);
+  return r.ok;
 }
 
 main().catch((e) => { ledgerAppend({ kind: 'head.error', dept: DEPT, error: e.message }); console.error(e); process.exit(1); });
