@@ -32,7 +32,7 @@ async function api(method, p, body) {
   try { return JSON.parse(text); } catch { return text; }
 }
 
-const PRIO = { urgent: 0, high: 1, medium: 2, low: 3 };
+const PRIO = { critical: 0, high: 1, medium: 2, low: 3 };
 
 async function pickIssue() {
   if (ISSUE) return api('GET', `/api/issues/${ISSUE}`);
@@ -118,7 +118,7 @@ async function main() {
   let ws;
   try { ws = await ensureWorkspace(issue, vent); } catch (e) {
     ledgerAppend({ kind: 'head.error', dept: DEPT, issue: issue.identifier, error: e.message });
-    if (!DRY) { await api('POST', `/api/issues/${issue.id}/comments`, { body: `[Kepala ${dept.name}] Workspace gagal: ${e.message.slice(0, 300)}` }); await api('PATCH', `/api/issues/${issue.id}`, { status: 'blocked' }); }
+    if (!DRY) { await api('POST', `/api/issues/${issue.id}/comments`, { body: `[Kepala ${dept.name}] Workspace gagal: ${e.message.slice(0, 300)}` }); await api('PATCH', `/api/issues/${issue.id}`, { status: 'todo' }); }
     console.log(JSON.stringify({ ok: false, error: e.message })); process.exit(1);
   }
   const packet = packetFor(issue, dept, Array.isArray(comments) ? comments : [], ws, vent);
@@ -136,7 +136,7 @@ async function main() {
     ? `[Kepala ${dept.name}] Selesai di lane ${r.lane}${commit.committed ? `, commit ${commit.sha} di ${ws.branch} (${commit.files.length} file)` : commit.refused ? ', commit DITOLAK: menyentuh berkas rahasia' : ''}.\n\n${String(r.summary).slice(0, 6000)}`
     : `[Kepala ${dept.name}] Gagal di semua lane: ${JSON.stringify(r.tried).slice(0, 800)}`;
   await api('POST', `/api/issues/${issue.id}/comments`, { body });
-  await api('PATCH', `/api/issues/${issue.id}`, { status: r.ok ? 'in_review' : 'blocked' });
+  await api('PATCH', `/api/issues/${issue.id}`, { status: r.ok ? 'in_review' : 'todo' });
   ledgerAppend({ kind: 'head.done', dept: DEPT, issue: issue.identifier, ok: r.ok, lane: r.lane, sha: commit.sha || null, tried: r.tried });
   console.log(JSON.stringify({ ok: r.ok, issue: issue.identifier, lane: r.lane, sha: commit.sha || null }));
   if (!r.ok) process.exit(1);

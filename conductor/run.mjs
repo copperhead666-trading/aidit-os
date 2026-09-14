@@ -39,7 +39,7 @@ const SCHEMA = {
           title: { type: 'string' },
           body: { type: 'string' },
           projectKey: { type: 'string', description: 'sjs-superapps | caveman-trading-os | internal' },
-          priority: { type: 'string', enum: ['low', 'medium', 'high', 'urgent'] },
+          priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
           askId: { type: 'string' },
           defaultIfSilent: { type: 'string' },
           options: { type: 'array', items: { type: 'string' } },
