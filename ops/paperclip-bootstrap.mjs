@@ -39,6 +39,7 @@ async function ensureCompany() {
 async function ensureAgent(companyId, spec, existing) {
   let a = existing.find((x) => x.name === spec.name);
   if (!a) a = await api('POST', `/api/companies/${companyId}/agents`, spec);
+  else a = await api('PATCH', `/api/agents/${a.id}`, { adapterType: spec.adapterType, adapterConfig: spec.adapterConfig, capabilities: spec.capabilities, metadata: spec.metadata });
   return a;
 }
 
@@ -62,7 +63,7 @@ const conductor = await ensureAgent(c.id, {
   title: 'Conductor',
   capabilities: `Headless Claude (sonnet rutin, opus keputusan <= ${company.conductor.opusTurnsPerDay}/hari), bangun tiap ${company.conductor.intervalMinutes} menit; satu suara ke owner.`,
   adapterType: 'process',
-  adapterConfig: { command: 'node', args: ['conductor/run.mjs', '--once'], cwd: ROOT },
+  adapterConfig: { command: 'D:/aidit-node/node-v22.14.0-win-x64/node.exe', args: ['conductor/run.mjs', '--once'], cwd: ROOT },
   metadata: { lane: 'claude', department: 'conductor' },
 }, agents);
 state.conductorId = conductor.id;
@@ -75,7 +76,7 @@ for (const d of company.departments) {
     reportsTo: conductor.id,
     capabilities: `${d.mission}. Rantai lane: ${d.head.laneChain.join(' -> ')}. Pekerja: ${d.workers.join(', ')}.`,
     adapterType: 'process',
-    adapterConfig: { command: 'node', args: ['conductor/head.mjs', '--department', d.id], cwd: ROOT },
+    adapterConfig: { command: 'D:/aidit-node/node-v22.14.0-win-x64/node.exe', args: ['conductor/head.mjs', '--department', d.id], cwd: ROOT },
     metadata: { department: d.id, laneChain: d.head.laneChain, workers: d.workers },
   }, agents);
   state.heads[d.id] = head.id;
