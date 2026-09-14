@@ -1,0 +1,25 @@
+{
+  "baseUrl": "http://127.0.0.1:3120",
+  "companyId": "4adffa70-f825-4e96-ba85-086c93f24b9f",
+  "conductorId": "3243a013-52e6-444c-95e9-09a659704e43",
+  "heads": {
+    "product": "ead9fb31-7b87-49ff-9945-ceee24be1f66",
+    "engineering": "03f2afc8-e070-4b81-81b7-5369359ac4d6",
+    "design": "40cc6a3a-1511-448c-a0dd-f9ba188b0e66",
+    "qa": "9beff5ea-b6c4-40b6-8d2c-d0138df64d63",
+    "ops": "306b9c00-9718-40f2-a623-1b50be4b9f3d",
+    "finance": "479b8592-b7d1-447e-b8c1-bb179b3a9fd7",
+    "marketing": "de1179d2-893b-4c63-9efd-18927c888cd2",
+    "research": "645c6871-9da1-4e23-8391-5f3879a7a1ca"
+  },
+  "projects": {
+    "sjs-superapps": "25fc4802-5b22-4181-887b-3b792ffaec42",
+    "caveman-trading-os": "976aa2cf-8ba0-438c-a786-5c3090fa4337",
+    "internal": "6822da41-afe0-491c-82a6-a1b05c7cc10b"
+  },
+  "epics": {
+    "sjs-superapps": "fe2ef00c-53ec-43d8-b12d-2e982732da61",
+    "caveman-trading-os": "5711cde1-e341-472d-8ac2-5b90cdff3ea9"
+  },
+  "updatedAt": "2026-09-14T13:06:13.104Z"
+}
