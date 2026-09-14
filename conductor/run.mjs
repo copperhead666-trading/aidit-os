@@ -14,6 +14,8 @@ import {
 } from './lib.mjs';
 import { askClaude } from './claude.mjs';
 import { ask, alert, listAsks } from './owner.mjs';
+import { spawn } from 'node:child_process';
+import { NODE22 } from './lib.mjs';
 
 loadEnvLocal();
 const ONCE = process.argv.includes('--once');
@@ -153,6 +155,22 @@ async function applyDecision(d, cfg, log) {
   }
 }
 
+// Belt and braces next to Paperclip's own wake-on-assign: any department with
+// an assigned todo issue and no running head gets its head spawned (detached).
+function nudgeHeads(co, cfg, issues, log) {
+  const lockDir = path.join(STATE, 'locks');
+  const headById = Object.fromEntries(Object.entries(cfg.heads || {}).map(([d, id]) => [id, d]));
+  const waiting = new Set(issues.filter((i) => i.status === 'todo' && !/^EPIC /.test(i.title) && headById[i.assigneeAgentId]).map((i) => headById[i.assigneeAgentId]));
+  for (const dept of waiting) {
+    const lock = readJson(path.join(lockDir, `head-${dept}.lock`), null);
+    if (lock) { try { process.kill(lock.pid, 0); continue; } catch { /* stale lock */ } }
+    if (DRY) { log.push(`nudge (dry) ${dept}`); continue; }
+    const child = spawn(NODE22, ['conductor/head.mjs', '--department', dept], { cwd: ROOT, detached: true, stdio: 'ignore', windowsHide: true });
+    child.unref();
+    log.push(`nudge ${dept}`);
+  }
+}
+
 async function commitDecisions(co, text) {
   fs.mkdirSync(DECISIONS_DIR, { recursive: true });
   const file = path.join(DECISIONS_DIR, `${wibParts().date}.md`);
@@ -194,6 +212,7 @@ ${JSON.stringify(SCHEMA)}`;
   for (const d of (out.decisions || []).slice(0, 6)) {
     try { await applyDecision(d, cfg, log); } catch (e) { log.push(`error ${d.type}: ${e.message.slice(0, 160)}`); }
   }
+  try { const fresh = await pc('GET', `/api/companies/${cfg.companyId}/issues`); nudgeHeads(co, cfg, fresh, log); } catch (e) { log.push(`nudge error: ${e.message.slice(0, 100)}`); }
   ledgerAppend({ kind: 'conductor.tick', ok: true, model: modelUsed, summary: out.summary, decisions: log });
   if (!DRY) await commitDecisions(co, `## ${wibStamp()} (${modelUsed})\n${out.summary}\n${log.map((l) => `- ${l}`).join('\n')}\n`);
   return { ok: true, summary: out.summary, log };

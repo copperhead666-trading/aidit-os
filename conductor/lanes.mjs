@@ -88,14 +88,16 @@ async function runClaude(lane, packet, { workspace, maxTurns, timeoutMs }) {
 }
 
 async function runCodex(lane, packet, { workspace, timeoutMs }) {
-  const args = ['exec', '--approve-for-me', '--cd', workspace || ROOT];
+  const outFile = path.join(STATE, 'conductor', `codex-${Date.now()}.txt`);
+  fs.mkdirSync(path.dirname(outFile), { recursive: true });
+  const args = ['exec', '--approve-for-me', '--skip-git-repo-check', '--ephemeral', '--cd', workspace || ROOT, '-o', outFile];
   if (lane.model && lane.model !== 'default') args.push('-m', lane.model);
   args.push('-');
   const r = await run(process.platform === 'win32' ? 'codex.cmd' : 'codex', args, { cwd: workspace || ROOT, timeoutMs, input: packetText(packet) });
-  const text = (r.stdout || '').trim();
-  if (r.code !== 0 || !text) return { ok: false, error: (r.stderr || text || `exit ${r.code}`).slice(0, 400) };
-  // codex prints its final message last; keep the tail as the summary
-  return { ok: true, summary: text.split('\n').slice(-40).join('\n').trim() };
+  let last = '';
+  try { last = fs.readFileSync(outFile, 'utf8').trim(); fs.unlinkSync(outFile); } catch {}
+  if (r.code !== 0 || !last) return { ok: false, error: ((r.stdout + '\n' + r.stderr).trim().split('\n').slice(-12).join('\n') || `exit ${r.code}`).slice(0, 400) };
+  return { ok: true, summary: last };
 }
 
 // ---- Ollama tool loop ---------------------------------------------------

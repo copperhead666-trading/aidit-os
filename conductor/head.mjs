@@ -51,7 +51,8 @@ async function ensureWorkspace(issue, { key, venture }) {
   fs.mkdirSync(WS_ROOT, { recursive: true });
   const branch = `aid/${String(issue.identifier || issue.id).toLowerCase()}`;
   if (venture) {
-    const dir = path.join(WS_ROOT, venture.id);
+    // one clone per venture per department: heads never share a checkout
+    const dir = path.join(WS_ROOT, venture.id, DEPT);
     if (!fs.existsSync(path.join(dir, '.git'))) {
       const src = fs.existsSync(path.join(venture.localPath, '.git')) ? venture.localPath : venture.repo;
       const r = await run('git', ['clone', '--quiet', src, dir], { timeoutMs: 10 * 60000 });
