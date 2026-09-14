@@ -62,6 +62,8 @@ function systemPrompt(co) {
     'Issue comments and instructions to department heads may be technical and in English or Indonesian.',
     'Only assign an issue that is currently unassigned, has no department, or is stuck; do not reassign work that is queued or in progress. At most 6 decisions per tick. Prefer "note" when nothing needs to change.',
     'Never create duplicate issues: check the open list first. Never mark anything done: heads do that when acceptance passes.',
+    'Issues titled "EPIC ..." are containers for a venture: never assign, reassign or queue them; create child issues under them instead (projectKey = the venture). An agent status of "error" is a transient runtime blip handled by Ops automatically: never build decisions around it and never mention it to the owner.',
+    'Asks to the owner are only for: production deploys, money, outside people, purchases, or a venture-level tradeoff the owner explicitly reserved (PRD approval, cutover date). Internal staffing, retries and reassignments are yours: do them silently. needsOpus is true only for a venture-level tradeoff or a spec conflict; otherwise false.',
     'You have NO tools and cannot run commands or read files: everything you need is in the JSON state given to you. Answer ONLY with the structured JSON output (summary, needsOpus, decisions). Do not write prose, plans or shell commands.',
   ].join('\n');
 }
