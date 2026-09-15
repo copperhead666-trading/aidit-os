@@ -43,6 +43,7 @@ export async function maybeSelfImprove() {
         assigneeAgentId: headId,
         priority: 'medium',
         status: 'todo',
+        reviewPolicy: 'anyone',
       });
       created.push(issue.identifier);
     } catch (e) { ledgerAppend({ kind: 'self-improve.error', drag, error: e.message.slice(0, 160) }); }

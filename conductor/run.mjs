@@ -134,7 +134,7 @@ async function applyDecision(d, cfg, log) {
       const projectId = cfg.projects?.[d.projectKey] || cfg.projects?.internal;
       const dept = heads[d.department] ? d.department : 'product';
       if (DRY) { log.push(`create_issue (dry) ${d.title}`); return; }
-      const i = await pc('POST', `/api/companies/${cfg.companyId}/issues`, { title: d.title, description: d.body || '', projectId, assigneeAgentId: heads[dept], priority: d.priority || 'medium', status: 'todo' });
+      const i = await pc('POST', `/api/companies/${cfg.companyId}/issues`, { title: d.title, description: d.body || '', projectId, assigneeAgentId: heads[dept], priority: d.priority || 'medium', status: 'todo', reviewPolicy: 'anyone' });
       enqueue(i.id, dept, d.body);
       log.push(`create_issue ${i.identifier} -> ${dept}`);
       return;

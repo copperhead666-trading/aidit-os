@@ -195,7 +195,7 @@ export async function onDocumentTicketsApproved(slug) {
   for (const t of pending.tickets) {
     const projectId = cfg.projects?.[t.projectKey] || cfg.projects?.internal;
     try {
-      const issue = await pc('POST', `/api/companies/${cfg.companyId}/issues`, { title: t.title, description: t.why, projectId, priority: 'medium', status: 'todo' });
+      const issue = await pc('POST', `/api/companies/${cfg.companyId}/issues`, { title: t.title, description: t.why, projectId, priority: 'medium', status: 'todo', reviewPolicy: 'anyone' });
       created.push(issue.identifier);
     } catch (e) { ledgerAppend({ kind: 'owner.document.ticket-error', slug, title: t.title, error: e.message.slice(0, 160) }); }
   }

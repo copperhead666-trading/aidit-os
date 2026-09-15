@@ -112,6 +112,7 @@ for (const v of company.ventures) {
     assigneeAgentId: state.heads.product,
     priority: 'high',
     status: 'todo',
+    reviewPolicy: 'anyone',
   }, issues);
   state.epics[v.id] = e.id;
 }
