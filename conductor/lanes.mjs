@@ -47,8 +47,11 @@ export function laneState(id) {
   if (cfg.status === 'disabled') return 'disabled';
   const s = lanesStatus().lanes[id];
   if (s?.state === 'resting' && s.until && Date.parse(s.until) > Date.now()) return 'resting';
+  // Keyed by pool, not lane id: gpt-6-astra and codex share one ChatGPT
+  // Codex subscription (pool codex-chatgpt) — PRD's "30 tugas tersebar" is
+  // one cap for that pool, not 30 per lane (would double it to 60/day).
   const limit = cfg.dailyTasks ?? cfg.dailyCalls;
-  if (limit != null && laneBudget(id, limit).remaining <= 0) return 'resting';
+  if (limit != null && laneBudget(cfg.pool || id, limit).remaining <= 0) return 'resting';
   return 'ready';
 }
 
@@ -81,8 +84,9 @@ export async function runOnChain(role, packet, opts = {}) {
     const r = await runOnLane(id, packet, opts);
     tried.push({ lane: id, ok: r.ok, error: r.error || null, ms: r.ms });
     if (r.ok) {
-      const limit = lanesCfg().lanes[id].dailyTasks ?? lanesCfg().lanes[id].dailyCalls;
-      if (limit != null) laneBudget(id, limit).spend(1);
+      const cfg = lanesCfg().lanes[id];
+      const limit = cfg.dailyTasks ?? cfg.dailyCalls;
+      if (limit != null) laneBudget(cfg.pool || id, limit).spend(1);
       return { ...r, lane: id, tried };
     }
     if (LIMIT_RE.test(String(r.error || ''))) {
