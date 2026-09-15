@@ -1,24 +1,27 @@
 {
-  "version": 5,
-  "note": "Model lanes (PRD v5 s2.5, s3.3, s9). No per-token meter anywhere. A lane is ready | resting(until) | disabled; the probe (conductor/probe.mjs) updates state/lanes-status.json every 15 minutes. kimi-k3 via Ollama is forbidden.",
+  "version": "5.1",
+  "note": "Model lanes (PRD v5.1 s2c, s3). No per-token meter anywhere. A lane is ready | resting(until) | disabled; the probe (conductor/lanes.mjs probeLanes) updates state/lanes-status.json every 15 minutes. Claude lanes are reserved for conductor-decision and review only (owner decision 2026-09-15) — heads and workers never use claude-*. kimi-k27 (Ollama) is disabled to protect the Ollama Cloud quota; kimi-k3 (Kimi Code CLI) is disabled until the monthly reset.",
   "probe": { "intervalMinutes": 15, "restMinutes": 60, "retryAfterMinutes": 5 },
+  "semaphore": { "ollama-cloud-glm": 2, "ollama-cloud-kimi": 2 },
   "lanes": {
-    "claude-sonnet": { "runtime": "claude-cli", "model": "sonnet", "pool": "claude-subscription", "capabilities": ["decide", "code", "review", "write", "plan"], "maxTurns": 60, "endpoint": "claude -p (OAuth)" },
-    "claude-opus": { "runtime": "claude-cli", "model": "opus", "pool": "claude-subscription", "capabilities": ["decide"], "maxTurns": 20, "dailyTurns": 40, "endpoint": "claude -p (OAuth)" },
-    "kimi-k3": { "runtime": "kimi-cli", "model": "kimi-k3", "pool": "kimi-code", "capabilities": ["decide", "plan", "write", "review"], "maxTurns": 60, "endpoint": "kimi CLI (Kimi Code subscription)", "status": "disabled", "reason": "403 monthly quota exhausted 2026-09-14; reset date unknown (Ask owner)" },
-    "gpt-6-astra": { "runtime": "codex-cli", "model": "gpt-6-astra", "pool": "codex-chatgpt", "capabilities": ["decide", "plan", "write", "review", "code"], "maxTurns": 60, "endpoint": "codex exec (ChatGPT plan)" },
-    "codex": { "runtime": "codex-cli", "model": "default", "pool": "codex-chatgpt", "capabilities": ["code", "review"], "maxTurns": 80, "endpoint": "codex exec (ChatGPT plan)" },
-    "kimi-k27": { "runtime": "ollama", "model": "kimi-k2.7-code:cloud", "pool": "ollama-cloud-kimi", "capabilities": ["code", "write", "review", "plan"], "maxSteps": 80, "endpoint": "http://127.0.0.1:11434 (Ollama Cloud)" },
-    "glm-52": { "runtime": "ollama", "model": "glm-5.2:cloud", "pool": "ollama-cloud-glm", "capabilities": ["write", "plan", "review", "code"], "maxSteps": 80, "endpoint": "http://127.0.0.1:11434 (Ollama Cloud)" },
+    "claude-sonnet": { "runtime": "claude-cli", "model": "sonnet", "pool": "claude-subscription", "capabilities": ["decide", "review"], "maxTurns": 20, "dailyCalls": 15, "endpoint": "claude -p (OAuth)" },
+    "claude-opus": { "runtime": "claude-cli", "model": "opus", "pool": "claude-subscription", "capabilities": ["decide"], "maxTurns": 20, "dailyCalls": 0, "endpoint": "claude -p (OAuth)", "status": "disabled", "reason": "owner decision 2026-09-15: opus 0/day, decision role runs on sonnet" },
+    "kimi-k3": { "runtime": "kimi-cli", "model": "kimi-k3", "pool": "kimi-code", "capabilities": ["decide", "plan", "write", "review"], "maxTurns": 40, "dailyTasks": 10, "endpoint": "kimi CLI (Kimi Code subscription)", "status": "disabled", "reason": "403 monthly quota exhausted 2026-09-14; reset date unknown (Ask owner)" },
+    "gpt-6-astra": { "runtime": "codex-cli", "model": "gpt-6-astra", "pool": "codex-chatgpt", "capabilities": ["decide", "plan", "write", "review", "code"], "maxTurns": 60, "dailyTasks": 30, "endpoint": "codex exec (ChatGPT plan)" },
+    "codex": { "runtime": "codex-cli", "model": "default", "pool": "codex-chatgpt", "capabilities": ["code", "review"], "maxTurns": 80, "dailyTasks": 30, "endpoint": "codex exec (ChatGPT plan)" },
+    "kimi-k27": { "runtime": "ollama", "model": "kimi-k2.7-code:cloud", "pool": "ollama-cloud-kimi", "capabilities": ["code", "write", "review", "plan"], "maxSteps": 80, "endpoint": "http://127.0.0.1:11434 (Ollama Cloud)", "status": "disabled", "reason": "owner decision 2026-09-15: kimi via Ollama off to protect Ollama Cloud quota" },
+    "glm-52": { "runtime": "ollama", "model": "glm-5.2:cloud", "pool": "ollama-cloud-glm", "capabilities": ["write", "plan", "review", "code", "decide"], "maxSteps": 80, "endpoint": "http://127.0.0.1:11434 (Ollama Cloud)" },
     "glm-51": { "runtime": "ollama", "model": "glm-5.1:cloud", "pool": "ollama-cloud-glm", "capabilities": ["code", "write"], "maxSteps": 80, "endpoint": "http://127.0.0.1:11434 (Ollama Cloud)" },
     "glm-53-flash": { "runtime": "ollama", "model": "glm-5.3-flash:cloud", "pool": "ollama-cloud-glm", "capabilities": ["light"], "maxSteps": 30, "endpoint": "http://127.0.0.1:11434 (Ollama Cloud)" }
   },
   "roles": {
-    "conductor-routine": ["claude-sonnet"],
-    "conductor-decision": ["claude-opus", "claude-sonnet"],
-    "head-claude": ["claude-sonnet", "gpt-6-astra", "kimi-k27"],
-    "head-other": ["kimi-k3", "gpt-6-astra", "claude-sonnet", "kimi-k27", "glm-52"],
-    "worker": ["codex", "kimi-k27", "glm-51", "glm-53-flash"],
-    "light": ["glm-53-flash", "kimi-k27"]
+    "conductor-routine": ["glm-52", "glm-51", "claude-sonnet"],
+    "conductor-decision": ["claude-sonnet", "glm-52"],
+    "review": ["claude-sonnet", "glm-52"],
+    "head-claude": ["gpt-6-astra", "kimi-k3", "glm-51"],
+    "head-other": ["gpt-6-astra", "kimi-k3", "glm-52", "kimi-k27"],
+    "worker": ["gpt-6-astra", "codex", "kimi-k3", "glm-51"],
+    "berat": ["glm-52", "glm-51", "gpt-6-astra", "codex", "kimi-k3"],
+    "light": ["glm-53-flash", "glm-51"]
   }
 }

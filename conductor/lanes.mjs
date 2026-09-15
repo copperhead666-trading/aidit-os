@@ -8,11 +8,32 @@
 //   ollama      small tool loop over /api/chat (read/write/list/run node)
 import fs from 'node:fs';
 import path from 'node:path';
-import { ROOT, STATE, NODE22, lanesCfg, readJson, writeJson, run, ledgerAppend } from './lib.mjs';
+import { ROOT, STATE, NODE22, lanesCfg, readJson, writeJson, run, ledgerAppend, laneBudget, wibParts } from './lib.mjs';
 
 const STATUS_FILE = path.join(STATE, 'lanes-status.json');
 const GUARD_SETTINGS = path.join(ROOT, 'conductor', 'guard.settings.json');
 const OLLAMA = process.env.OLLAMA_HOST || 'http://127.0.0.1:11434';
+
+// PRD v5.1 s2c: "resting sampai jam di pesan" — parse "resets at HH:MM" /
+// "try again at HH:MM" from a lane error and rest until that WIB clock time
+// (today, or tomorrow if it already passed) instead of the flat restMinutes.
+export function parseResetTime(msg) {
+  const m = String(msg || '').match(/(?:resets?|try again)\s*(?:at)?\s*(\d{1,2}):(\d{2})/i);
+  if (!m) return null;
+  const p = wibParts();
+  const hh = Number(m[1]), mm = Number(m[2]);
+  const target = new Date(`${p.date}T${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}:00+07:00`);
+  if (target.getTime() <= Date.now()) target.setDate(target.getDate() + 1);
+  return target.toISOString();
+}
+
+const OLLAMA_INFLIGHT = new Map(); // pool -> count, in-process semaphore
+async function withOllamaSlot(pool, limit, fn) {
+  const cur = OLLAMA_INFLIGHT.get(pool) || 0;
+  if (cur >= limit) return { ok: false, error: `semaphore: ${pool} at ${limit} concurrent already` };
+  OLLAMA_INFLIGHT.set(pool, cur + 1);
+  try { return await fn(); } finally { OLLAMA_INFLIGHT.set(pool, (OLLAMA_INFLIGHT.get(pool) || 1) - 1); }
+}
 
 export function lanesStatus() {
   return readJson(STATUS_FILE, { updatedAt: null, lanes: {} });
@@ -24,6 +45,8 @@ export function laneState(id) {
   if (cfg.status === 'disabled') return 'disabled';
   const s = lanesStatus().lanes[id];
   if (s?.state === 'resting' && s.until && Date.parse(s.until) > Date.now()) return 'resting';
+  const limit = cfg.dailyTasks ?? cfg.dailyCalls;
+  if (limit != null && laneBudget(id, limit).remaining <= 0) return 'resting';
   return 'ready';
 }
 
@@ -51,8 +74,15 @@ export async function runOnChain(role, packet, opts = {}) {
     if (state !== 'ready') { tried.push({ lane: id, skipped: state }); continue; }
     const r = await runOnLane(id, packet, opts);
     tried.push({ lane: id, ok: r.ok, error: r.error || null, ms: r.ms });
-    if (r.ok) return { ...r, lane: id, tried };
-    if (LIMIT_RE.test(String(r.error || ''))) markLane(id, 'resting', { reason: String(r.error).slice(0, 160) });
+    if (r.ok) {
+      const limit = lanesCfg().lanes[id].dailyTasks ?? lanesCfg().lanes[id].dailyCalls;
+      if (limit != null) laneBudget(id, limit).spend(1);
+      return { ...r, lane: id, tried };
+    }
+    if (LIMIT_RE.test(String(r.error || ''))) {
+      const resetAt = parseResetTime(r.error);
+      markLane(id, 'resting', { reason: String(r.error).slice(0, 160), ...(resetAt ? { until: resetAt } : {}) });
+    }
   }
   return { ok: false, lane: null, error: 'no lane succeeded', tried };
 }
@@ -64,7 +94,10 @@ export async function runOnLane(id, packet, { workspace, maxTurns, timeoutMs = 2
   try {
     if (lane.runtime === 'claude-cli') r = await runClaude(lane, packet, { workspace, maxTurns, timeoutMs });
     else if (lane.runtime === 'codex-cli') r = await runCodex(lane, packet, { workspace, timeoutMs });
-    else if (lane.runtime === 'ollama') r = await runOllama(lane, packet, { workspace, maxSteps: maxTurns || lane.maxSteps, timeoutMs });
+    else if (lane.runtime === 'ollama') {
+      const limit = lanesCfg().semaphore?.[lane.pool] ?? 2;
+      r = await withOllamaSlot(lane.pool, limit, () => runOllama(lane, packet, { workspace, maxSteps: maxTurns || lane.maxSteps, timeoutMs }));
+    }
     else r = { ok: false, error: `runtime ${lane.runtime} not implemented` };
   } catch (e) { r = { ok: false, error: e.message }; }
   r.ms = Date.now() - started;

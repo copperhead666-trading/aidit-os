@@ -83,6 +83,19 @@ export function opusBudget(limit) {
   };
 }
 
+// ---- Per-lane daily task/call budget (PRD v5.1 s3: Codex 30/day, etc.) ----
+const LANE_BUDGET_FILE = path.join(STATE, 'lane-budget.json');
+export function laneBudget(id, limit) {
+  const today = wibParts().date;
+  const all = readJson(LANE_BUDGET_FILE, {});
+  const cur = all[id]?.date === today ? all[id] : { date: today, count: 0 };
+  return {
+    used: cur.count,
+    remaining: limit == null ? Infinity : Math.max(0, limit - cur.count),
+    spend(n = 1) { cur.count += n; all[id] = cur; writeJson(LANE_BUDGET_FILE, all); return cur.count; },
+  };
+}
+
 // ---- Paperclip client -----------------------------------------------------
 export async function pc(method, p, body, base = paperclipCfg().baseUrl) {
   const res = await fetch(base + p, {
