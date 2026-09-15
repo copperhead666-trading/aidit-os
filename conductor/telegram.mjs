@@ -11,6 +11,7 @@ import { STATE, ROOT, company, paperclipCfg, lanesCfg, loadEnvLocal, readJson, w
 import { getUpdates, answerCallbackQuery, editMessageText, sendMessage, setMyCommands, OWNER_CHAT_ID } from './telegram-client.mjs';
 import { answerAsk, listAsks, report } from './owner.mjs';
 import { lanesStatus } from './lanes.mjs';
+import { chatReply } from './chat.mjs';
 
 loadEnvLocal();
 const co = company();
@@ -133,7 +134,7 @@ async function handleCommand(text) {
     case '/status': return humanStatus(await statusLines()).join('\n');
     case '/cockpit': return `Layar rinci Aidit OS: ${COCKPIT_URL}`;
     case '/laporan': case '/report': await sendReport('manual'); return null;
-    case '/start': case '/help': return 'Perintah: /status, /laporan, /pause, /resume, /cockpit. Bapak juga dapat menulis pesan bebas; saya catat dan tindak lanjuti.';
+    case '/start': case '/help': return 'Perintah: /status, /laporan, /pause, /resume, /cockpit. Bapak juga dapat menulis pesan bebas; saya akan menjawab langsung.';
     default: return null;
   }
 }
@@ -150,7 +151,8 @@ async function handleMessage(msg) {
   fs.mkdirSync(STATE, { recursive: true });
   fs.appendFileSync(NOTES_FILE, JSON.stringify({ ts: new Date().toISOString(), wib: wibStamp(), text }) + '\n');
   ledgerAppend({ kind: 'owner.note', text: text.slice(0, 200) });
-  await sendMessage('Baik, Bapak. Pesan Bapak saya catat dan akan saya tindak lanjuti pada putaran berikutnya.');
+  const r = await chatReply({ text, channel: 'telegram' });
+  await sendMessage(r.reply);
 }
 
 async function handleCallback(cq) {
@@ -198,8 +200,15 @@ async function loop() {
   }
 }
 
+const simulateFlagIndex = process.argv.indexOf('--simulate');
 if (process.argv.includes('--report')) {
   sendReport('manual').then((r) => { console.log(JSON.stringify({ sent: !!r.sent, error: r.sent ? null : (r.reason || r.hint || r.networkErrorMessage) })); process.exit(r.sent ? 0 : 1); });
+} else if (simulateFlagIndex >= 0) {
+  // Exercises the exact free-text path handleMessage() runs, minus the
+  // network send — for verifying a chat/lexicon change without restarting
+  // the PM2 "telegram" process or spending a real Telegram message.
+  const text = process.argv[simulateFlagIndex + 1] || '';
+  chatReply({ text, channel: 'telegram' }).then((r) => { console.log(JSON.stringify(r)); process.exit(0); });
 } else {
   loop().catch((e) => { console.error(e); process.exit(1); });
 }
