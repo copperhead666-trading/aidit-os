@@ -53,10 +53,24 @@ export async function maybeStartInterview(co, ctx) {
   return null;
 }
 
+function asQuestionStrings(raw) {
+  // GLM's `format` schema is advisory, not enforced (learned the hard way in
+  // chat.mjs/run.mjs already) — without the schema spelled out as literal
+  // JSON in the prompt text, it can return {question: "..."} objects instead
+  // of plain strings, which then render as "[object Object]" in Telegram.
+  // Coerce defensively even with the schema embedded below, in case it still
+  // slips.
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((q) => (typeof q === 'string' ? q : q?.question || q?.text || q?.q || null))
+    .filter((q) => typeof q === 'string' && q.trim().length > 0);
+}
+
 async function startInterview(co, { subject, kind, label, context }) {
-  const prompt = `You're drafting a short foundational interview for the owner of an AI-run company, about "${label}". ${context}\n\nWrite 4-6 short, concrete, non-technical questions (Indonesian, formal, address the owner as "Bapak") that would let an autonomous team turn the answers into a real PRD: what it should become, priorities/tradeoffs, constraints, and what "done" looks like. Reply as JSON matching the schema.`;
+  const prompt = `You're drafting a short foundational interview for the owner of an AI-run company, about "${label}". ${context}\n\nWrite 4-6 short, concrete, non-technical questions (Indonesian, formal, address the owner as "Bapak") that would let an autonomous team turn the answers into a real PRD: what it should become, priorities/tradeoffs, constraints, and what "done" looks like. Reply with ONLY JSON matching this exact schema (questions must be plain strings, not objects):\n${JSON.stringify(QUESTIONS_SCHEMA)}`;
   const res = await askGlm({ system: 'You help draft founder-interview questions. Be concrete, not generic.', prompt, model: co.conductor.routineModel, schema: QUESTIONS_SCHEMA, tag: 'interview.draft' });
-  const questions = res.ok && res.structured?.questions?.length ? res.structured.questions : DEFAULT_QUESTIONS(label);
+  const drafted = res.ok ? asQuestionStrings(res.structured?.questions) : [];
+  const questions = drafted.length >= 4 ? drafted : DEFAULT_QUESTIONS(label);
 
   const st = loadState();
   st.active = { subject, kind, label, questions, qa: [], currentIndex: 0, startedAt: new Date().toISOString() };

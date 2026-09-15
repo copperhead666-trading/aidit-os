@@ -122,11 +122,20 @@ async function sendSpokenReport(s, hour) {
   const model = path.join(process.env.LOCALAPPDATA || path.join(ROOT, 'state'), 'AiditOS', 'piper', `${EN_PIPER_MODEL}.onnx`);
   const text = renderSpokenReport({ waiting: Array.from({ length: s.asks || 0 }), stuck: s.blocked }, { hour });
   const r = await synthesize(text, { provider: 'piper', model });
-  if (!r.ok) { ledgerAppend({ kind: 'voice.report', ok: false, error: r.reason }); return; }
+  if (!r.ok) { ledgerAppend({ kind: 'voice.report', ok: false, error: r.reason, text }); return; }
   const wavFile = r.file.replace(/\.ogg$/i, '.wav');
+  // Diagnostic: the first live send (2026-09-15 11:32 WIB) played as a 2s
+  // clip in Telegram despite the source text having 4 lines — logging text/
+  // duration/file size here so the next real send can actually be compared
+  // instead of guessed at.
+  let durationSec = null;
+  try {
+    const { execSync } = await import('node:child_process');
+    durationSec = Number(execSync(`ffprobe -v error -show_entries format=duration -of csv=p=0 "${r.file}"`, { encoding: 'utf8', timeout: 10000 }).trim());
+  } catch {}
   try {
     const vr = await sendVoice(r.file, '', { allowTechnical: true });
-    ledgerAppend({ kind: 'voice.report', ok: !!vr.sent, error: vr.sent ? null : (vr.reason || vr.networkErrorMessage || null) });
+    ledgerAppend({ kind: 'voice.report', ok: !!vr.sent, error: vr.sent ? null : (vr.reason || vr.networkErrorMessage || null), text, chars: text.length, durationSec, bytes: fs.statSync(r.file).size });
   } finally {
     try { fs.unlinkSync(r.file); } catch {}
     try { fs.unlinkSync(wavFile); } catch {}
