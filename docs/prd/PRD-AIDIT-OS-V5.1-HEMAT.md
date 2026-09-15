@@ -34,7 +34,7 @@ dan penempatan kuota yang tepat. Tidak ada belanja baru; tidak ada meter per-tok
 
 | Layer | Bennett ($) | v5.1 (kuota yang ada) |
 |---|---|---|
-| 01 Orchestrator | Claude Code headless, langganan | Claude Code headless **akun #1 (mesin, `~/.claude`)**: Conductor keputusan + review Engineering/QA. Sesi manusia/orkestrator = **akun #2 (Bapak)** via `CLAUDE_CONFIG_DIR=D:aidit-claude-owner`, Sonnet, ≤ 150 turn |
+| 01 Orchestrator | Claude Code headless, langganan | Claude Code headless **akun #1 (mesin, `~/.claude`)**: Conductor keputusan + review Engineering/QA. Sesi manusia/orkestrator = **akun #2 (Bapak)** via `CLAUDE_CONFIG_DIR=D:aidit-claude-machine` (mesin), Sonnet, ≤ 150 turn |
 | 02 Back office | Paperclip | Paperclip 3120 ✓ (heartbeat/wake-on-assign saja) |
 | 03 Model lanes | GLM-5.2 berat / 5.1 kode / flash ringan (paket GLM) + Codex | **sama**, GLM lewat Ollama Cloud (flat $20) + Codex Plus; Kimi Code = lane konteks besar (disabled sampai reset); kimi via Ollama dimatikan (jaga kuota Ollama) |
 | 04 Worker pool | Hermes, cron, MCP, loopback+Tailscale | Hermes 0.21 ✓ (provider Ollama, `fallback` GLM-5.2→5.1→flash→Nous free); semua pekerja + kepala non-Claude |
@@ -46,7 +46,7 @@ dan penempatan kuota yang tepat. Tidak ada belanja baru; tidak ada meter per-tok
 - Urutan: **v5.1 dulu**, baru tiket SJS jalan lagi (Conductor tetap dijeda; Codex boleh 2–3 tiket SJS kritis manual).
 - Akun Claude: **#1 (yang login di mesin sekarang, `~/.claude`) = mesin** (Conductor, QA, review);
   **#2 = Bapak** untuk sesi manusia/orkestrator lewat `CLAUDE_CONFIG_DIR=D:\aidit-claude-owner`
-  (login sekali; launcher `ops/claude-owner.cmd`). Kedua login hidup bersamaan; PM2 memakai default.
+  (login sekali; launcher `ops/claude-machine.cmd`). Kedua login hidup bersamaan; PM2 memakai default.
 - Kimi Code: **pekerja kode** (rantai kode: Codex → Kimi → GLM-5.1) — tetapi hanya setelah semua
   harness dibetulkan (Kimi, Codex, Ollama, Claude). Sampai reset: `disabled`.
 - Instal alat gratis tanpa Ask: RTK, caveman engine MCP, Hermes provider Ollama, graphify watch.
@@ -70,7 +70,7 @@ Rantai per peran: otak = Claude → GLM-5.2; kode = Codex → Kimi → GLM-5.1; 
 | Pool | Untuk | Pagu harian | Pemisahan |
 |---|---|---|---|
 | Claude Pro #1 (mesin) | Conductor keputusan (sonnet ≤ 5/hari, opus 0), QA review diff (≤ 8 turn), Engineering review | ≤ 15 panggilan headless | `~/.claude` default; `--setting-sources ""` |
-| Claude Pro #2 (Bapak) | sesi manusia/orkestrator (Sonnet) | ≤ 150 turn/sesi, wakeup 60 menit | `CLAUDE_CONFIG_DIR=D:\aidit-claude-owner`, launcher `ops/claude-owner.cmd` |
+| Claude Pro #2 (Bapak) | sesi manusia/orkestrator (Sonnet) | ≤ 150 turn/sesi, wakeup 60 menit | `CLAUDE_CONFIG_DIR=D:\aidit-claude-owner`, launcher `ops/claude-machine.cmd` |
 | Codex Plus | pekerja kode utama | 30 tugas tersebar; limit → resting sampai jam reset dari pesan | `--ephemeral` |
 | Ollama Cloud | GLM-5.2 kepala/berat, GLM-5.1 kode cadangan, flash ringan + Conductor rutin | semaphore 2 run serentak; 503 → retry 3× | via Hermes |
 | Kimi Code | pekerja kode kedua (Codex → Kimi → GLM-5.1) setelah harness dibetulkan; sampai reset `disabled` | 10 tugas/hari saat aktif | `kimi-home` v5: `max_context_size 65536`, tanpa `always_thinking`, 40 langkah, tanpa retry, paket ≤ 8 kB |
@@ -103,7 +103,7 @@ Rantai per peran: otak = Claude → GLM-5.2; kode = Codex → Kimi → GLM-5.1; 
 2. Hermes provider Ollama + fallback; runtime `hermes-cli` di `lanes.mjs`; hapus `runOllama`; uji 1 tiket.
 3. RTK terpasang; wrapper untuk Claude headless (`Bash` → `rtk`), Codex, Hermes; ukur `rtk gain`.
 4. Graphify 3 repo + `--wiki` + `--mcp` + PM2 watch; `head.mjs`/`run.mjs` memakai `query --budget`.
-5. Akun Claude: `ops/claude-owner.cmd` (set `CLAUDE_CONFIG_DIR=D:\aidit-claude-owner` lalu `claude`);
+5. Akun Claude: `ops/claude-machine.cmd` (set `CLAUDE_CONFIG_DIR=D:\aidit-claude-owner` lalu `claude`);
    Bapak login akun #2 di situ sekali (2 menit). Mesin (`~/.claude`, akun #1) dipakai Conductor/QA.
    Harness Claude headless: `--setting-sources ""`, `--max-turns 20`, RTK, paket graphify.
 5b. Harness Kimi: `dispatch/kimi-home` v5 (`max_context_size 65536`, tanpa `always_thinking`, hook guard,
