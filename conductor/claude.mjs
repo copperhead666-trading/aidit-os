@@ -38,3 +38,26 @@ export async function askClaude({ system, prompt, model = 'sonnet', schema, maxT
   ledgerAppend({ kind: 'claude.call', tag, model, ok, ms: result.ms, turns: result.turns, error: result.error, configDir: process.env.CLAUDE_CONFIG_DIR || '~/.claude' });
   return result;
 }
+
+// PRD v5.1 s5: the Conductor's routine tick runs on GLM-5.2 (Ollama), not
+// Claude — Ollama's native /api/chat `format` accepts a JSON schema directly,
+// so no CLI/hermes round trip is needed for this structured-decision call.
+export async function askGlm({ system, prompt, model = 'glm-5.2:cloud', schema, tag = 'conductor.routine', timeoutMs = 120000 }) {
+  const OLLAMA = process.env.OLLAMA_HOST || 'http://127.0.0.1:11434';
+  const messages = [];
+  if (system) messages.push({ role: 'system', content: system });
+  messages.push({ role: 'user', content: prompt });
+  const started = Date.now();
+  let ok = false, structured = null, text = null, error = null;
+  try {
+    const res = await fetch(`${OLLAMA}/api/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model, messages, format: schema, stream: false }), signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) throw new Error(`ollama ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    const data = await res.json();
+    text = data.message?.content ?? null;
+    structured = schema ? JSON.parse(text) : null;
+    ok = true;
+  } catch (e) { error = e.message; }
+  const result = { ok, model, ms: Date.now() - started, structured, text, error };
+  ledgerAppend({ kind: 'glm.call', tag, model, ok, ms: result.ms, error });
+  return result;
+}

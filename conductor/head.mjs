@@ -90,13 +90,23 @@ async function ensureWorkspace(issue, { key, venture }) {
   return { dir, branch, base: 'v5' };
 }
 
+// PRD v5.1 s5: system prompt distills one superpowers pattern per department
+// instead of loading the plugin — kept short so the whole system string
+// stays under ~1kB even with a long workspace path.
+const SUPERPOWERS_PATTERN = {
+  product: 'brainstorm 2-3 options in one line each, pick one, then plan before writing anything (brainstorming -> writing-plans).',
+  engineering: 'write the failing test first, then the smallest code that passes it, then run verification before claiming done (TDD -> verification-before-completion).',
+  qa: 'check the issue exit criteria one by one and report pass/fail per criterion, not a vibe (requesting-code-review).',
+};
+const DEFAULT_PATTERN = 'state your plan in one line before acting, then verify the result against it.';
+
 function packetFor(issue, dept, comments, ws, vent, graphCtx) {
   const instructions = comments.filter((c) => /^\[Conductor\]/.test(c.body || '')).map((c) => c.body).slice(-3).join('\n');
   const readOnly = ['product', 'research', 'finance'].includes(dept.id) && !/\b(write|tulis|buat file|create)\b/i.test(issue.description || '');
   return {
     tag: `${dept.id}:${issue.identifier}`,
     readOnly,
-    system: `You are the head of ${dept.name} at ${co.company.name}. Mission: ${dept.mission}. You work alone in the workspace at ${ws.dir} (branch ${ws.branch}). Rules: R1 every exit criterion must be executable (a test or script), R2 run the typecheck/tests before claiming done (use node node_modules/<pkg>/bin/... not npm), R3 name the model/endpoint you used, R4 owner-facing strings are formal Indonesian for "Bapak", R5 cover the adversarial case. Never touch credentials, .env files, or anything outside the workspace. Do not push. Do not mark the issue done.`,
+    system: `You are the head of ${dept.name} at ${co.company.name}. Mission: ${dept.mission}. Workspace: ${ws.dir} (branch ${ws.branch}). R1 every exit criterion must be executable (test/script), R2 run typecheck/tests before claiming done (node node_modules/<pkg>/bin/... not npm), R3 name the model/endpoint you used, R4 owner-facing strings are formal Indonesian for "Bapak", R5 cover the adversarial case, R6 ${SUPERPOWERS_PATTERN[dept.id] || DEFAULT_PATTERN} Never touch credentials/.env or anything outside the workspace. Do not push. Do not mark the issue done.`,
     task: `Issue ${issue.identifier}: ${issue.title}\n\n${issue.description || ''}${instructions ? `\n\nConductor instructions:\n${instructions}` : ''}`,
     context: `Venture: ${vent.venture ? `${vent.venture.name} (${vent.venture.repo}, stack ${vent.venture.stack}, goal ${vent.venture.goal})` : 'Aidit OS v5 internal repository'}\nBase branch: ${ws.base}\nTime: ${wibStamp()}${graphCtx ? `\n\nGraph context (graphify query, prefer this over open-ended Glob/Grep):\n${graphCtx}` : ''}`,
     contract: readOnly
@@ -158,7 +168,11 @@ async function workOne(dept) {
   let ws;
   try { ws = await ensureWorkspace(issue, vent); } catch (e) {
     ledgerAppend({ kind: 'head.error', dept: DEPT, issue: issue.identifier, error: e.message });
-    if (!DRY) { await api('POST', `/api/issues/${issue.id}/comments`, { body: `[Kepala ${dept.name}] Workspace gagal: ${e.message.slice(0, 300)}` }); await api('PATCH', `/api/issues/${issue.id}`, { status: 'todo' }); }
+    // PRD v5.1 s6 step 7 bug fix: PATCH in_progress -> todo is rejected 422
+    // invalid_issue_disposition (28x in the 2026-09-15 audit) — on failure,
+    // only comment and leave the disposition alone; only in_review is a
+    // valid transition out of in_progress.
+    if (!DRY) await api('POST', `/api/issues/${issue.id}/comments`, { body: `[Kepala ${dept.name}] Workspace gagal: ${e.message.slice(0, 300)}` });
     console.log(JSON.stringify({ ok: false, error: e.message })); return false;
   }
   const graphCtx = await graphifyQuery(issue.title, 1500, vent.venture ? ws.dir : ROOT);
@@ -178,7 +192,7 @@ async function workOne(dept) {
     ? `[Kepala ${dept.name}] Selesai di lane ${r.lane}${commit.committed ? `, commit ${commit.sha} di ${ws.branch} (${commit.files.length} file)` : commit.refused ? ', commit DITOLAK: menyentuh berkas rahasia' : ''}.\n\n${String(r.summary).slice(0, 6000)}`
     : `[Kepala ${dept.name}] Gagal di semua lane: ${JSON.stringify(r.tried).slice(0, 800)}`;
   await api('POST', `/api/issues/${issue.id}/comments`, { body });
-  await api('PATCH', `/api/issues/${issue.id}`, { status: r.ok ? 'in_review' : 'todo' });
+  if (r.ok) await api('PATCH', `/api/issues/${issue.id}`, { status: 'in_review' });
   ledgerAppend({ kind: 'head.done', dept: DEPT, issue: issue.identifier, ok: r.ok, lane: r.lane, sha: commit.sha || null, tried: r.tried });
   console.log(JSON.stringify({ ok: r.ok, issue: issue.identifier, lane: r.lane, sha: commit.sha || null }));
   return r.ok;

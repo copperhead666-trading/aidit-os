@@ -12,10 +12,9 @@ import {
   ROOT, STATE, company, paperclipCfg, loadEnvLocal, readJson, writeJson,
   ledgerAppend, ledgerTail, isPaused, opusBudget, pc, paperclipHealth, machineHealth, run, wibStamp, wibParts,
 } from './lib.mjs';
-import { askClaude } from './claude.mjs';
+import { askClaude, askGlm } from './claude.mjs';
+import crypto from 'node:crypto';
 import { ask, alert, listAsks } from './owner.mjs';
-import { spawn } from 'node:child_process';
-import { NODE22 } from './lib.mjs';
 
 loadEnvLocal();
 const ONCE = process.argv.includes('--once');
@@ -165,20 +164,13 @@ async function applyDecision(d, cfg, log) {
   }
 }
 
-// Belt and braces next to Paperclip's own wake-on-assign: any department with
-// an assigned todo issue and no running head gets its head spawned (detached).
-function nudgeHeads(co, cfg, issues, log) {
-  const lockDir = path.join(STATE, 'locks');
-  const headById = Object.fromEntries(Object.entries(cfg.heads || {}).map(([d, id]) => [id, d]));
-  const waiting = new Set(issues.filter((i) => i.status === 'todo' && !/^EPIC /.test(i.title) && headById[i.assigneeAgentId]).map((i) => headById[i.assigneeAgentId]));
-  for (const dept of waiting) {
-    const lock = readJson(path.join(lockDir, `head-${dept}.lock`), null);
-    if (lock) { try { process.kill(lock.pid, 0); continue; } catch { /* stale lock */ } }
-    if (DRY) { log.push(`nudge (dry) ${dept}`); continue; }
-    const child = spawn(NODE22, ['conductor/head.mjs', '--department', dept], { cwd: ROOT, detached: true, stdio: 'ignore', windowsHide: true });
-    child.unref();
-    log.push(`nudge ${dept}`);
-  }
+// PRD v5.1 s6 step 7: tick only spends a model call when the board actually
+// changed since last time — issues/queue/lanes/asks, not the noisy fields
+// (agent status flapping, machine health, ledger tail, "now").
+const TICK_HASH_FILE = path.join(STATE, 'conductor-tick-hash.json');
+function signalHash(ctx) {
+  const signal = { issues: ctx.issues, queue: ctx.queue, lanes: ctx.lanes, openAsks: ctx.openAsks };
+  return crypto.createHash('sha256').update(JSON.stringify(signal)).digest('hex');
 }
 
 async function commitDecisions(co, text) {
@@ -201,28 +193,37 @@ export async function tick() {
     ledgerAppend({ kind: 'conductor.tick', ok: false, error: 'paperclip down' });
     return { ok: false, error: 'paperclip down' };
   }
+  const hash = signalHash(ctx);
+  if (!DRY && hash === readJson(TICK_HASH_FILE, null)?.hash) {
+    ledgerAppend({ kind: 'conductor.tick', ok: true, skipped: true, reason: 'no change since last tick' });
+    return { ok: true, skipped: true };
+  }
   const prompt = `Waktu: ${ctx.now}\n\nKeadaan perusahaan (JSON):\n${JSON.stringify(ctx, null, 1)}\n\nPutuskan langkah 30 menit ke depan. Jawab HANYA dengan JSON persis mengikuti skema ini (tanpa prosa):
 ${JSON.stringify(SCHEMA)}`;
-  let res = await askClaude({ system: systemPrompt(co), prompt, model: co.conductor.routineModel, schema: SCHEMA, tag: 'conductor.routine' });
+  // Routine tick runs on GLM-5.2 (Ollama), not Claude (PRD v5.1 s5). Sonnet is
+  // reserved for a genuine hard decision, capped at 5/day (opus stays 0/day).
+  let res = await askGlm({ system: systemPrompt(co), prompt, model: co.conductor.routineModel, schema: SCHEMA, tag: 'conductor.routine' });
   let modelUsed = co.conductor.routineModel;
   if (res.ok && res.structured?.needsOpus) {
     const b = opusBudget(co.conductor.opusTurnsPerDay);
     if (b.remaining > 0) {
-      const opusRes = await askClaude({ system: systemPrompt(co), prompt: `${prompt}\n\nSonnet flagged a hard decision: ${res.structured.needsOpusReason || ''}. Decide it.`, model: co.conductor.decisionModel, schema: SCHEMA, tag: 'conductor.decision' });
+      const decisionRes = await askClaude({ system: systemPrompt(co), prompt: `${prompt}\n\nGLM flagged a hard decision: ${res.structured.needsOpusReason || ''}. Decide it.`, model: co.conductor.decisionModel, schema: SCHEMA, tag: 'conductor.decision' });
       b.spend(1);
-      if (opusRes.ok) { res = opusRes; modelUsed = co.conductor.decisionModel; }
+      if (decisionRes.ok) { res = decisionRes; modelUsed = co.conductor.decisionModel; }
     }
   }
   if (!res.ok || !res.structured) {
     ledgerAppend({ kind: 'conductor.tick', ok: false, error: res.error });
     return { ok: false, error: res.error };
   }
+  if (!DRY) writeJson(TICK_HASH_FILE, { hash, at: new Date().toISOString() });
   const out = res.structured;
   const log = [];
   for (const d of (out.decisions || []).slice(0, 6)) {
     try { await applyDecision(d, cfg, log); } catch (e) { log.push(`error ${d.type}: ${e.message.slice(0, 160)}`); }
   }
-  try { const fresh = await pc('GET', `/api/companies/${cfg.companyId}/issues`); nudgeHeads(co, cfg, fresh, log); } catch (e) { log.push(`nudge error: ${e.message.slice(0, 100)}`); }
+  // nudgeHeads removed (PRD v5.1 s6 step 7): Paperclip's own wake-on-assign
+  // heartbeat already spawns a head when an issue is assigned to it.
   ledgerAppend({ kind: 'conductor.tick', ok: true, model: modelUsed, summary: out.summary, decisions: log });
   if (!DRY) await commitDecisions(co, `## ${wibStamp()} (${modelUsed})\n${out.summary}\n${log.map((l) => `- ${l}`).join('\n')}\n`);
   return { ok: true, summary: out.summary, log };

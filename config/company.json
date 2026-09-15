@@ -235,9 +235,9 @@
     "id": "conductor",
     "name": "JARVIS",
     "intervalMinutes": 30,
-    "routineModel": "sonnet",
-    "decisionModel": "opus",
-    "opusTurnsPerDay": 40,
+    "routineModel": "glm-5.2:cloud",
+    "decisionModel": "sonnet",
+    "opusTurnsPerDay": 5,
     "gitAuthor": {
       "name": "CONDUCTOR",
       "email": "conductor@aidit-os.local"
