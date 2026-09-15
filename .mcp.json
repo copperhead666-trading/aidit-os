@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "graphify": {
+      "command": "graphify-mcp",
+      "args": ["D:/AI/aidit-os-v5/graphify-out/graph.json"]
+    },
+    "gbrain": {
+      "command": "gbrain",
+      "args": ["serve"]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}" }
+    }
+  }
+}

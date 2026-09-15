@@ -23,3 +23,6 @@ dir-sidebar.jpeg
 .paperclip/
 config/*.local.txt
 state/
+
+# graphify: regenerable (no-LLM `graphify update`), rebuilt per machine.
+graphify-out/

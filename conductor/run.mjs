@@ -23,6 +23,14 @@ const DRY = process.argv.includes('--dry');
 const QUEUE = path.join(STATE, 'queue');
 const DECISIONS_DIR = path.join(ROOT, 'docs', 'conductor');
 const CLOSED = new Set(['done', 'canceled', 'cancelled', 'archived']);
+const GRAPHIFY = 'C:/Users/WIN10/.local/bin/graphify.exe';
+
+// PRD v5.1 s4.3: a short graph hint per unassigned/new ticket, not the whole
+// board — keeps the deterministic summary handed to the model small.
+async function graphifyQuery(question, budget) {
+  const r = await run(GRAPHIFY, ['query', question, '--budget', String(budget)], { cwd: ROOT, timeoutMs: 20000 });
+  return r.code === 0 ? r.stdout.trim() : null;
+}
 
 const SCHEMA = {
   type: 'object',
@@ -85,6 +93,8 @@ async function gather(co) {
     department: headById[i.assigneeAgentId] || null, project: i.projectId, updatedAt: i.updatedAt,
   }));
   const queue = fs.existsSync(QUEUE) ? fs.readdirSync(QUEUE).filter((f) => f.endsWith('.json')).map((f) => readJson(path.join(QUEUE, f))).filter(Boolean) : [];
+  const newTickets = open.filter((i) => !i.department && !/^EPIC /.test(i.title)).slice(0, 3);
+  for (const i of newTickets) { const hint = await graphifyQuery(i.title, 600); if (hint) i.graphHint = hint; }
   const b = opusBudget(co.conductor.opusTurnsPerDay);
   return {
     now: wibStamp(),

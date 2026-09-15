@@ -10,6 +10,20 @@ import path from 'node:path';
 import { ROOT, STATE, NODE22, company, paperclipCfg, loadEnvLocal, readJson, writeJson, ledgerAppend, isPaused, run, wibStamp } from './lib.mjs';
 import { runOnChain } from './lanes.mjs';
 
+const GRAPHIFY = 'C:/Users/WIN10/.local/bin/graphify.exe';
+// PRD v5.1 s4: pre-fetch graph context instead of letting the lane roam
+// Glob/Grep freely; --budget keeps the packet under the 8kB ceiling.
+async function graphifyQuery(question, budget, cwd = ROOT) {
+  const r = await run(GRAPHIFY, ['query', question, '--budget', String(budget)], { cwd, timeoutMs: 30000 });
+  return r.code === 0 ? r.stdout.trim() : null;
+}
+// PRD v5.1 s4.1: "--update dipanggil integrator setelah merge" — head.mjs is
+// the integrator (it owns the commit), so it refreshes the graph right after
+// instead of relying on a standing `graphify watch` daemon.
+function graphifyUpdate(cwd = ROOT) {
+  run(GRAPHIFY, ['update', cwd], { cwd, timeoutMs: 5 * 60000 }).catch(() => {});
+}
+
 loadEnvLocal();
 const argv = process.argv.slice(2);
 const flag = (k) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : null; };
@@ -76,7 +90,7 @@ async function ensureWorkspace(issue, { key, venture }) {
   return { dir, branch, base: 'v5' };
 }
 
-function packetFor(issue, dept, comments, ws, vent) {
+function packetFor(issue, dept, comments, ws, vent, graphCtx) {
   const instructions = comments.filter((c) => /^\[Conductor\]/.test(c.body || '')).map((c) => c.body).slice(-3).join('\n');
   const readOnly = ['product', 'research', 'finance'].includes(dept.id) && !/\b(write|tulis|buat file|create)\b/i.test(issue.description || '');
   return {
@@ -84,7 +98,7 @@ function packetFor(issue, dept, comments, ws, vent) {
     readOnly,
     system: `You are the head of ${dept.name} at ${co.company.name}. Mission: ${dept.mission}. You work alone in the workspace at ${ws.dir} (branch ${ws.branch}). Rules: R1 every exit criterion must be executable (a test or script), R2 run the typecheck/tests before claiming done (use node node_modules/<pkg>/bin/... not npm), R3 name the model/endpoint you used, R4 owner-facing strings are formal Indonesian for "Bapak", R5 cover the adversarial case. Never touch credentials, .env files, or anything outside the workspace. Do not push. Do not mark the issue done.`,
     task: `Issue ${issue.identifier}: ${issue.title}\n\n${issue.description || ''}${instructions ? `\n\nConductor instructions:\n${instructions}` : ''}`,
-    context: `Venture: ${vent.venture ? `${vent.venture.name} (${vent.venture.repo}, stack ${vent.venture.stack}, goal ${vent.venture.goal})` : 'Aidit OS v5 internal repository'}\nBase branch: ${ws.base}\nTime: ${wibStamp()}`,
+    context: `Venture: ${vent.venture ? `${vent.venture.name} (${vent.venture.repo}, stack ${vent.venture.stack}, goal ${vent.venture.goal})` : 'Aidit OS v5 internal repository'}\nBase branch: ${ws.base}\nTime: ${wibStamp()}${graphCtx ? `\n\nGraph context (graphify query, prefer this over open-ended Glob/Grep):\n${graphCtx}` : ''}`,
     contract: readOnly
       ? 'Reply with a concise written result (markdown). If a document must be produced, put its full text in the reply; the head will file it. End with one line: "LANE: <model you are>".'
       : 'Make the change in the workspace with tests; run them; then reply with: what changed (files), how it was verified (commands + result), what remains, and one line "LANE: <model you are>". Do not commit; the head commits.',
@@ -147,12 +161,14 @@ async function workOne(dept) {
     if (!DRY) { await api('POST', `/api/issues/${issue.id}/comments`, { body: `[Kepala ${dept.name}] Workspace gagal: ${e.message.slice(0, 300)}` }); await api('PATCH', `/api/issues/${issue.id}`, { status: 'todo' }); }
     console.log(JSON.stringify({ ok: false, error: e.message })); return false;
   }
-  const packet = packetFor(issue, dept, Array.isArray(comments) ? comments : [], ws, vent);
+  const graphCtx = await graphifyQuery(issue.title, 1500, vent.venture ? ws.dir : ROOT);
+  const packet = packetFor(issue, dept, Array.isArray(comments) ? comments : [], ws, vent, graphCtx);
   const role = ['product', 'engineering'].includes(dept.id) ? 'head-claude' : 'head-other';
   if (DRY) { console.log(JSON.stringify({ issue: issue.identifier, role, ws, packet }, null, 1)); return false; }
   const r = await runOnChain(role, packet, { workspace: ws.dir });
   let commit = { committed: false, files: [] };
   if (r.ok && !packet.readOnly) commit = await commitWorkspace(ws, issue, dept);
+  if (commit.committed) graphifyUpdate(vent.venture ? ws.dir : ROOT);
   if (r.ok && packet.readOnly && r.summary) {
     // file the written result next to the issue for the record
     const outDir = path.join(STATE, 'results'); fs.mkdirSync(outDir, { recursive: true });

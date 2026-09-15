@@ -12,3 +12,8 @@ module.exports = {
     { name: "ops", ...node22("conductor/ops.mjs") },
   ],
 };
+// PRD v5.1 s4: `graphify watch` needs the Python `watchdog` package, which
+// this machine's graphify.exe cannot see even after `pip install watchdog`
+// into the python.exe PATH resolves to (bundled-interpreter mismatch,
+// unresolved 2026-09-15) — so the graph is refreshed by head.mjs calling
+// `graphify update` after each commit instead of a standing watch daemon.
