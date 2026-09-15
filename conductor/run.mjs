@@ -212,8 +212,9 @@ export async function tick() {
   }
   const prompt = `Waktu: ${ctx.now}\n\nKeadaan perusahaan (JSON):\n${JSON.stringify(ctx, null, 1)}\n\nPutuskan langkah 30 menit ke depan. Jawab HANYA dengan JSON persis mengikuti skema ini (tanpa prosa):
 ${JSON.stringify(SCHEMA)}`;
-  // Routine tick runs on GLM-5.2 (Ollama), not Claude (PRD v5.1 s5). Sonnet is
-  // reserved for a genuine hard decision, capped at 5/day (opus stays 0/day).
+  // Routine tick runs on GLM-5.2 (Ollama), not Claude (PRD v5.1 s5). Opus is
+  // reserved for a genuine hard decision, capped at 5/day (company.json's
+  // conductor.decisionModel -- owner decision 2026-09-15 night, per Bennett).
   let res = await askGlm({ system: systemPrompt(co), prompt, model: co.conductor.routineModel, schema: SCHEMA, tag: 'conductor.routine' });
   let modelUsed = co.conductor.routineModel;
   if (res.ok && res.structured?.needsOpus) {

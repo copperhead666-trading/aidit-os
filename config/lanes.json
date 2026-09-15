@@ -1,28 +1,27 @@
 {
   "version": "5.1",
-  "note": "Model lanes (PRD v5.1 s2c, s3). No per-token meter anywhere. A lane is ready | resting(until) | disabled; the probe (conductor/lanes.mjs probeLanes) updates state/lanes-status.json every 15 minutes. Claude lanes are reserved for conductor-decision and review only (owner decision 2026-09-15) — heads and workers never use claude-*. gpt-6-astra is reserved for orchestration fallback only (owner decision 2026-09-15 evening), heads/workers use gpt-5.5 for Codex-plan coding. Root cause of 2026-09-15 evening's session-wide codex-chatgpt 401: conductor/paperclip-v5 run as Windows user SYSTEM (see PM2's pm2_env.username), which has its own separate %USERPROFILE%\\.codex with no auth.json at all -- SYSTEM's codex-cli had never been logged in, unrelated to quota/rate-limit. Fixed by copying the working WIN10 user's auth.json into SYSTEM's .codex folder (verified via a one-off SYSTEM-context scheduled task: `codex exec` completed cleanly, real token usage). kimi-k27 (Ollama) is disabled to protect the Ollama Cloud quota; kimi-k3 (Kimi Code CLI) is disabled until the monthly reset.",
+  "note": "Model lanes (PRD v5.1 s2c, s3). No per-token meter anywhere. A lane is ready | resting(until) | disabled; the probe (conductor/lanes.mjs probeLanes) updates state/lanes-status.json every 15 minutes. Owner decision 2026-09-15 night: Conductor's decisionModel is opus (config/company.json), NOT sonnet -- Bennett's own stack description names GLM-5.1 as his real 'Codex' (primary coding) with ChatGPT's Codex-plan as a secondary lane only, which this file now mirrors. codex-chatgpt pool (gpt-6-astra, gpt-5.5) disabled entirely: owner reports quota at 0% the evening of 2026-09-15 with cause unverified (plausible cause: 3 overlapping codex-family lanes -- gpt-6-astra, gpt-5.5, and a since-removed plain 'codex' lane -- all hammering the same shared ChatGPT-plan pool through several hours of live debugging). gpt-6-astra was already found to burn far more tokens per call than even Opus; it is not used for anything (coding or orchestration fallback) until quota is confirmed healthy and a cheaper lane genuinely needs it. Orchestrator's own fallback (when opus/sonnet are unavailable) is Hermes+Ollama GLM-5.3-flash, not Codex. kimi-k27 (Ollama) is disabled to protect the Ollama Cloud quota; kimi-k3 (Kimi Code CLI) is disabled until the monthly reset.",
   "probe": { "intervalMinutes": 15, "restMinutes": 60, "retryAfterMinutes": 5 },
   "semaphore": { "ollama-cloud-glm": 2, "ollama-cloud-kimi": 2 },
   "lanes": {
     "claude-sonnet": { "runtime": "claude-cli", "model": "sonnet", "pool": "claude-subscription", "capabilities": ["decide", "review"], "maxTurns": 20, "dailyCalls": 15, "endpoint": "claude -p (OAuth)" },
-    "claude-opus": { "runtime": "claude-cli", "model": "opus", "pool": "claude-subscription", "capabilities": ["decide"], "maxTurns": 20, "dailyCalls": 0, "endpoint": "claude -p (OAuth)", "status": "disabled", "reason": "owner decision 2026-09-15: opus 0/day, decision role runs on sonnet" },
+    "claude-opus": { "runtime": "claude-cli", "model": "opus", "pool": "claude-subscription", "capabilities": ["decide"], "maxTurns": 20, "dailyCalls": 5, "endpoint": "claude -p (OAuth)", "reason": "owner decision 2026-09-15 night: orchestrator decisions run on opus per Bennett's stack, capped 5/day (config/company.json's conductor.opusTurnsPerDay) -- supersedes the earlier same-day 'opus 0/day, sonnet only' decision" },
     "kimi-k3": { "runtime": "kimi-cli", "model": "kimi-code/dispatch", "pool": "kimi-code", "capabilities": ["decide", "plan", "write", "review"], "maxTurns": 40, "dailyTasks": 10, "endpoint": "kimi CLI (Kimi Code subscription, dispatch model: 65536 ctx, no always_thinking — config.toml)", "status": "disabled", "reason": "403 monthly quota exhausted 2026-09-14; reset date unknown (Ask owner)" },
-    "gpt-6-astra": { "runtime": "codex-cli", "model": "gpt-6-astra", "pool": "codex-chatgpt", "capabilities": ["decide"], "maxTurns": 40, "dailyTasks": 30, "endpoint": "codex exec (ChatGPT plan) -- orchestration fallback only, not coding" },
-    "gpt-5.5": { "runtime": "codex-cli", "model": "gpt-5.5", "pool": "codex-chatgpt", "capabilities": ["decide", "plan", "write", "review", "code"], "maxTurns": 60, "dailyTasks": 30, "endpoint": "codex exec (ChatGPT plan)" },
-    "codex": { "runtime": "codex-cli", "model": "default", "pool": "codex-chatgpt", "capabilities": ["code", "review"], "maxTurns": 80, "dailyTasks": 30, "endpoint": "codex exec (ChatGPT plan)" },
+    "gpt-6-astra": { "runtime": "codex-cli", "model": "gpt-6-astra", "pool": "codex-chatgpt", "capabilities": ["decide"], "maxTurns": 40, "dailyTasks": 30, "endpoint": "codex exec (ChatGPT plan)", "status": "disabled", "reason": "owner decision 2026-09-15 night: burns far more tokens per call than opus even, AND codex-chatgpt pool quota reported at 0% -- disabled entirely, not used for coding or orchestration fallback anymore" },
+    "gpt-5.5": { "runtime": "codex-cli", "model": "gpt-5.5", "pool": "codex-chatgpt", "capabilities": ["decide", "plan", "write", "review", "code"], "maxTurns": 60, "dailyTasks": 30, "endpoint": "codex exec (ChatGPT plan)", "status": "disabled", "reason": "owner decision 2026-09-15 night: codex-chatgpt pool quota reported at 0%, disabled until confirmed recovered -- kept as the sole Codex-plan lane (the redundant plain 'codex' default-model lane was removed) for when it's re-enabled" },
     "kimi-k27": { "runtime": "hermes-cli", "model": "kimi-k2.7-code:cloud", "pool": "ollama-cloud-kimi", "capabilities": ["code", "write", "review", "plan"], "endpoint": "hermes -z (Ollama Cloud via 127.0.0.1:11434)", "status": "disabled", "reason": "owner decision 2026-09-15: kimi via Ollama off to protect Ollama Cloud quota" },
     "glm-52": { "runtime": "hermes-cli", "model": "glm-5.2:cloud", "pool": "ollama-cloud-glm", "capabilities": ["write", "plan", "review", "code", "decide"], "endpoint": "hermes -z (Ollama Cloud via 127.0.0.1:11434)" },
     "glm-51": { "runtime": "hermes-cli", "model": "glm-5.1:cloud", "pool": "ollama-cloud-glm", "capabilities": ["code", "write"], "endpoint": "hermes -z (Ollama Cloud via 127.0.0.1:11434)" },
-    "glm-53-flash": { "runtime": "hermes-cli", "model": "glm-5.3-flash:cloud", "pool": "ollama-cloud-glm", "capabilities": ["light"], "endpoint": "hermes -z (Ollama Cloud via 127.0.0.1:11434)" }
+    "glm-53-flash": { "runtime": "hermes-cli", "model": "glm-5.3-flash:cloud", "pool": "ollama-cloud-glm", "capabilities": ["light", "decide"], "endpoint": "hermes -z (Ollama Cloud via 127.0.0.1:11434)" }
   },
   "roles": {
-    "conductor-routine": ["glm-52", "glm-51", "gpt-6-astra", "claude-sonnet"],
-    "conductor-decision": ["claude-sonnet", "glm-52"],
+    "conductor-routine": ["glm-52", "glm-51", "glm-53-flash", "claude-sonnet"],
+    "conductor-decision": ["claude-opus", "claude-sonnet", "glm-52"],
     "review": ["claude-sonnet", "glm-52"],
-    "head-claude": ["gpt-5.5", "kimi-k3", "glm-51", "codex"],
-    "head-other": ["gpt-5.5", "kimi-k3", "glm-52", "kimi-k27", "codex"],
-    "worker": ["gpt-5.5", "codex", "kimi-k3", "glm-51"],
-    "berat": ["glm-52", "glm-51", "gpt-5.5", "codex", "kimi-k3"],
+    "head-claude": ["glm-51", "kimi-k3", "glm-52", "gpt-5.5"],
+    "head-other": ["glm-52", "glm-51", "kimi-k3", "kimi-k27", "gpt-5.5"],
+    "worker": ["glm-51", "glm-52", "kimi-k3", "gpt-5.5"],
+    "berat": ["glm-52", "glm-51", "kimi-k3", "gpt-5.5"],
     "light": ["glm-53-flash", "glm-51"]
   }
 }

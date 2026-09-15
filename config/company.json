@@ -257,7 +257,7 @@
     "name": "JARVIS",
     "intervalMinutes": 30,
     "routineModel": "glm-5.2:cloud",
-    "decisionModel": "sonnet",
+    "decisionModel": "opus",
     "opusTurnsPerDay": 5,
     "chatHistoryTurns": 0,
     "gitAuthor": {
