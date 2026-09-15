@@ -10,7 +10,7 @@
 //               no home-grown tool loop — hermes brings its own tools)
 import fs from 'node:fs';
 import path from 'node:path';
-import { ROOT, STATE, NODE22, lanesCfg, readJson, writeJson, run, ledgerAppend, laneBudget, wibParts, withRtkPath } from './lib.mjs';
+import { ROOT, STATE, NODE22, lanesCfg, readJson, writeJson, run, ledgerAppend, laneBudget, wibParts, withRtkPath, resolveClaudeBin } from './lib.mjs';
 
 const STATUS_FILE = path.join(STATE, 'lanes-status.json');
 const GUARD_SETTINGS = path.join(ROOT, 'conductor', 'guard.settings.json');
@@ -137,7 +137,12 @@ async function runClaude(lane, packet, { workspace, maxTurns, timeoutMs }) {
   // from the process env, not set per-lane here: the "conductor" PM2 process
   // carries it in ecosystem.config.cjs, so a manual/orchestrator invocation
   // (this env var unset) correctly falls back to ~/.claude instead.
-  const r = await run(process.platform === 'win32' ? 'claude.cmd' : 'claude', args, { cwd: workspace || ROOT, timeoutMs, input: packetText(packet), env: withRtkPath() });
+  // claude.exe directly, not claude.cmd: shell:true (needed for a .cmd on
+  // Windows) silently drops the empty-string --setting-sources value above
+  // and shifts every arg after it — found live wiring conductor/chat.mjs's
+  // document ingestion. See resolveClaudeBin() in lib.mjs.
+  const bin = await resolveClaudeBin();
+  const r = await run(bin, args, { cwd: workspace || ROOT, timeoutMs, input: packetText(packet), env: withRtkPath() });
   let out = null; try { out = JSON.parse(r.stdout); } catch {}
   if (r.code !== 0 || !out || out.is_error) return { ok: false, error: (out?.result || r.stderr || r.stdout || `exit ${r.code}`).toString().slice(0, 400), raw: r.stdout.slice(-2000) };
   return { ok: true, summary: String(out.result || '').trim(), turns: out.num_turns, raw: null, usage: out.usage ? { tokens: (out.usage.input_tokens || 0) + (out.usage.output_tokens || 0) + (out.usage.cache_read_input_tokens || 0) + (out.usage.cache_creation_input_tokens || 0), costUsd: out.total_cost_usd ?? null } : null };

@@ -3,7 +3,7 @@
 // decides; conductor/run.mjs applies the decisions deterministically.
 import fs from 'node:fs';
 import path from 'node:path';
-import { ROOT, STATE, run, ledgerAppend } from './lib.mjs';
+import { ROOT, STATE, run, ledgerAppend, resolveClaudeBin } from './lib.mjs';
 
 const HOME = path.join(STATE, 'conductor', 'home');
 
@@ -13,7 +13,8 @@ export async function askClaude({ system, prompt, model = 'sonnet', schema, maxT
   if (system) args.push('--append-system-prompt', system);
   if (schema) args.push('--json-schema', JSON.stringify(schema));
   const started = Date.now();
-  const r = await run(process.platform === 'win32' ? 'claude.cmd' : 'claude', args, { cwd: HOME, timeoutMs, input: prompt });
+  const bin = await resolveClaudeBin();
+  const r = await run(bin, args, { cwd: HOME, timeoutMs, input: prompt });
   try { fs.writeFileSync(path.join(STATE, 'conductor', 'last-raw.json'), r.stdout || r.stderr || ''); } catch {}
   let out = null;
   try { out = JSON.parse(r.stdout); } catch { /* fallthrough */ }

@@ -8,10 +8,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { STATE, ROOT, company, paperclipCfg, lanesCfg, loadEnvLocal, readJson, writeJson, ledgerAppend, ledgerTail, isPaused, setPaused, pc, paperclipHealth, wibParts, wibStamp, machineHealth } from './lib.mjs';
-import { getUpdates, answerCallbackQuery, editMessageText, sendMessage, sendVoice, setMyCommands, OWNER_CHAT_ID } from './telegram-client.mjs';
+import { getUpdates, answerCallbackQuery, editMessageText, sendMessage, sendVoice, getFile, downloadFile, setMyCommands, OWNER_CHAT_ID } from './telegram-client.mjs';
 import { answerAsk, listAsks, report } from './owner.mjs';
 import { lanesStatus } from './lanes.mjs';
-import { chatReply } from './chat.mjs';
+import { chatReply, ingestDocument, onDocumentTicketsApproved } from './chat.mjs';
 import { synthesize, EN_PIPER_MODEL } from '../ops/voice/voice-out.mjs';
 import { renderSpokenReport } from '../ops/voice/spoken-report.mjs';
 import { computeScore } from './score.mjs';
@@ -186,7 +186,31 @@ async function handleCommand(text) {
   }
 }
 
+const TEXT_DOC_RE = /\.(md|markdown|txt)$/i;
+
+// A .md/.txt file upload (e.g. a ChatGPT-drafted vision/backlog dump) skips
+// Telegram's 4096-char text limit entirely — handled separately from plain
+// text, downloaded once and handed to chat.mjs's document pipeline whole,
+// never split across messages the way a huge paste would be.
+async function handleDocument(doc) {
+  const name = doc.file_name || 'document';
+  if (!TEXT_DOC_RE.test(name)) {
+    await sendMessage(`Berkas "${name}" diterima, tapi saya cuma bisa baca .md/.txt untuk sekarang.`);
+    return;
+  }
+  const gf = await getFile(doc.file_id);
+  if (!gf.ok) { await sendMessage('Maaf, Bapak, berkas itu gagal saya unduh.'); return; }
+  const dest = path.join(STATE, 'inbox', `${Date.now()}-${name}`);
+  const dl = await downloadFile(gf.result.file_path, dest);
+  if (!dl.ok) { await sendMessage('Maaf, Bapak, berkas itu gagal saya unduh.'); return; }
+  const text = fs.readFileSync(dest, 'utf8');
+  fs.unlinkSync(dest);
+  const r = await ingestDocument({ text, fileName: name, channel: 'telegram' });
+  await sendMessage(r.reply);
+}
+
 async function handleMessage(msg) {
+  if (msg.document) { await handleDocument(msg.document); return; }
   const text = msg.text || (msg.voice ? '[pesan suara]' : '');
   if (!text) return;
   if (text.startsWith('/')) {
@@ -224,6 +248,7 @@ async function handleCallback(cq) {
   if (msgId) await editMessageText(msgId, `*${ask?.title || 'Keputusan'}*\nJawaban Bapak: ${label} (${wibStamp()}).`, { removeKeyboard: true });
   const prdMatch = answer === 'approve' && id.match(/^interview-prd-(.+)-\d{4}-\d{2}-\d{2}$/);
   if (prdMatch) onPrdApproved(prdMatch[1]);
+  if (answer === 'approve' && id.startsWith('document-tickets-')) await onDocumentTicketsApproved(id.replace(/^document-tickets-/, ''));
 }
 
 async function loop() {

@@ -142,6 +142,28 @@ export function run(cmd, args, { cwd = ROOT, env = process.env, timeoutMs = 6000
 // Shared by head.mjs, run.mjs and chat.mjs so all three ask the graph the
 // same way instead of three slightly different implementations.
 export const GRAPHIFY = process.env.GRAPHIFY_BIN || 'C:/Users/WIN10/.local/bin/graphify.exe';
+
+// claude.cmd's shell:true spawn (needed since Windows can't exec a .cmd
+// directly) sends the whole argv through cmd.exe, which silently drops an
+// EMPTY-STRING arg (our `--setting-sources ''`) and shifts every arg after
+// it left by one -- surfaced live as "Invalid setting source: --tools"/
+// "--json-schema" (found while wiring conductor/chat.mjs's document
+// ingestion). claude.cmd just wraps a real claude.exe one level down;
+// spawning that directly (shell:false, no cmd.exe involved) passes argv
+// through untouched. Resolved once per process, like hermesEntry() in
+// lanes.mjs.
+let CLAUDE_EXE = null;
+export async function resolveClaudeBin() {
+  if (CLAUDE_EXE) return CLAUDE_EXE;
+  if (process.env.CLAUDE_EXE && fs.existsSync(process.env.CLAUDE_EXE)) return (CLAUDE_EXE = process.env.CLAUDE_EXE);
+  if (process.platform !== 'win32') return (CLAUDE_EXE = 'claude');
+  const r = await run('where', ['claude.cmd'], { timeoutMs: 10000 });
+  const cmdPath = r.stdout.trim().split(/\r?\n/)[0];
+  if (!cmdPath) throw new Error('claude.cmd tidak ditemukan di PATH');
+  const exe = path.join(path.dirname(cmdPath), 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
+  if (!fs.existsSync(exe)) throw new Error(`claude.exe tidak ada: ${exe}`);
+  return (CLAUDE_EXE = exe);
+}
 export async function graphifyQuery(question, budget, cwd = ROOT) {
   const r = await run(GRAPHIFY, ['query', question, '--budget', String(budget)], { cwd, timeoutMs: 30000 });
   return r.code === 0 ? r.stdout.trim() : null;

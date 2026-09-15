@@ -7,10 +7,12 @@
 //                                      prints the reply JSON to stdout.
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ROOT, company, loadEnvLocal, ledgerAppend, laneBudget, graphifyQuery, run } from './lib.mjs';
+import fs from 'node:fs';
+import { ROOT, STATE, company, paperclipCfg, loadEnvLocal, readJson, writeJson, ledgerAppend, laneBudget, graphifyQuery, run, pc, wibParts } from './lib.mjs';
 import { askGlm, askClaude } from './claude.mjs';
 import { snapshot } from './status.mjs';
 import { checkOwnerText } from '../ops/voice/owner-lexicon-gate.mjs';
+import { ask } from './owner.mjs';
 
 loadEnvLocal();
 
@@ -111,6 +113,79 @@ async function chatReply({ text, channel = 'cli' }) {
 
   ledgerAppend({ kind: 'owner.chat', channel, ok: true, modelUsed, escalated, remembered, contextKind: kind });
   return { ok: true, reply, modelUsed, escalated, remembered };
+}
+
+// PRD "Personal Assistant" extension: a whole document (e.g. a ChatGPT-
+// drafted vision/backlog dump, sent as a .md/.txt file — Telegram's 4096-
+// char text limit doesn't apply to file uploads) is captured whole, not
+// answered like a chat question. Saved to gbrain verbatim as a durable
+// reference; a synthesis pass drafts candidate tickets, gated behind a
+// normal SETUJU/TOLAK Ask before anything is actually created — same
+// no-silent-action discipline as conductor/interview.mjs's PRD gate.
+const DOC_SCHEMA = {
+  type: 'object',
+  properties: {
+    summary: { type: 'string', description: 'Ringkasan 3-5 kalimat, Indonesia formal' },
+    candidateTickets: {
+      type: 'array',
+      items: { type: 'object', properties: { title: { type: 'string' }, why: { type: 'string' }, projectKey: { type: 'string', description: 'sjs-superapps | caveman-trading-os | internal' } }, required: ['title', 'why'] },
+      minItems: 1, maxItems: 10,
+    },
+  },
+  required: ['summary', 'candidateTickets'],
+};
+
+function slugify(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40); }
+
+export async function ingestDocument({ text, fileName, channel }) {
+  const co = company();
+  const date = wibParts().date;
+  const slug = `vision-${date}-${slugify((fileName || 'doc').replace(/\.[a-z0-9]+$/i, ''))}`;
+  const gbrainRes = await run('gbrain', ['put', slug, '--content', text], { timeoutMs: 30000 });
+  const remembered = gbrainRes.code === 0;
+
+  const prompt = `Dokumen visi/backlog berikut dikirim Bapak (pemilik) untuk arah ${co.company.name}. Baca lalu (1) ringkas 3-5 kalimat Indonesia formal, (2) daftar 3-10 tiket kerja konkret paling penting berdasarkan ISI DOKUMEN INI SAJA -- jangan mengarang scope di luar dokumen.\n\nDOKUMEN:\n${text.slice(0, 12000)}\n\nJawab HANYA dengan JSON sesuai skema ini:\n${JSON.stringify(DOC_SCHEMA)}`;
+  const res = await askClaude({ system: 'Anda menyusun ringkasan dan backlog kerja dari dokumen visi pemilik, Indonesia formal, konkret.', prompt, model: co.conductor.decisionModel, schema: DOC_SCHEMA, tag: 'chat.ingest-document' });
+  ledgerAppend({ kind: 'owner.document', channel, fileName, chars: text.length, remembered, ok: res.ok });
+
+  if (!res.ok || !res.structured?.summary || !res.structured?.candidateTickets?.length) {
+    return { ok: true, reply: `Dokumen sudah saya simpan sebagai referensi jangka panjang${remembered ? '' : ' (penyimpanan sempat gagal, saya coba lagi nanti)'}. Ringkasan otomatis gagal disusun kali ini -- saya coba lagi di kesempatan berikutnya.` };
+  }
+
+  const tickets = res.structured.candidateTickets;
+  const pendingFile = path.join(STATE, 'pending-document-tickets', `${slug}.json`);
+  fs.mkdirSync(path.dirname(pendingFile), { recursive: true });
+  writeJson(pendingFile, { slug, tickets, createdAt: new Date().toISOString() });
+
+  const askId = `document-tickets-${slug}`;
+  await ask({
+    id: askId,
+    title: `Tiket dari dokumen: ${fileName}`,
+    lines: [res.structured.summary, '', `Usulan ${tickets.length} tiket kerja:`, ...tickets.map((t, i) => `${i + 1}. ${t.title}`)],
+    defaultIfSilent: 'saya tahan dulu, tidak membuat tiket apa pun sampai Bapak konfirmasi.',
+  });
+
+  return { ok: true, reply: `Dokumen sudah saya simpan sebagai referensi jangka panjang. Ringkasan: ${res.structured.summary}\n\nSaya usulkan ${tickets.length} tiket kerja -- sudah saya kirim lewat pesan terpisah untuk persetujuan Bapak.` };
+}
+
+/** Called from telegram.mjs's Ask-callback handler when a
+ * document-tickets-<slug> ask is answered "approve" -- creates the real
+ * Paperclip issues from the pending candidate list saved at ingest time. */
+export async function onDocumentTicketsApproved(slug) {
+  const pendingFile = path.join(STATE, 'pending-document-tickets', `${slug}.json`);
+  const pending = readJson(pendingFile, null);
+  if (!pending) return;
+  const cfg = paperclipCfg();
+  const created = [];
+  for (const t of pending.tickets) {
+    const projectId = cfg.projects?.[t.projectKey] || cfg.projects?.internal;
+    try {
+      const issue = await pc('POST', `/api/companies/${cfg.companyId}/issues`, { title: t.title, description: t.why, projectId, priority: 'medium', status: 'todo' });
+      created.push(issue.identifier);
+    } catch (e) { ledgerAppend({ kind: 'owner.document.ticket-error', slug, title: t.title, error: e.message.slice(0, 160) }); }
+  }
+  ledgerAppend({ kind: 'owner.document.tickets-created', slug, created });
+  try { fs.unlinkSync(pendingFile); } catch {}
 }
 
 export { chatReply };
