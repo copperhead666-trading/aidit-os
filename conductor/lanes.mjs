@@ -113,7 +113,7 @@ export async function runOnLane(id, packet, { workspace, maxTurns, timeoutMs = 2
     else r = { ok: false, error: `runtime ${lane.runtime} not implemented` };
   } catch (e) { r = { ok: false, error: e.message }; }
   r.ms = Date.now() - started;
-  ledgerAppend({ kind: 'lane.run', lane: id, ok: r.ok, ms: r.ms, error: r.error ? String(r.error).slice(0, 200) : null, tag: packet.tag || null, ...(lane.runtime === 'claude-cli' ? { configDir: process.env.CLAUDE_CONFIG_DIR || '~/.claude' } : {}) });
+  ledgerAppend({ kind: 'lane.run', lane: id, ok: r.ok, ms: r.ms, error: r.error ? String(r.error).slice(0, 200) : null, tag: packet.tag || null, tokens: r.usage?.tokens ?? null, costUsd: r.usage?.costUsd ?? null, ...(lane.runtime === 'claude-cli' ? { configDir: process.env.CLAUDE_CONFIG_DIR || '~/.claude' } : {}) });
   return r;
 }
 
@@ -136,7 +136,7 @@ async function runClaude(lane, packet, { workspace, maxTurns, timeoutMs }) {
   const r = await run(process.platform === 'win32' ? 'claude.cmd' : 'claude', args, { cwd: workspace || ROOT, timeoutMs, input: packetText(packet), env: withRtkPath() });
   let out = null; try { out = JSON.parse(r.stdout); } catch {}
   if (r.code !== 0 || !out || out.is_error) return { ok: false, error: (out?.result || r.stderr || r.stdout || `exit ${r.code}`).toString().slice(0, 400), raw: r.stdout.slice(-2000) };
-  return { ok: true, summary: String(out.result || '').trim(), turns: out.num_turns, raw: null };
+  return { ok: true, summary: String(out.result || '').trim(), turns: out.num_turns, raw: null, usage: out.usage ? { tokens: (out.usage.input_tokens || 0) + (out.usage.output_tokens || 0) + (out.usage.cache_read_input_tokens || 0) + (out.usage.cache_creation_input_tokens || 0), costUsd: out.total_cost_usd ?? null } : null };
 }
 
 async function runCodex(lane, packet, { workspace, timeoutMs }) {
@@ -203,8 +203,9 @@ async function runHermes(lane, packet, { workspace, timeoutMs = 25 * 60000 }) {
   let usage = null; try { usage = JSON.parse(fs.readFileSync(usageFile, 'utf8')); } catch {}
   try { fs.unlinkSync(usageFile); } catch {}
   const text = (r.stdout || '').trim();
-  if (r.code !== 0 || !text || usage?.failed) return { ok: false, error: (r.stderr || text || `exit ${r.code}`).slice(0, 400), usage };
-  return { ok: true, summary: text, usage };
+  const normUsage = usage ? { tokens: usage.total_tokens ?? null, costUsd: usage.estimated_cost_usd ?? null, model: usage.model } : null;
+  if (r.code !== 0 || !text || usage?.failed) return { ok: false, error: (r.stderr || text || `exit ${r.code}`).slice(0, 400), usage: normUsage };
+  return { ok: true, summary: text, usage: normUsage };
 }
 
 // ---- Probe (every 15 minutes): cheap health per pool ---------------------

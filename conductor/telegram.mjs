@@ -7,7 +7,7 @@
 //   node conductor/telegram.mjs --report   send a Report now and exit
 import fs from 'node:fs';
 import path from 'node:path';
-import { STATE, ROOT, company, paperclipCfg, loadEnvLocal, readJson, writeJson, ledgerAppend, ledgerTail, isPaused, setPaused, pc, paperclipHealth, wibParts, wibStamp, machineHealth } from './lib.mjs';
+import { STATE, ROOT, company, paperclipCfg, lanesCfg, loadEnvLocal, readJson, writeJson, ledgerAppend, ledgerTail, isPaused, setPaused, pc, paperclipHealth, wibParts, wibStamp, machineHealth } from './lib.mjs';
 import { getUpdates, answerCallbackQuery, editMessageText, sendMessage, setMyCommands, OWNER_CHAT_ID } from './telegram-client.mjs';
 import { answerAsk, listAsks, report } from './owner.mjs';
 import { lanesStatus } from './lanes.mjs';
@@ -74,6 +74,30 @@ async function ventureLines() {
   });
 }
 
+// PRD v5.1 s6 step 8: one plain-Indonesian line per pool for the evening
+// report (Finance/Kuota's deeper Claude-specific audit reads ~/.claude/
+// projects separately — this is just the owner-facing headline count).
+function poolUsageToday() {
+  const file = path.join(STATE, 'ledger.jsonl');
+  if (!fs.existsSync(file)) return null;
+  const today = wibParts().date;
+  const laneToPool = Object.fromEntries(Object.entries(lanesCfg().lanes).map(([id, l]) => [id, l.pool]));
+  const counts = {};
+  for (const line of fs.readFileSync(file, 'utf8').trim().split('\n')) {
+    if (!line || !line.includes(today)) continue;
+    let row; try { row = JSON.parse(line); } catch { continue; }
+    if (row.wib?.slice(0, 10) !== today) continue;
+    let pool = null;
+    if (row.kind === 'claude.call' || (row.kind === 'lane.run' && row.configDir)) pool = row.configDir && row.configDir !== '~/.claude' ? 'claude-mesin' : 'claude-orkestrator';
+    else if (row.kind === 'lane.run') pool = laneToPool[row.lane] || row.lane;
+    if (!pool) continue;
+    counts[pool] = (counts[pool] || 0) + 1;
+  }
+  const entries = Object.entries(counts);
+  if (!entries.length) return 'Pemakaian hari ini: belum ada panggilan model.';
+  return `Pemakaian hari ini: ${entries.map(([pool, n]) => `${pool} ${n}x`).join(', ')}.`;
+}
+
 export async function sendReport(kind = 'auto') {
   const p = wibParts();
   const greet = p.hour < 11 ? 'Selamat pagi' : p.hour < 15 ? 'Selamat siang' : p.hour < 18 ? 'Selamat sore' : 'Selamat malam';
@@ -82,6 +106,7 @@ export async function sendReport(kind = 'auto') {
     `*${greet}, Bapak.* Laporan ${p.time} WIB.`,
     ...humanStatus(s).slice(0, 3),
     ...(await ventureLines()),
+    ...(p.hour >= 13 ? [poolUsageToday()].filter(Boolean) : []),
     `Layar rinci: ${COCKPIT_URL}`,
   ];
   const r = await report(lines);
