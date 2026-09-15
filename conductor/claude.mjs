@@ -54,7 +54,11 @@ export async function askGlm({ system, prompt, model = 'glm-5.2:cloud', schema, 
     if (!res.ok) throw new Error(`ollama ${res.status}: ${(await res.text()).slice(0, 200)}`);
     const data = await res.json();
     text = data.message?.content ?? null;
-    structured = schema ? JSON.parse(text) : null;
+    // The `format` schema keeps the shape close but not the wrapper: GLM
+    // sometimes fences its JSON in ```json ... ``` anyway (caught live by
+    // this session's own --dry verification of the run.mjs tick pipeline).
+    const fenced = String(text || '').trim().match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+    structured = schema ? JSON.parse(fenced ? fenced[1] : text) : null;
     ok = true;
   } catch (e) { error = e.message; }
   const result = { ok, model, ms: Date.now() - started, structured, text, error };
