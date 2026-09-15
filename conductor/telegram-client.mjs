@@ -170,15 +170,27 @@ async function appendReject(entry, rejectsFile) {
   }
 }
 
-// Check text through the lexicon gate. If rejected, log and return a rejection
-// result object. Returns null if the text passes (caller should proceed).
+// Check text through the lexicon gate. If rejected, try ONE automatic
+// rewrite using each hit's approved owner-facing phrasing (`say`) before
+// giving up -- found live 2026-09-15: a real document-ingest Ask (jargon
+// like "provenance-aware", status codes, MT5 terms from the source doc)
+// was silently dropped (sendError, never reached Telegram) because nothing
+// upstream sanitizes model-authored text before it hits this gate. Only
+// chat.mjs's own chatReply had a fallback; Ask/Report/Alert had none.
+// Returns: null (text passes as-is, proceed) | { rewritten } (proceed with
+// this text instead) | rejection object (stop, log already written).
 async function lexiconGate(text, opts) {
   if (opts.allowTechnical) return null; // bypass gate
-  const { ok, hits } = checkOwnerText(text, opts.lexicon ? { lexicon: opts.lexicon } : undefined);
+  const lexOpt = opts.lexicon ? { lexicon: opts.lexicon } : undefined;
+  const { ok, hits } = checkOwnerText(text, lexOpt);
   if (ok) return null;
+  let rewritten = text;
+  for (const h of hits) if (h.match) rewritten = rewritten.split(h.match).join(h.say);
+  const retry = checkOwnerText(rewritten, lexOpt);
+  if (retry.ok) return { rewritten };
   const hint = rewriteHint(hits);
   const rejectsFile = opts.rejectsFile || DEFAULT_REJECTS_FILE;
-  await appendReject({ ts: new Date().toISOString(), text, hits, hint }, rejectsFile);
+  await appendReject({ ts: new Date().toISOString(), text, hits, hint, rewriteAttempted: rewritten !== text, rewriteStillRejected: retry.hits.map((h) => h.token) }, rejectsFile);
   return { sent: false, ok: false, lexiconRejected: true, hits, hint };
 }
 
@@ -188,8 +200,8 @@ async function lexiconGate(text, opts) {
 // rejected messages are NOT sent and are logged to `rejectsFile`.
 export async function sendMessage(text, { buttons, timeoutMs, baseUrl, allowTechnical, fetch: customFetch, rejectsFile, lexicon } = {}) {
   const gateResult = await lexiconGate(text, { allowTechnical, rejectsFile, lexicon });
-  if (gateResult) return gateResult;
-  const payload = { chat_id: OWNER_CHAT_ID, text, parse_mode: "Markdown" };
+  if (gateResult && !gateResult.rewritten) return gateResult;
+  const payload = { chat_id: OWNER_CHAT_ID, text: gateResult?.rewritten || text, parse_mode: "Markdown" };
   if (buttons) payload.reply_markup = { inline_keyboard: buttons };
   return tgFetchWithMarkdownFallback("sendMessage", payload, { timeoutMs, baseUrl, fetch: customFetch });
 }
@@ -207,11 +219,11 @@ export async function answerCallbackQuery(callbackQueryId, text, { timeoutMs, ba
 // after a decision, so the same button cannot be tapped twice).
 export async function editMessageText(messageId, newText, { buttons, timeoutMs, baseUrl, removeKeyboard = false, allowTechnical, fetch: customFetch, rejectsFile, lexicon } = {}) {
   const gateResult = await lexiconGate(newText, { allowTechnical, rejectsFile, lexicon });
-  if (gateResult) return gateResult;
+  if (gateResult && !gateResult.rewritten) return gateResult;
   const payload = {
     chat_id: OWNER_CHAT_ID,
     message_id: messageId,
-    text: newText,
+    text: gateResult?.rewritten || newText,
     parse_mode: "Markdown",
   };
   if (buttons) payload.reply_markup = { inline_keyboard: buttons };
@@ -228,8 +240,8 @@ export async function deleteMessage(messageId, { timeoutMs, baseUrl, fetch: cust
 // sendVoice captions go through the same lexicon gate.
 export async function editMessageCaption(messageId, newCaption, { buttons, timeoutMs, baseUrl, removeKeyboard = false, allowTechnical, fetch: customFetch, rejectsFile, lexicon } = {}) {
   const gateResult = await lexiconGate(String(newCaption || ""), { allowTechnical, rejectsFile, lexicon });
-  if (gateResult) return gateResult;
-  const payload = { chat_id: OWNER_CHAT_ID, message_id: messageId, caption: String(newCaption || "").slice(0, 1024), parse_mode: "Markdown" };
+  if (gateResult && !gateResult.rewritten) return gateResult;
+  const payload = { chat_id: OWNER_CHAT_ID, message_id: messageId, caption: (gateResult?.rewritten || String(newCaption || "")).slice(0, 1024), parse_mode: "Markdown" };
   if (buttons) payload.reply_markup = { inline_keyboard: buttons };
   else if (removeKeyboard) payload.reply_markup = { inline_keyboard: [] };
   return tgFetchWithMarkdownFallback("editMessageCaption", payload, { timeoutMs, baseUrl, fetch: customFetch });

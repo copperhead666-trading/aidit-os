@@ -3,15 +3,35 @@
 // caches, and alerts the owner once per day. PM2 process "ops".
 import fs from 'node:fs';
 import path from 'node:path';
-import { ROOT, STATE, loadEnvLocal, readJson, writeJson, ledgerAppend, machineHealth, run, wibParts } from './lib.mjs';
+import { ROOT, STATE, loadEnvLocal, readJson, writeJson, ledgerAppend, machineHealth, run, wibParts, graphifyUpdate } from './lib.mjs';
 import { probeLanes } from './lanes.mjs';
 import { alert } from './owner.mjs';
+import { maybeSelfImprove } from './self-improve.mjs';
 
 loadEnvLocal();
 const ONCE = process.argv.includes('--once');
 const ALARM_FILE = path.join(STATE, 'ops-alarms.json');
 const DISK_MIN_GB = 10;
 const RAM_MIN_MB = 1024;
+const GRAPH_SHA_FILE = path.join(STATE, 'graphify-sha.json');
+const SELF_IMPROVE_FILE = path.join(STATE, 'self-improve-run.json');
+
+// head.mjs already calls graphifyUpdate() after a venture-ticket commit, but
+// this session's own direct commits (conductor/*.mjs, app/*, etc. -- not
+// routed through a head's workspace) never triggered it: found live
+// 2026-09-15, graph.json was 2+ hours and many commits behind HEAD. This
+// tick is the catch-all -- SHA-gated so it only re-runs graphify when the
+// repo actually moved, same idea as Bagian 5's planned auto-deploy check.
+async function maybeUpdateGraph() {
+  const head = await run('git', ['rev-parse', 'HEAD'], { cwd: ROOT, timeoutMs: 10000 });
+  const sha = head.stdout.trim();
+  if (!sha) return { updated: false };
+  const last = readJson(GRAPH_SHA_FILE, {}).sha;
+  if (sha === last) return { updated: false, sha };
+  graphifyUpdate(ROOT); // fire-and-forget, same as head.mjs's own call
+  writeJson(GRAPH_SHA_FILE, { sha, at: new Date().toISOString() });
+  return { updated: true, sha };
+}
 
 async function cleanup() {
   const removed = [];
@@ -38,11 +58,24 @@ async function cleanup() {
   return removed;
 }
 
+// PRD "Personal Assistant" Bagian 8: score already names its own drags --
+// once/day is enough to turn them into tickets (score is a same-day
+// snapshot, dedup by title in self-improve.mjs stops repeat spam anyway).
+async function maybeRunSelfImprove(today) {
+  const last = readJson(SELF_IMPROVE_FILE, {}).date;
+  if (last === today) return { acted: false, skipped: 'already-ran-today' };
+  const r = await maybeSelfImprove();
+  writeJson(SELF_IMPROVE_FILE, { date: today, ...r });
+  return r;
+}
+
 export async function tick() {
   const probe = await probeLanes().catch((e) => ({ error: e.message }));
+  const graph = await maybeUpdateGraph().catch((e) => ({ updated: false, error: e.message }));
   const m = await machineHealth();
   const alarms = readJson(ALARM_FILE, {});
   const today = wibParts().date;
+  const selfImprove = await maybeRunSelfImprove(today).catch((e) => ({ acted: false, error: e.message }));
   const low = [];
   if (m.freeDiskGb != null && m.freeDiskGb < DISK_MIN_GB) low.push(`disk ${m.freeDiskGb} GB`);
   if (m.freeRamMb < RAM_MIN_MB) low.push(`ram ${m.freeRamMb} MB`);
@@ -56,8 +89,8 @@ export async function tick() {
       alarms[today] = 'sent'; writeJson(ALARM_FILE, alarms);
     }
   }
-  ledgerAppend({ kind: 'ops.tick', machine: m, probe });
-  return { machine: m, probe, low, removed: removed.length };
+  ledgerAppend({ kind: 'ops.tick', machine: m, probe, graph, selfImprove });
+  return { machine: m, probe, low, removed: removed.length, graph, selfImprove };
 }
 
 const r = await tick();

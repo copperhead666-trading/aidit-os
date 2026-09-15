@@ -6,7 +6,7 @@
 // from it. One interview at a time; at most once per subject per day.
 import fs from 'node:fs';
 import path from 'node:path';
-import { STATE, ROOT, company, readJson, writeJson, wibParts, ledgerAppend } from './lib.mjs';
+import { STATE, ROOT, company, readJson, writeJson, wibParts, ledgerAppend, recordVentureLearning } from './lib.mjs';
 import { askGlm, askClaude } from './claude.mjs';
 import { sendMessage } from './telegram-client.mjs';
 import { alert, ask } from './owner.mjs';
@@ -119,6 +119,16 @@ export async function recordAnswer(text) {
   return { handled: true, done: true };
 }
 
+// Zero-extra-LLM-call digest for self-learning: the PRD is already
+// structured Markdown (finalize's own prompt fixes the section names), so
+// pull "Tujuan"/"Batasan" straight out of it instead of paying for a second
+// model call just to re-summarize what's already there.
+function extractSection(md, heading) {
+  const re = new RegExp(`##?\\s*${heading}\\b[:\\s]*\\n([\\s\\S]*?)(?=\\n##|$)`, 'i');
+  const m = String(md || '').match(re);
+  return m ? m[1].trim().replace(/\s+/g, ' ').slice(0, 240) : null;
+}
+
 async function finalize(iv) {
   const co = company();
   const qaText = iv.qa.map((x, i) => `${i + 1}. ${x.q}\n   ${x.a}`).join('\n\n');
@@ -138,6 +148,15 @@ async function finalize(iv) {
     lines: [`Hasil wawancara sudah saya susun jadi draf PRD di ${fileName}.`, 'Ringkasan ada di JELASKAN. Setuju supaya tim mulai bekerja sesuai draf ini?'],
     defaultIfSilent: 'saya tahan dulu, tidak mulai apa pun sampai Bapak konfirmasi.',
   });
+
+  // Held until the owner actually approves (self-learning fires on the
+  // decision, not the draft) -- onPrdApproved(subject) reads and applies this.
+  const goal = extractSection(prd, 'Tujuan');
+  const constraints = extractSection(prd, 'Batasan');
+  if (goal || constraints) {
+    writeJson(path.join(STATE, 'pending-interview-learning', `${iv.subject}.json`), { goal, constraints, file: fileName, at: new Date().toISOString() });
+  }
+
   ledgerAppend({ kind: 'interview.finalize', subject: iv.subject, file: fileName, askId });
 }
 
@@ -151,11 +170,19 @@ export function onPrdApproved(subject) {
   saveState(st);
   const cfgPath = path.join(ROOT, 'config', 'company.json');
   const co = readJson(cfgPath, null);
-  if (!co) return;
-  const v = co.ventures?.find((x) => x.id === subject);
-  if (v && UNCLEAR_STATUSES.has(v.status)) {
-    v.status = 'active';
-    writeJson(cfgPath, co);
-    ledgerAppend({ kind: 'interview.venture-activated', subject });
+  if (co) {
+    const v = co.ventures?.find((x) => x.id === subject);
+    if (v && UNCLEAR_STATUSES.has(v.status)) {
+      v.status = 'active';
+      writeJson(cfgPath, co);
+      ledgerAppend({ kind: 'interview.venture-activated', subject });
+    }
+  }
+
+  const pendingFile = path.join(STATE, 'pending-interview-learning', `${subject}.json`);
+  const learning = readJson(pendingFile, null);
+  if (learning) {
+    if (learning.constraints) recordVentureLearning(subject, learning.constraints, `interview:${learning.file}`);
+    try { fs.unlinkSync(pendingFile); } catch {}
   }
 }

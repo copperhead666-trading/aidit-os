@@ -8,7 +8,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
-import { ROOT, STATE, company, paperclipCfg, loadEnvLocal, readJson, writeJson, ledgerAppend, laneBudget, graphifyQuery, run, pc, wibParts } from './lib.mjs';
+import { ROOT, STATE, company, paperclipCfg, loadEnvLocal, readJson, writeJson, ledgerAppend, laneBudget, graphifyQuery, run, pc, wibParts, recordVentureLearning } from './lib.mjs';
 import { askGlm, askClaude } from './claude.mjs';
 import { snapshot } from './status.mjs';
 import { checkOwnerText } from '../ops/voice/owner-lexicon-gate.mjs';
@@ -135,17 +135,26 @@ const DOC_SCHEMA = {
   required: ['summary', 'candidateTickets'],
 };
 
-function slugify(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40); }
+function slugify(s, maxLen = 40) { return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, maxLen); }
 
 export async function ingestDocument({ text, fileName, channel }) {
   const co = company();
   const date = wibParts().date;
-  const slug = `vision-${date}-${slugify((fileName || 'doc').replace(/\.[a-z0-9]+$/i, ''))}`;
+  // Telegram callback_data caps at 64 bytes and this slug ends up embedded
+  // in `ask:document-tickets-<slug>:approve` -- found live 2026-09-15 with
+  // a real filename: the untruncated slug produced a 78-byte callback_data,
+  // Telegram silently rejected it (BUTTON_DATA_INVALID), and the Ask card
+  // for a real document never reached Telegram. 12 chars keeps the whole
+  // wrapped id under budget with margin (see conductor/owner.mjs's `ask`).
+  const slug = `vision-${date}-${slugify((fileName || 'doc').replace(/\.[a-z0-9]+$/i, ''), 12)}`;
   const gbrainRes = await run('gbrain', ['put', slug, '--content', text], { timeoutMs: 30000 });
   const remembered = gbrainRes.code === 0;
 
   const prompt = `Dokumen visi/backlog berikut dikirim Bapak (pemilik) untuk arah ${co.company.name}. Baca lalu (1) ringkas 3-5 kalimat Indonesia formal, (2) daftar 3-10 tiket kerja konkret paling penting berdasarkan ISI DOKUMEN INI SAJA -- jangan mengarang scope di luar dokumen.\n\nDOKUMEN:\n${text.slice(0, 12000)}\n\nJawab HANYA dengan JSON sesuai skema ini:\n${JSON.stringify(DOC_SCHEMA)}`;
-  const res = await askClaude({ system: 'Anda menyusun ringkasan dan backlog kerja dari dokumen visi pemilik, Indonesia formal, konkret.', prompt, model: co.conductor.decisionModel, schema: DOC_SCHEMA, tag: 'chat.ingest-document' });
+  // maxTurns default (4) hit error_max_turns live on the owner's real ~20kB
+  // document (the 358-char test sample never exercised this) -- a document
+  // this size needs more room to reason before emitting structured output.
+  const res = await askClaude({ system: 'Anda menyusun ringkasan dan backlog kerja dari dokumen visi pemilik, Indonesia formal, konkret.', prompt, model: co.conductor.decisionModel, schema: DOC_SCHEMA, maxTurns: 10, timeoutMs: 240000, tag: 'chat.ingest-document' });
   ledgerAppend({ kind: 'owner.document', channel, fileName, chars: text.length, remembered, ok: res.ok });
 
   if (!res.ok || !res.structured?.summary || !res.structured?.candidateTickets?.length) {
@@ -153,9 +162,15 @@ export async function ingestDocument({ text, fileName, channel }) {
   }
 
   const tickets = res.structured.candidateTickets;
+  // Self-learning target: whichever venture most of this document's tickets
+  // point at (ties/none -> no venture-specific learning, still saved to
+  // gbrain above so it's not lost either way).
+  const counts = {};
+  for (const t of tickets) { if (t.projectKey && t.projectKey !== 'internal') counts[t.projectKey] = (counts[t.projectKey] || 0) + 1; }
+  const learningVenture = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
   const pendingFile = path.join(STATE, 'pending-document-tickets', `${slug}.json`);
   fs.mkdirSync(path.dirname(pendingFile), { recursive: true });
-  writeJson(pendingFile, { slug, tickets, createdAt: new Date().toISOString() });
+  writeJson(pendingFile, { slug, tickets, learningVenture, summary: res.structured.summary, createdAt: new Date().toISOString() });
 
   const askId = `document-tickets-${slug}`;
   await ask({
@@ -185,6 +200,10 @@ export async function onDocumentTicketsApproved(slug) {
     } catch (e) { ledgerAppend({ kind: 'owner.document.ticket-error', slug, title: t.title, error: e.message.slice(0, 160) }); }
   }
   ledgerAppend({ kind: 'owner.document.tickets-created', slug, created });
+  // Owner just approved this document's tickets -- that's the real decision
+  // moment self-learning waits for (not doc upload alone, per the owner's
+  // explicit instruction: learn from decisions, not raw input).
+  if (pending.learningVenture && pending.summary) recordVentureLearning(pending.learningVenture, pending.summary, `document:${slug}`);
   try { fs.unlinkSync(pendingFile); } catch {}
 }
 

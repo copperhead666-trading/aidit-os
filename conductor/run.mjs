@@ -58,7 +58,7 @@ function systemPrompt(co) {
     `You are ${co.conductor.name}, the Conductor of ${co.company.name}: an AI company on one Windows laptop that builds the owner's ventures.`,
     'You never write code yourself. You decide: which open issue goes to which department head, what to tell them, what to ask the owner.',
     'Departments: ' + co.departments.map((d) => `${d.id} (${d.name}: ${d.mission})`).join('; ') + '.',
-    'Ventures: ' + co.ventures.map((v) => `${v.id} (${v.name}: ${v.goal})`).join('; ') + '.',
+    'Ventures: ' + co.ventures.map((v) => `${v.id} (${v.name}: ${v.goal}${v.constraints ? `; learned: ${v.constraints}` : ''})`).join('; ') + '.',
     'Rules: production, money, outside people and purchases require an ask to the owner; everything in the autonomy envelope proceeds without asking.',
     'Owner-facing text (ask/alert body, titles shown to the owner) must be formal Indonesian addressing the owner as "Bapak", no technical jargon, no ticket numbers, short sentences.',
     'Issue comments and instructions to department heads may be technical and in English or Indonesian.',
@@ -140,9 +140,23 @@ async function applyDecision(d, cfg, log) {
       return;
     }
     case 'ask': {
+      // GLM invents a fresh askId most ticks (no stable id in its decision),
+      // which defeats owner.mjs's own id-based dedup -- found live 2026-09-15
+      // 13:25 WIB: "Persetujuan PRD SJS SuperApps v5" re-sent verbatim, 3
+      // hours after the SAME title was already asked and approved. Title
+      // match (not id) is the real dedup key here since GLM repeats titles
+      // exactly for the same underlying question.
+      const title = d.title || 'Keputusan';
+      const recentSameTitle = listAsks({ openOnly: false }).find(
+        (a) => a.title?.trim().toLowerCase() === title.trim().toLowerCase() && Date.now() - Date.parse(a.askedAt || 0) < 7 * 86400000,
+      );
+      if (recentSameTitle) {
+        log.push(`ask skip (sudah pernah ditanyakan${recentSameTitle.answer ? `, dijawab: ${recentSameTitle.answer}` : ', belum dijawab'}): ${title}`);
+        return;
+      }
       const id = d.askId || `ask-${Date.now()}`;
       if (DRY) { log.push(`ask (dry) ${id}`); return; }
-      const r = await ask({ id, title: d.title || 'Keputusan', lines: (d.body || '').split('\n'), defaultIfSilent: d.defaultIfSilent || 'saya lanjutkan dengan pilihan paling aman.', options: d.options || [] });
+      const r = await ask({ id, title, lines: (d.body || '').split('\n'), defaultIfSilent: d.defaultIfSilent || 'saya lanjutkan dengan pilihan paling aman.', options: d.options || [] });
       log.push(`ask ${id} sent=${!!r.sent}${r.duplicate ? ' (duplicate)' : ''}${r.hint ? ' lexicon:' + r.hint : ''}`);
       return;
     }

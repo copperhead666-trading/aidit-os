@@ -43,7 +43,7 @@ export async function ask({ id, title, lines = [], defaultIfSilent, options = []
   ]];
   if (options.length) buttons.push(options.map((_, i) => ({ text: 'ABC'[i], callback_data: `ask:${id}:opt${'ABC'[i]}` })));
   const r = await sendMessage(text, { buttons, allowTechnical });
-  const row = { id, title, lines, options, defaultIfSilent, askedAt: new Date().toISOString(), wib: wibParts().date + ' ' + wibParts().time, messageId: r?.result?.message_id ?? null, sent: !!r.sent, sendError: r.sent ? null : (r.reason || r.hint || r.networkErrorMessage || null) };
+  const row = { id, title, lines, options, defaultIfSilent, askedAt: new Date().toISOString(), wib: wibParts().date + ' ' + wibParts().time, messageId: r?.result?.message_id ?? null, sent: !!r.sent, sendError: r.sent ? null : (r.reason || r.hint || r.networkErrorMessage || r.error || null) };
   appendAsk(row);
   ledgerAppend({ kind: 'owner.ask', id, title, sent: !!r.sent, error: row.sendError });
   return { ...r, ask: row };
@@ -57,14 +57,14 @@ export function answerAsk(id, answer, by = 'owner') {
 export async function report(lines, { allowTechnical = false } = {}) {
   const text = lines.filter(Boolean).join('\n');
   const r = await sendMessage(text, { allowTechnical });
-  ledgerAppend({ kind: 'owner.report', sent: !!r.sent, error: r.sent ? null : (r.reason || r.hint || r.networkErrorMessage || null), lines: lines.length });
+  ledgerAppend({ kind: 'owner.report', sent: !!r.sent, error: r.sent ? null : (r.reason || r.hint || r.networkErrorMessage || r.error || null), lines: lines.length });
   return r;
 }
 
 export async function alert({ what, done, needsOwner = false }) {
   const text = [`*Perhatian, Bapak.*`, what, done ? `Yang sudah dilakukan: ${done}` : null, needsOwner ? 'Perlu keputusan Bapak.' : 'Tidak perlu tindakan Bapak.'].filter(Boolean).join('\n');
   const r = await sendMessage(text);
-  ledgerAppend({ kind: 'owner.alert', sent: !!r.sent, what, error: r.sent ? null : (r.reason || r.hint || null) });
+  ledgerAppend({ kind: 'owner.alert', sent: !!r.sent, what, error: r.sent ? null : (r.reason || r.hint || r.networkErrorMessage || r.error || null) });
   return r;
 }
 

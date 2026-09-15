@@ -49,6 +49,27 @@ export const company = () => readJson(path.join(ROOT, 'config', 'company.json'))
 export const paperclipCfg = () => readJson(path.join(ROOT, 'config', 'paperclip.json'), { baseUrl: 'http://127.0.0.1:3120' });
 export const lanesCfg = () => readJson(path.join(ROOT, 'config', 'lanes.json'), { lanes: {}, roles: {} });
 
+// ---- Self-learning (Personal Assistant PRD Bagian 8) -----------------------
+// Distinct from self-repair (bug fixes) and self-improve (score.mjs drags ->
+// tickets): this is Conductor updating what it KNOWS about a venture from a
+// genuine owner decision (an approved document/interview), not just flipping
+// a status flag. A single bounded string per venture (not an ever-growing
+// log) so run.mjs's systemPrompt line stays cheap forever -- overwritten by
+// the latest decision, not appended to.
+export function recordVentureLearning(ventureId, text, source = 'unknown') {
+  if (!ventureId || !text) return false;
+  const file = path.join(ROOT, 'config', 'company.json');
+  const co = readJson(file, null);
+  const v = co?.ventures?.find((x) => x.id === ventureId);
+  if (!v) return false;
+  v.constraints = String(text).replace(/\s+/g, ' ').trim().slice(0, 300);
+  v.learnedAt = new Date().toISOString();
+  v.learnedFrom = source;
+  writeJson(file, co);
+  ledgerAppend({ kind: 'venture.learned', ventureId, source, chars: v.constraints.length });
+  return true;
+}
+
 // ---- WIB clock -------------------------------------------------------------
 const WIB = 'Asia/Jakarta';
 export function wibParts(d = new Date()) {
