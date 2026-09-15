@@ -15,6 +15,7 @@ import {
 import { askClaude, askGlm } from './claude.mjs';
 import crypto from 'node:crypto';
 import { ask, alert, listAsks } from './owner.mjs';
+import { maybeStartInterview } from './interview.mjs';
 
 loadEnvLocal();
 const ONCE = process.argv.includes('--once');
@@ -185,6 +186,11 @@ export async function tick() {
     ledgerAppend({ kind: 'conductor.tick', ok: false, error: 'paperclip down' });
     return { ok: false, error: 'paperclip down' };
   }
+  // Checked even on an otherwise-unchanged tick (idle IS the "nothing
+  // changed" case the hash-skip below exists to catch) — an idle company or
+  // a venture with no clear direction gets a structured interview instead
+  // of silently waiting forever. See conductor/interview.mjs.
+  if (!DRY) { try { await maybeStartInterview(co, ctx); } catch (e) { ledgerAppend({ kind: 'interview.error', error: e.message.slice(0, 160) }); } }
   const hash = signalHash(ctx);
   if (!DRY && hash === readJson(TICK_HASH_FILE, null)?.hash) {
     ledgerAppend({ kind: 'conductor.tick', ok: true, skipped: true, reason: 'no change since last tick' });

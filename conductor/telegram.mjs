@@ -15,6 +15,7 @@ import { chatReply } from './chat.mjs';
 import { synthesize, EN_PIPER_MODEL } from '../ops/voice/voice-out.mjs';
 import { renderSpokenReport } from '../ops/voice/spoken-report.mjs';
 import { computeScore } from './score.mjs';
+import { isAwaitingAnswer, recordAnswer, onPrdApproved } from './interview.mjs';
 
 loadEnvLocal();
 const co = company();
@@ -188,6 +189,10 @@ async function handleMessage(msg) {
   fs.mkdirSync(STATE, { recursive: true });
   fs.appendFileSync(NOTES_FILE, JSON.stringify({ ts: new Date().toISOString(), wib: wibStamp(), text }) + '\n');
   ledgerAppend({ kind: 'owner.note', text: text.slice(0, 200) });
+  // A structured interview in progress owns free text until it's done — an
+  // answer to "what should this venture become" is not a one-off question
+  // for the stateless chatReply.
+  if (isAwaitingAnswer()) { await recordAnswer(text); return; }
   const r = await chatReply({ text, channel: 'telegram' });
   await sendMessage(r.reply);
 }
@@ -208,6 +213,8 @@ async function handleCallback(cq) {
   const label = ANSWER_TEXT[answer] || answer;
   const msgId = cq.message?.message_id;
   if (msgId) await editMessageText(msgId, `*${ask?.title || 'Keputusan'}*\nJawaban Bapak: ${label} (${wibStamp()}).`, { removeKeyboard: true });
+  const prdMatch = answer === 'approve' && id.match(/^interview-prd-(.+)-\d{4}-\d{2}-\d{2}$/);
+  if (prdMatch) onPrdApproved(prdMatch[1]);
 }
 
 async function loop() {
