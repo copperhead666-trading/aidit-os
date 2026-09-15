@@ -15,6 +15,8 @@ const DISK_MIN_GB = 10;
 const RAM_MIN_MB = 1024;
 const GRAPH_SHA_FILE = path.join(STATE, 'graphify-sha.json');
 const SELF_IMPROVE_FILE = path.join(STATE, 'self-improve-run.json');
+const DASHBOARD_URL = process.env.DASHBOARD_URL || 'http://localhost:4200/api/orchestrator/status';
+const TG_HEARTBEAT_FILE = path.join(STATE, 'telegram-heartbeat.json');
 
 // head.mjs already calls graphifyUpdate() after a venture-ticket commit, but
 // this session's own direct commits (conductor/*.mjs, app/*, etc. -- not
@@ -69,6 +71,26 @@ async function maybeRunSelfImprove(today) {
   return r;
 }
 
+// AID-35: detection-only health probes for the dashboard (port 4200, never
+// probed from conductor/ before) and the Telegram poll loop's heartbeat
+// file. No auto-restart or alerting here -- that's a separate ticket.
+export async function probeDashboard(url = DASHBOARD_URL) {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    return { ok: res.ok, status: res.status };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e).slice(0, 160) };
+  }
+}
+
+export function checkTelegramHeartbeat(file = TG_HEARTBEAT_FILE) {
+  const hb = readJson(file, null);
+  if (!hb?.ts) return { ok: false, ageSec: null, error: 'no heartbeat' };
+  const ms = Date.now() - new Date(hb.ts).getTime();
+  if (!Number.isFinite(ms)) return { ok: false, ageSec: null, error: 'invalid timestamp' };
+  return { ok: true, ageSec: Math.round(ms / 1000) };
+}
+
 export async function tick() {
   const probe = await probeLanes().catch((e) => ({ error: e.message }));
   const graph = await maybeUpdateGraph().catch((e) => ({ updated: false, error: e.message }));
@@ -76,6 +98,9 @@ export async function tick() {
   const alarms = readJson(ALARM_FILE, {});
   const today = wibParts().date;
   const selfImprove = await maybeRunSelfImprove(today).catch((e) => ({ acted: false, error: e.message }));
+  const dashboard = await probeDashboard();
+  const telegramHeartbeat = checkTelegramHeartbeat();
+  const platformHealth = { kind: 'ops.platform-health', dashboard, telegramHeartbeat };
   const low = [];
   if (m.freeDiskGb != null && m.freeDiskGb < DISK_MIN_GB) low.push(`disk ${m.freeDiskGb} GB`);
   if (m.freeRamMb < RAM_MIN_MB) low.push(`ram ${m.freeRamMb} MB`);
@@ -89,10 +114,12 @@ export async function tick() {
       alarms[today] = 'sent'; writeJson(ALARM_FILE, alarms);
     }
   }
-  ledgerAppend({ kind: 'ops.tick', machine: m, probe, graph, selfImprove });
-  return { machine: m, probe, low, removed: removed.length, graph, selfImprove };
+  ledgerAppend({ kind: 'ops.tick', machine: m, probe, graph, selfImprove, platformHealth });
+  return { machine: m, probe, low, removed: removed.length, graph, selfImprove, platformHealth };
 }
 
-const r = await tick();
-console.log(JSON.stringify(r));
-if (!ONCE) setInterval(() => tick().then((x) => console.log(JSON.stringify(x))).catch((e) => ledgerAppend({ kind: 'ops.error', error: e.message })), 15 * 60000);
+if (!process.env.VITEST) {
+  const r = await tick();
+  console.log(JSON.stringify(r));
+  if (!ONCE) setInterval(() => tick().then((x) => console.log(JSON.stringify(x))).catch((e) => ledgerAppend({ kind: 'ops.error', error: e.message })), 15 * 60000);
+}
