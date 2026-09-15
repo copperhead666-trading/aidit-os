@@ -7,6 +7,10 @@ import { OsMark } from '@/components/OsMark';
 import { usePathname } from 'next/navigation';
 import { NAV_OPERATE, NAV_AGENTS, NAV_INTELLIGENCE, NAV_SYSTEM, NAV_LIBRARY, type NavItem } from '@/lib/nav';
 
+/** Dispatched by Topbar's hamburger button (phone width only); Sidebar owns
+    the open/closed state so the two never fall out of sync. */
+export const MOBILE_NAV_TOGGLE_EVENT = 'founderos:mobile-nav-toggle';
+
 function NavGroup({
   title,
   items,
@@ -74,7 +78,20 @@ export function Sidebar() {
   // child — so the collapsed label is rendered fixed, outside that box.
   const [tip, setTip] = useState<{ label: string; y: number } | null>(null);
   const [width, setWidth] = useState(DEFAULT_W);
+  const [mobileOpen, setMobileOpen] = useState(false);
   const dragging = useRef(false);
+
+  // Phone width (<768px): the rail is off-canvas by default, toggled by
+  // Topbar's hamburger, and closes itself on navigation so it never lingers
+  // open over the next page.
+  useEffect(() => {
+    const onToggle = () => setMobileOpen((o) => !o);
+    window.addEventListener(MOBILE_NAV_TOGGLE_EVENT, onToggle);
+    return () => window.removeEventListener(MOBILE_NAV_TOGGLE_EVENT, onToggle);
+  }, []);
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [pathname]);
 
   // Restore the previous shape before first paint of the nav, so the OS opens
   // the way it was left rather than snapping after hydration.
@@ -155,10 +172,22 @@ export function Sidebar() {
   }, []);
 
   return (
-    <aside
-      className="fixed inset-y-0 left-0 z-20 flex flex-col border-r border-os-border bg-os-bg2"
-      style={{ width: collapsed ? COLLAPSED_W : width }}
-    >
+    <>
+      {/* Backdrop: phone width only, tap to close. Sidebar stays in normal
+          flow (translate-x-0) at md and above regardless of this state. */}
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 z-10 bg-black/50 max-md:block md:hidden"
+          onClick={() => setMobileOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+      <aside
+        className={`fixed inset-y-0 left-0 z-20 flex flex-col border-r border-os-border bg-os-bg2 transition-transform duration-200 md:translate-x-0 ${
+          mobileOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+        style={{ width: collapsed ? COLLAPSED_W : width }}
+      >
       <div
         className={`flex pb-[18px] pt-5 ${
           collapsed ? 'flex-col items-center gap-2 px-0' : 'items-center justify-between px-[18px]'
@@ -240,5 +269,6 @@ export function Sidebar() {
         />
       )}
     </aside>
+    </>
   );
 }

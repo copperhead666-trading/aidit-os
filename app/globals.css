@@ -12,6 +12,19 @@
   --ease: cubic-bezier(0.32, 0.72, 0, 1);
 }
 
+/* Sidebar publishes --sidebar-w itself (collapsed/expanded/dragged width);
+   the shell just follows it. Below md the rail goes off-canvas (see
+   components/Sidebar.tsx's translate-x classes), so the content column no
+   longer needs to make room for it. */
+.os-shell {
+  margin-left: var(--sidebar-w, 232px);
+}
+@media (max-width: 767px) {
+  .os-shell {
+    margin-left: 0;
+  }
+}
+
 /* Dark (phosphor terminal). */
 :root[data-theme='dark'] {
   color-scheme: dark;

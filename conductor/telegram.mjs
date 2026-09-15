@@ -8,10 +8,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { STATE, ROOT, company, paperclipCfg, lanesCfg, loadEnvLocal, readJson, writeJson, ledgerAppend, ledgerTail, isPaused, setPaused, pc, paperclipHealth, wibParts, wibStamp, machineHealth } from './lib.mjs';
-import { getUpdates, answerCallbackQuery, editMessageText, sendMessage, setMyCommands, OWNER_CHAT_ID } from './telegram-client.mjs';
+import { getUpdates, answerCallbackQuery, editMessageText, sendMessage, sendVoice, setMyCommands, OWNER_CHAT_ID } from './telegram-client.mjs';
 import { answerAsk, listAsks, report } from './owner.mjs';
 import { lanesStatus } from './lanes.mjs';
 import { chatReply } from './chat.mjs';
+import { synthesize, EN_PIPER_MODEL } from '../ops/voice/voice-out.mjs';
+import { renderSpokenReport } from '../ops/voice/spoken-report.mjs';
 
 loadEnvLocal();
 const co = company();
@@ -99,6 +101,27 @@ function poolUsageToday() {
   return `Pemakaian hari ini: ${entries.map(([pool, n]) => `${pool} ${n}x`).join(', ')}.`;
 }
 
+// PRD JARVIS s3: a spoken companion to the text report, English/"Sir" per
+// the spoken-channel voice policy in config/persona/register.yaml (deliberate
+// — distinct from the text report's Indonesian/"Bapak", not a bug). Piper
+// (offline, already installed with an English voice — confirmed live this
+// session) + ffmpeg wav->ogg, sent as a Telegram voice note. Best-effort:
+// any failure here must never block or fail the text report.
+async function sendSpokenReport(s, hour) {
+  const model = path.join(process.env.LOCALAPPDATA || path.join(ROOT, 'state'), 'AiditOS', 'piper', `${EN_PIPER_MODEL}.onnx`);
+  const text = renderSpokenReport({ waiting: Array.from({ length: s.asks || 0 }), stuck: s.blocked }, { hour });
+  const r = await synthesize(text, { provider: 'piper', model });
+  if (!r.ok) { ledgerAppend({ kind: 'voice.report', ok: false, error: r.reason }); return; }
+  const wavFile = r.file.replace(/\.ogg$/i, '.wav');
+  try {
+    const vr = await sendVoice(r.file, '', { allowTechnical: true });
+    ledgerAppend({ kind: 'voice.report', ok: !!vr.sent, error: vr.sent ? null : (vr.reason || vr.networkErrorMessage || null) });
+  } finally {
+    try { fs.unlinkSync(r.file); } catch {}
+    try { fs.unlinkSync(wavFile); } catch {}
+  }
+}
+
 export async function sendReport(kind = 'auto') {
   const p = wibParts();
   const greet = p.hour < 11 ? 'Selamat pagi' : p.hour < 15 ? 'Selamat siang' : p.hour < 18 ? 'Selamat sore' : 'Selamat malam';
@@ -114,6 +137,10 @@ export async function sendReport(kind = 'auto') {
   const st = readJson(REPORT_FILE, {});
   st[`${p.date}-${p.hour < 13 ? 'pagi' : 'malam'}`] = { at: new Date().toISOString(), sent: !!r.sent, kind, error: r.sent ? null : (r.reason || r.hint || r.networkErrorMessage || null) };
   writeJson(REPORT_FILE, st);
+  // Awaited (not fire-and-forget): the --report CLI path calls process.exit()
+  // right after sendReport() resolves, which would otherwise kill this mid-
+  // synthesis. Wrapped so a voice failure never fails the text report above.
+  try { await sendSpokenReport(s, p.hour); } catch (e) { ledgerAppend({ kind: 'voice.report', ok: false, error: e.message.slice(0, 160) }); }
   return r;
 }
 

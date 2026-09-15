@@ -22,6 +22,7 @@ import {
   BarChart3,
   LayoutGrid,
   Layers,
+  Cpu,
 } from 'lucide-react';
 
 export type NavItem = { href: string; label: string; icon: typeof Home };
@@ -54,6 +55,7 @@ export const NAV_INTELLIGENCE: NavItem[] = [
 ];
 
 export const NAV_SYSTEM: NavItem[] = [
+  { href: '/orchestrator', label: 'Orchestrator', icon: Cpu },
   { href: '/integrations', label: 'Connections', icon: Plug },
   { href: '/roadmap', label: 'Roadmap', icon: Map },
   { href: '/analytics', label: 'Analytics', icon: BarChart3 },

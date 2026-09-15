@@ -70,8 +70,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body>
         <Sidebar />
         {/* os-shell yields to the Conductor dock: the panel sets --conductor-w
-            and the whole content column glides left instead of being covered */}
-        <div className="os-shell ml-[232px] flex min-h-screen min-w-0 flex-col" style={{ marginRight: 'var(--conductor-w, 0px)' }}>
+            and the whole content column glides left instead of being covered.
+            Left margin follows Sidebar's own --sidebar-w below md; the rail is
+            off-canvas on phones, so app/globals.css zeroes it out there. */}
+        <div className="os-shell flex min-h-screen min-w-0 flex-col" style={{ marginRight: 'var(--conductor-w, 0px)' }}>
           <Topbar />
           <main className="min-w-0 flex-1 px-8 pb-16 pt-7 wide:px-10 ultra:px-12">
             {/* Width tiers: 1280 on laptops · 1760 on large monitors ·

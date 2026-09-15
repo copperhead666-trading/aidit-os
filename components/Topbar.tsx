@@ -1,10 +1,11 @@
 'use client';
 
 import { usePathname } from 'next/navigation';
-import { Bot, Search } from 'lucide-react';
+import { Bot, Menu, Search } from 'lucide-react';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { OsMark } from '@/components/OsMark';
 import { CONDUCTOR_OPEN_EVENT } from '@/components/ConductorPanel';
+import { MOBILE_NAV_TOGGLE_EVENT } from '@/components/Sidebar';
 
 const SEGMENT_LABELS: Record<string, string> = {
   '': 'home',
@@ -30,6 +31,14 @@ export function Topbar() {
 
   return (
     <div className="sticky top-0 z-30 flex h-[52px] shrink-0 items-center gap-3.5 border-b border-os-border bg-os-bg2/70 px-6 backdrop-blur">
+      <button
+        onClick={() => window.dispatchEvent(new CustomEvent(MOBILE_NAV_TOGGLE_EVENT))}
+        title="Menu"
+        aria-label="Open navigation"
+        className="grid h-[30px] w-[30px] shrink-0 place-items-center rounded-sm-t border border-os-border bg-os-surface text-os-muted transition-colors hover:border-os-border-strong hover:text-os-text md:hidden"
+      >
+        <Menu className="h-3.5 w-3.5" />
+      </button>
       <div className="flex items-center gap-[7px] whitespace-nowrap font-mono text-[11px] tracking-[0.04em] text-os-dim">
         <span>founder-os</span>
         <span className="opacity-45">/</span>

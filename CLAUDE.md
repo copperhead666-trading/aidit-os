@@ -1,12 +1,12 @@
 # FOUNDER OS
 
 Personal OS / AI agent command center. Live web recreation of the FounderOS
-"Conducting AI" board. Runs on port **4100** (command-center owns 4000).
+"Conducting AI" board. Runs on port **4200** (command-center owns 4000).
 
 ## Commands
 
 ```bash
-npm run dev        # dev server → http://localhost:4100
+npm run dev        # dev server → http://localhost:4200
 npm test           # vitest suite (must stay green)
 npm run typecheck  # tsc --noEmit
 npm run seed       # re-seed data/founder-os.db (idempotent)
@@ -142,7 +142,7 @@ Multiple Claude Code sessions work on this repo concurrently:
 
 - Commit small checkpoints often (`git log --oneline` to see where others are).
 - Run `npm test && npm run typecheck` before claiming anything done.
-- Don't kill the dev server on 4100 — another session may be using it.
+- Don't kill the dev server on 4200 — another session may be using it.
 - Leave handoff notes in `docs/` if you stop mid-feature.
 
 ## Orchestrator session (v5.1)
