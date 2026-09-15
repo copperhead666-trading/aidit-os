@@ -25,14 +25,17 @@ module.exports = {
     // a real call (`hermes chat -q "..." -m glm-5.3-flash:cloud`) succeeds
     // under it before wiring this in.
     { name: "paperclip-v5", script: "ops/pm2-launch-paperclip.cjs", cwd: __dirname, autorestart: true, max_restarts: 20, restart_delay: 5000, env: { CODEX_HOME: "D:/aidit-codex-machine", HERMES_HOME: "D:/aidit-hermes-machine" } },
-    // CLAUDE_CONFIG_DIR: the conductor-decision/review Claude calls run as the
-    // MACHINE account (pusatberasmurah), never the orchestrator's ~/.claude
-    // (adityainofficial) — see ops/claude-machine.cmd. Until that account logs
-    // in there (Thu 2026-09-17), claude-cli calls here fail "not logged in"
-    // and the lane rests to its GLM fallback (PRD v5.1 s2c) — the intended
-    // state, not a bug, for the rest of this v5.1 session (log in early with
-    // ops/claude-machine.cmd if you want it sooner).
-    { name: "conductor", ...node22("conductor/run.mjs"), env: { CLAUDE_CONFIG_DIR: "D:/aidit-claude-machine", CODEX_HOME: "D:/aidit-codex-machine" } },
+    // CLAUDE_CONFIG_DIR: TEMPORARY as of 2026-09-16 morning, owner's own
+    // explicit call -- the machine account (pusatberasmurah) is still logged
+    // out (weekly reset 2026-09-17 06:00 WIB), and rather than let opus
+    // decisions silently no-op until then, Conductor borrows the
+    // orchestrator's own ~/.claude (adityainofficial) by simply NOT setting
+    // this var (unset = claude-cli's own default). Real cost: this account's
+    // quota is now shared between the interactive session and Conductor's
+    // automated calls -- accepted knowingly, reverts tomorrow morning once
+    // pusatberasmurah resets (switch this back to "D:/aidit-claude-machine"
+    // then -- see ops/claude-machine.cmd for the one-time login).
+    { name: "conductor", ...node22("conductor/run.mjs"), env: { CODEX_HOME: "D:/aidit-codex-machine" } },
     { name: "telegram", ...node22("conductor/telegram.mjs") },
     // HERMES_HOME here too: ops.mjs's tick calls `hermes cron tick` to fire
     // Hermes's own standing cron jobs (its "board employee" presence, per
