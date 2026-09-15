@@ -18,8 +18,8 @@
     "conductor-routine": ["glm-52", "glm-51", "claude-sonnet"],
     "conductor-decision": ["claude-sonnet", "glm-52"],
     "review": ["claude-sonnet", "glm-52"],
-    "head-claude": ["gpt-6-astra", "kimi-k3", "glm-51"],
-    "head-other": ["gpt-6-astra", "kimi-k3", "glm-52", "kimi-k27"],
+    "head-claude": ["gpt-6-astra", "kimi-k3", "glm-51", "codex"],
+    "head-other": ["gpt-6-astra", "kimi-k3", "glm-52", "kimi-k27", "codex"],
     "worker": ["gpt-6-astra", "codex", "kimi-k3", "glm-51"],
     "berat": ["glm-52", "glm-51", "gpt-6-astra", "codex", "kimi-k3"],
     "light": ["glm-53-flash", "glm-51"]
