@@ -14,6 +14,7 @@ import { lanesStatus } from './lanes.mjs';
 import { chatReply } from './chat.mjs';
 import { synthesize, EN_PIPER_MODEL } from '../ops/voice/voice-out.mjs';
 import { renderSpokenReport } from '../ops/voice/spoken-report.mjs';
+import { computeScore } from './score.mjs';
 
 loadEnvLocal();
 const co = company();
@@ -101,6 +102,15 @@ function poolUsageToday() {
   return `Pemakaian hari ini: ${entries.map(([pool, n]) => `${pool} ${n}x`).join(', ')}.`;
 }
 
+function scoreLine() {
+  const sc = computeScore();
+  const file = path.join(STATE, 'jarvis-score.json');
+  const history = readJson(file, {});
+  history[sc.date] = sc;
+  writeJson(file, history);
+  return `Skor JARVIS hari ini: ${sc.jarvis}/100 (orkestrator ${sc.orchestrator.score}, asisten ${sc.personalAssistant.score}).`;
+}
+
 // PRD JARVIS s3: a spoken companion to the text report, English/"Sir" per
 // the spoken-channel voice policy in config/persona/register.yaml (deliberate
 // — distinct from the text report's Indonesian/"Bapak", not a bug). Piper
@@ -130,7 +140,7 @@ export async function sendReport(kind = 'auto') {
     `*${greet}, Bapak.* Laporan ${p.time} WIB.`,
     ...humanStatus(s).slice(0, 3),
     ...(await ventureLines()),
-    ...(p.hour >= 13 ? [poolUsageToday()].filter(Boolean) : []),
+    ...(p.hour >= 13 ? [poolUsageToday(), scoreLine()].filter(Boolean) : []),
     `Layar rinci: ${COCKPIT_URL}`,
   ];
   const r = await report(lines);

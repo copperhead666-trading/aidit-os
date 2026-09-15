@@ -48,6 +48,35 @@ export default async function OrchestratorPage() {
         ))}
       </section>
 
+      {s.score && (
+        <section className="mb-[18px]">
+          <SectionHead label="Skor JARVIS" />
+          <div className="grid grid-cols-3 gap-3 max-[1100px]:grid-cols-1">
+            <div className="rounded-lg-t border border-os-border bg-os-surface px-[17px] py-[15px]">
+              <div className="mb-1.5 font-mono text-[9.5px] uppercase tracking-[0.18em] text-os-dim">Keseluruhan</div>
+              <div className="text-2xl font-bold tabular-nums">{s.score.jarvis}</div>
+            </div>
+            <div className="rounded-lg-t border border-os-border bg-os-surface px-[17px] py-[15px]">
+              <div className="mb-1.5 font-mono text-[9.5px] uppercase tracking-[0.18em] text-os-dim">Sebagai orkestrator</div>
+              <div className="text-2xl font-bold tabular-nums">{s.score.orchestrator.score}</div>
+            </div>
+            <div className="rounded-lg-t border border-os-border bg-os-surface px-[17px] py-[15px]">
+              <div className="mb-1.5 font-mono text-[9.5px] uppercase tracking-[0.18em] text-os-dim">Sebagai asisten pribadi</div>
+              <div className="text-2xl font-bold tabular-nums">{s.score.personalAssistant.score}</div>
+            </div>
+          </div>
+          {s.score.drags.length > 0 && (
+            <ul className="mt-2.5 flex flex-col gap-1">
+              {s.score.drags.map((d) => (
+                <li key={d} className="text-[11.5px] text-os-dim">
+                  · {d}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+
       <section className="mb-[18px]">
         <JarvisChat />
       </section>

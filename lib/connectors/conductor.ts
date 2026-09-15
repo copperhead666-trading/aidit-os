@@ -5,14 +5,21 @@
  * Windows-specific child-process work (machineHealth() shells to
  * powershell.exe) that Next's bundler/runtime was never asked to handle.
  * Machine health is read from the last ops.tick ledger line instead of
- * spawning a process on every page load.
+ * spawning a process on every page load. One exception: the JARVIS score
+ * (orchestratorScore below) spawns `node conductor/score.mjs` rather than
+ * reimplementing its formula here in TypeScript — it's read-only, ~150ms,
+ * and keeping one source of truth for the scoring logic (also used by
+ * conductor/telegram.mjs's evening report) outweighs the spawn.
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 import type { ConnectorStatus } from '@/lib/connectors/types';
 
 const STATE_DIR = process.env.AIDIT_STATE_DIR ?? path.join(process.cwd(), 'state');
 const CONFIG_DIR = path.join(process.cwd(), 'config');
+const AIDIT_NODE = process.env.AIDIT_NODE ?? 'D:/aidit-node/node-v22.14.0-win-x64/node.exe';
+const SCORE_SCRIPT = path.join(process.cwd(), 'conductor', 'score.mjs');
 const PAPERCLIP_URL = process.env.PAPERCLIP_URL ?? 'http://127.0.0.1:3120';
 
 function readJson<T>(file: string, fallback: T): T {
@@ -43,7 +50,25 @@ export type OrchestratorSnapshot = {
   machine: { freeRamMb: number | null; freeDiskGb: number | null } | null;
   lastTick: { wib: string; summary: string } | null;
   paperclipOk: boolean;
+  score: JarvisScore | null;
 };
+
+export type JarvisScore = {
+  date: string;
+  jarvis: number;
+  orchestrator: { score: number };
+  personalAssistant: { score: number };
+  drags: string[];
+};
+
+function orchestratorScore(): Promise<JarvisScore | null> {
+  return new Promise((resolve) => {
+    execFile(AIDIT_NODE, [SCORE_SCRIPT], { cwd: process.cwd(), timeout: 10000 }, (err, stdout) => {
+      if (err) { resolve(null); return; }
+      try { resolve(JSON.parse(stdout) as JarvisScore); } catch { resolve(null); }
+    });
+  });
+}
 
 function laneStates(): LaneState[] {
   const cfg = readJson<{ lanes?: Record<string, { status?: string; pool?: string }> }>(
@@ -177,6 +202,7 @@ export async function orchestratorSnapshot(): Promise<OrchestratorSnapshot> {
     machine: lastOpsTick(),
     lastTick: lastConductorTick(),
     paperclipOk,
+    score: await orchestratorScore(),
   };
 }
 
