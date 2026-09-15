@@ -79,7 +79,10 @@
         "MT5 Credentials.env",
         "**/*.env"
       ],
-      "status": "waiting-owner-readme"
+      "status": "waiting-owner-readme",
+      "constraints": "Dokumen ini merupakan mandat bootstrap bagi Aidit OS untuk melakukan pemulihan historis, rekonsiliasi status terkini, dan pembangunan memori kanonik tanpa langsung mengeksekusi seluruh backlog lama. Prinsip utamanya adalah bukti kondisi terkini mengungguli klaim historis, sehingga setiap item lama w",
+      "learnedAt": "2026-09-15T08:16:27.769Z",
+      "learnedFrom": "document:vision-2026-09-15-bootstrap-ai"
     }
   ],
   "departments": [
@@ -229,6 +232,24 @@
         "web"
       ],
       "mission": "riset pasar/teknologi -> gbrain"
+    },
+    {
+      "id": "platform",
+      "name": "Platform",
+      "order": 9,
+      "head": {
+        "id": "head-platform",
+        "laneChain": [
+          "glm-51",
+          "codex",
+          "kimi-k27"
+        ]
+      },
+      "workers": [
+        "codex",
+        "glm-53-flash"
+      ],
+      "mission": "Jaga dashboard dan bot Telegram tetap hidup, data nyata, kode ter-deploy otomatis"
     }
   ],
   "conductor": {

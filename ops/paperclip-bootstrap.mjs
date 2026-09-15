@@ -26,7 +26,7 @@ async function api(method, p, body) {
   return json;
 }
 
-const ROLE = { product: 'pm', engineering: 'engineer', design: 'designer', qa: 'qa', ops: 'devops', finance: 'cfo', marketing: 'cmo', research: 'researcher' };
+const ROLE = { product: 'pm', engineering: 'engineer', design: 'designer', qa: 'qa', ops: 'devops', finance: 'cfo', marketing: 'cmo', research: 'researcher', platform: 'devops' };
 
 async function ensureCompany() {
   const all = await api('GET', '/api/companies');
