@@ -9,10 +9,10 @@
     "kimi-k3": { "runtime": "kimi-cli", "model": "kimi-k3", "pool": "kimi-code", "capabilities": ["decide", "plan", "write", "review"], "maxTurns": 40, "dailyTasks": 10, "endpoint": "kimi CLI (Kimi Code subscription)", "status": "disabled", "reason": "403 monthly quota exhausted 2026-09-14; reset date unknown (Ask owner)" },
     "gpt-6-astra": { "runtime": "codex-cli", "model": "gpt-6-astra", "pool": "codex-chatgpt", "capabilities": ["decide", "plan", "write", "review", "code"], "maxTurns": 60, "dailyTasks": 30, "endpoint": "codex exec (ChatGPT plan)" },
     "codex": { "runtime": "codex-cli", "model": "default", "pool": "codex-chatgpt", "capabilities": ["code", "review"], "maxTurns": 80, "dailyTasks": 30, "endpoint": "codex exec (ChatGPT plan)" },
-    "kimi-k27": { "runtime": "ollama", "model": "kimi-k2.7-code:cloud", "pool": "ollama-cloud-kimi", "capabilities": ["code", "write", "review", "plan"], "maxSteps": 80, "endpoint": "http://127.0.0.1:11434 (Ollama Cloud)", "status": "disabled", "reason": "owner decision 2026-09-15: kimi via Ollama off to protect Ollama Cloud quota" },
-    "glm-52": { "runtime": "ollama", "model": "glm-5.2:cloud", "pool": "ollama-cloud-glm", "capabilities": ["write", "plan", "review", "code", "decide"], "maxSteps": 80, "endpoint": "http://127.0.0.1:11434 (Ollama Cloud)" },
-    "glm-51": { "runtime": "ollama", "model": "glm-5.1:cloud", "pool": "ollama-cloud-glm", "capabilities": ["code", "write"], "maxSteps": 80, "endpoint": "http://127.0.0.1:11434 (Ollama Cloud)" },
-    "glm-53-flash": { "runtime": "ollama", "model": "glm-5.3-flash:cloud", "pool": "ollama-cloud-glm", "capabilities": ["light"], "maxSteps": 30, "endpoint": "http://127.0.0.1:11434 (Ollama Cloud)" }
+    "kimi-k27": { "runtime": "hermes-cli", "model": "kimi-k2.7-code:cloud", "pool": "ollama-cloud-kimi", "capabilities": ["code", "write", "review", "plan"], "endpoint": "hermes -z (Ollama Cloud via 127.0.0.1:11434)", "status": "disabled", "reason": "owner decision 2026-09-15: kimi via Ollama off to protect Ollama Cloud quota" },
+    "glm-52": { "runtime": "hermes-cli", "model": "glm-5.2:cloud", "pool": "ollama-cloud-glm", "capabilities": ["write", "plan", "review", "code", "decide"], "endpoint": "hermes -z (Ollama Cloud via 127.0.0.1:11434)" },
+    "glm-51": { "runtime": "hermes-cli", "model": "glm-5.1:cloud", "pool": "ollama-cloud-glm", "capabilities": ["code", "write"], "endpoint": "hermes -z (Ollama Cloud via 127.0.0.1:11434)" },
+    "glm-53-flash": { "runtime": "hermes-cli", "model": "glm-5.3-flash:cloud", "pool": "ollama-cloud-glm", "capabilities": ["light"], "endpoint": "hermes -z (Ollama Cloud via 127.0.0.1:11434)" }
   },
   "roles": {
     "conductor-routine": ["glm-52", "glm-51", "claude-sonnet"],

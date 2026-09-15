@@ -1,11 +1,13 @@
-// Model lanes (PRD v5 s3.3, s9): pick the first ready lane in a role chain,
-// run a task packet on it inside a workspace, mark a lane resting on
+// Model lanes (PRD v5.1 s2c, s3, s4): pick the first ready lane in a role
+// chain, run a task packet on it inside a workspace, mark a lane resting on
 // 503/timeout/limit, fall through to the next lane. No per-token meter.
 //
 // Runtimes:
 //   claude-cli  claude -p --restricted + guard hook, cwd = workspace
 //   codex-cli   codex exec --approve-for-me, cwd = workspace
-//   ollama      small tool loop over /api/chat (read/write/list/run node)
+//   hermes-cli  hermes -z <packet> --in <workspace> --yolo (Ollama Cloud
+//               primary, config.yaml fallback chain glm-5.1 -> flash -> Nous;
+//               no home-grown tool loop — hermes brings its own tools)
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, STATE, NODE22, lanesCfg, readJson, writeJson, run, ledgerAppend, laneBudget, wibParts } from './lib.mjs';
@@ -27,12 +29,12 @@ export function parseResetTime(msg) {
   return target.toISOString();
 }
 
-const OLLAMA_INFLIGHT = new Map(); // pool -> count, in-process semaphore
-async function withOllamaSlot(pool, limit, fn) {
-  const cur = OLLAMA_INFLIGHT.get(pool) || 0;
+const POOL_INFLIGHT = new Map(); // pool -> count, in-process semaphore
+async function withPoolSlot(pool, limit, fn) {
+  const cur = POOL_INFLIGHT.get(pool) || 0;
   if (cur >= limit) return { ok: false, error: `semaphore: ${pool} at ${limit} concurrent already` };
-  OLLAMA_INFLIGHT.set(pool, cur + 1);
-  try { return await fn(); } finally { OLLAMA_INFLIGHT.set(pool, (OLLAMA_INFLIGHT.get(pool) || 1) - 1); }
+  POOL_INFLIGHT.set(pool, cur + 1);
+  try { return await fn(); } finally { POOL_INFLIGHT.set(pool, (POOL_INFLIGHT.get(pool) || 1) - 1); }
 }
 
 export function lanesStatus() {
@@ -65,6 +67,10 @@ export function chainFor(role) {
 }
 
 const LIMIT_RE = /(429|503|502|rate ?limit|usage limit|quota|overloaded|ETIMEDOUT|timed? ?out|ECONNRESET|Not logged in|unauthorized|403)/i;
+// PRD v5.1 s2c: Ollama pool retries transient overload/connection errors
+// 3x (5s/15s/45s) on the same lane before falling through to the next one.
+const RETRY_RE = /(429|503|ECONNRESET)/i;
+const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
 /** Run a packet on the first ready lane of the chain. Returns {ok, lane, summary, raw, tried}. */
 export async function runOnChain(role, packet, opts = {}) {
@@ -94,9 +100,14 @@ export async function runOnLane(id, packet, { workspace, maxTurns, timeoutMs = 2
   try {
     if (lane.runtime === 'claude-cli') r = await runClaude(lane, packet, { workspace, maxTurns, timeoutMs });
     else if (lane.runtime === 'codex-cli') r = await runCodex(lane, packet, { workspace, timeoutMs });
-    else if (lane.runtime === 'ollama') {
+    else if (lane.runtime === 'hermes-cli') {
       const limit = lanesCfg().semaphore?.[lane.pool] ?? 2;
-      r = await withOllamaSlot(lane.pool, limit, () => runOllama(lane, packet, { workspace, maxSteps: maxTurns || lane.maxSteps, timeoutMs }));
+      const delays = [5000, 15000, 45000];
+      for (let attempt = 0; ; attempt++) {
+        r = await withPoolSlot(lane.pool, limit, () => runHermes(lane, packet, { workspace, timeoutMs }));
+        if (r.ok || attempt >= delays.length || !RETRY_RE.test(String(r.error || ''))) break;
+        await sleep(delays[attempt]);
+      }
     }
     else r = { ok: false, error: `runtime ${lane.runtime} not implemented` };
   } catch (e) { r = { ok: false, error: e.message }; }
@@ -133,67 +144,38 @@ async function runCodex(lane, packet, { workspace, timeoutMs }) {
   return { ok: true, summary: last };
 }
 
-// ---- Ollama tool loop ---------------------------------------------------
-const OLLAMA_TOOLS = [
-  { type: 'function', function: { name: 'list_dir', description: 'List files in a workspace directory', parameters: { type: 'object', properties: { dir: { type: 'string' } }, required: ['dir'] } } },
-  { type: 'function', function: { name: 'read_file', description: 'Read a workspace file (utf8, max 60kB)', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } } },
-  { type: 'function', function: { name: 'write_file', description: 'Write a workspace file (creates directories)', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } },
-  { type: 'function', function: { name: 'run_node', description: 'Run one node script inside the workspace: args like ["scripts/x.mjs","--flag"] or ["node_modules/typescript/bin/tsc","--noEmit"]', parameters: { type: 'object', properties: { args: { type: 'array', items: { type: 'string' } } }, required: ['args'] } } },
-  { type: 'function', function: { name: 'done', description: 'Finish the task with a summary of what was changed and verified', parameters: { type: 'object', properties: { summary: { type: 'string' } }, required: ['summary'] } } },
-];
-
-function insideWs(ws, p) {
-  const target = path.resolve(ws, String(p || ''));
-  const rel = path.relative(ws, target);
-  if (rel.startsWith('..') || path.isAbsolute(rel)) throw new Error(`path escapes workspace: ${p}`);
-  return target;
+// ---- Hermes CLI (PRD v5.1 s4/s6.3) ---------------------------------------
+// Max steps (40) and the Ollama-primary/Nous-fallback chain live in the
+// shared ~/.hermes config.yaml, not per-call flags (hermes has none for
+// one-shot mode). We invoke hermes-agent's bin/hermes.js directly with
+// NODE22 instead of hermes.cmd: an 8kB packet as a single argv entry can
+// exceed cmd.exe's 8191-char line limit, and spawning the .js entry with
+// shell:false goes straight through CreateProcess (no cmd.exe involved).
+let HERMES_ENTRY = null;
+async function hermesEntry() {
+  if (HERMES_ENTRY) return HERMES_ENTRY;
+  if (process.env.HERMES_ENTRY_JS && fs.existsSync(process.env.HERMES_ENTRY_JS)) return (HERMES_ENTRY = process.env.HERMES_ENTRY_JS);
+  const r = await run('where', ['hermes.cmd'], { timeoutMs: 10000 });
+  const cmdPath = r.stdout.trim().split(/\r?\n/)[0];
+  if (!cmdPath) throw new Error('hermes.cmd tidak ditemukan di PATH');
+  const entry = path.join(path.dirname(cmdPath), 'node_modules', 'hermes-agent', 'bin', 'hermes.js');
+  if (!fs.existsSync(entry)) throw new Error(`hermes entry tidak ada: ${entry}`);
+  return (HERMES_ENTRY = entry);
 }
 
-async function ollamaTool(ws, name, a, readOnly) {
-  switch (name) {
-    case 'list_dir': { const d = insideWs(ws, a.dir || '.'); return fs.readdirSync(d, { withFileTypes: true }).map((e) => (e.isDirectory() ? e.name + '/' : e.name)).slice(0, 300).join('\n'); }
-    case 'read_file': { const f = insideWs(ws, a.path); return fs.readFileSync(f, 'utf8').slice(0, 60000); }
-    case 'write_file': { if (readOnly) throw new Error('read-only task'); const f = insideWs(ws, a.path); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, String(a.content ?? '')); return `wrote ${a.path} (${String(a.content ?? '').length} chars)`; }
-    case 'run_node': {
-      const args = (a.args || []).map(String);
-      if (!args.length) throw new Error('args required');
-      insideWs(ws, args[0]);
-      for (const t of args.slice(1)) if (/[\\/]/.test(t) && !t.startsWith('-')) insideWs(ws, t);
-      const r = await run(NODE22, args, { cwd: ws, timeoutMs: 10 * 60000 });
-      return `exit ${r.code}\n${(r.stdout + r.stderr).slice(-6000)}`;
-    }
-    default: throw new Error(`unknown tool ${name}`);
-  }
-}
-
-async function runOllama(lane, packet, { workspace, maxSteps = 80, timeoutMs }) {
+async function runHermes(lane, packet, { workspace, timeoutMs = 25 * 60000 }) {
+  const entry = await hermesEntry();
   const ws = workspace || ROOT;
-  const deadline = Date.now() + timeoutMs;
-  const messages = [
-    { role: 'system', content: `${packet.system || 'You are a careful software worker.'}\nYou work inside one workspace with the given tools only. Paths are relative to the workspace. Finish by calling done(summary). Max ${maxSteps} steps.` },
-    { role: 'user', content: packetText(packet) },
-  ];
-  for (let step = 0; step < maxSteps; step++) {
-    if (Date.now() > deadline) return { ok: false, error: 'timed out' };
-    const res = await fetch(`${OLLAMA}/api/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: lane.model, messages, tools: OLLAMA_TOOLS, stream: false, options: { num_ctx: 32768 } }), signal: AbortSignal.timeout(Math.min(timeoutMs, 5 * 60000)) });
-    if (!res.ok) return { ok: false, error: `ollama ${res.status}: ${(await res.text()).slice(0, 200)}` };
-    const data = await res.json();
-    const msg = data.message || {};
-    messages.push(msg);
-    const calls = msg.tool_calls || [];
-    if (!calls.length) {
-      // No tool call: treat the text as the final answer.
-      return { ok: true, summary: String(msg.content || '').trim() || '(no summary)', steps: step + 1 };
-    }
-    for (const c of calls) {
-      const name = c.function?.name; const a = c.function?.arguments || {};
-      if (name === 'done') return { ok: true, summary: String(a.summary || ''), steps: step + 1 };
-      let content;
-      try { content = await ollamaTool(ws, name, a, packet.readOnly); } catch (e) { content = `error: ${e.message}`; }
-      messages.push({ role: 'tool', content: String(content).slice(0, 60000) });
-    }
-  }
-  return { ok: false, error: `step ceiling ${maxSteps} reached` };
+  const usageFile = path.join(STATE, 'conductor', `hermes-usage-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.json`);
+  fs.mkdirSync(path.dirname(usageFile), { recursive: true });
+  const args = [entry, '-z', packetText(packet), '--usage-file', usageFile, '--in', ws, '--yolo', '--no-restore-cwd'];
+  if (lane.model) args.push('-m', lane.model);
+  const r = await run(NODE22, args, { cwd: ws, timeoutMs, env: { ...process.env, HERMES_ACCEPT_HOOKS: '1' } });
+  let usage = null; try { usage = JSON.parse(fs.readFileSync(usageFile, 'utf8')); } catch {}
+  try { fs.unlinkSync(usageFile); } catch {}
+  const text = (r.stdout || '').trim();
+  if (r.code !== 0 || !text || usage?.failed) return { ok: false, error: (r.stderr || text || `exit ${r.code}`).slice(0, 400), usage };
+  return { ok: true, summary: text, usage };
 }
 
 // ---- Probe (every 15 minutes): cheap health per pool ---------------------
@@ -205,7 +187,7 @@ export async function probeLanes() {
   for (const [id, lane] of Object.entries(cfg.lanes)) {
     if (lane.status === 'disabled') { results[id] = 'disabled'; continue; }
     if (laneState(id) === 'resting') { results[id] = 'resting'; continue; }
-    if (lane.runtime === 'ollama') {
+    if (lane.runtime === 'hermes-cli') {
       try {
         const res = await fetch(`${OLLAMA}/api/generate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: lane.model, prompt: 'ping', stream: false, options: { num_predict: 4 } }), signal: AbortSignal.timeout(60000) });
         if (res.ok) { st.lanes[id] = { state: 'ready', at: new Date().toISOString() }; results[id] = 'ready'; }
