@@ -238,6 +238,7 @@
     "routineModel": "glm-5.2:cloud",
     "decisionModel": "sonnet",
     "opusTurnsPerDay": 5,
+    "chatHistoryTurns": 0,
     "gitAuthor": {
       "name": "CONDUCTOR",
       "email": "conductor@aidit-os.local"

@@ -138,6 +138,18 @@ export function run(cmd, args, { cwd = ROOT, env = process.env, timeoutMs = 6000
   });
 }
 
+// ---- graphify (PRD v5.1 s4 / JARVIS s1) -------------------------------------
+// Shared by head.mjs, run.mjs and chat.mjs so all three ask the graph the
+// same way instead of three slightly different implementations.
+export const GRAPHIFY = process.env.GRAPHIFY_BIN || 'C:/Users/WIN10/.local/bin/graphify.exe';
+export async function graphifyQuery(question, budget, cwd = ROOT) {
+  const r = await run(GRAPHIFY, ['query', question, '--budget', String(budget)], { cwd, timeoutMs: 30000 });
+  return r.code === 0 ? r.stdout.trim() : null;
+}
+export function graphifyUpdate(cwd = ROOT) {
+  run(GRAPHIFY, ['update', cwd], { cwd, timeoutMs: 5 * 60000 }).catch(() => {});
+}
+
 // ---- Machine health (disk / RAM) -------------------------------------------
 export async function machineHealth() {
   const os = await import('node:os');

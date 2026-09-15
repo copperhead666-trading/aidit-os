@@ -3,6 +3,7 @@
 // Usage: node conductor/status.mjs
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { STATE, ROOT, company, lanesCfg, isPaused, wibParts, readJson, run, pc } from './lib.mjs';
 import { lanesStatus } from './lanes.mjs';
 
@@ -99,16 +100,36 @@ function usageToday() {
   return `claude[${claude}] lane[${lane}]`;
 }
 
-async function main() {
+// PRD JARVIS s1: reusable by conductor/chat.mjs (and anything else that
+// wants the same ~20-line deterministic snapshot) without re-running main()'s
+// console.log side effects. Same fields, same values as before this split.
+export async function snapshot() {
   const p = wibParts();
-  console.log(`WIB ${p.date} ${p.time} | paused=${isPaused()}`);
-  console.log(`claude: ${await claudeAccounts()}`);
-  console.log(`pm2: ${await pm2Summary()}`);
-  console.log(`papan: ${await board()}`);
-  console.log(`kepala sibuk: ${busyHeads()}`);
-  console.log(`lane: ${laneLine()}`);
-  console.log(`ask menunggu: ${pendingAsks()}`);
-  console.log(`pemakaian hari ini: ${usageToday()}`);
+  const [claude, pm2, boardStr] = await Promise.all([claudeAccounts(), pm2Summary(), board()]);
+  return {
+    wib: `${p.date} ${p.time}`,
+    paused: isPaused(),
+    claude,
+    pm2,
+    board: boardStr,
+    busyHeads: busyHeads(),
+    lanes: laneLine(),
+    asks: pendingAsks(),
+    usageToday: usageToday(),
+  };
 }
 
-main().catch((e) => { console.error('status gagal:', e.message); process.exit(1); });
+async function main() {
+  const s = await snapshot();
+  console.log(`WIB ${s.wib} | paused=${s.paused}`);
+  console.log(`claude: ${s.claude}`);
+  console.log(`pm2: ${s.pm2}`);
+  console.log(`papan: ${s.board}`);
+  console.log(`kepala sibuk: ${s.busyHeads}`);
+  console.log(`lane: ${s.lanes}`);
+  console.log(`ask menunggu: ${s.asks}`);
+  console.log(`pemakaian hari ini: ${s.usageToday}`);
+}
+
+const isEntry = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isEntry) main().catch((e) => { console.error('status gagal:', e.message); process.exit(1); });

@@ -10,7 +10,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   ROOT, STATE, company, paperclipCfg, loadEnvLocal, readJson, writeJson,
-  ledgerAppend, ledgerTail, isPaused, opusBudget, pc, paperclipHealth, machineHealth, run, wibStamp, wibParts,
+  ledgerAppend, ledgerTail, isPaused, opusBudget, pc, paperclipHealth, machineHealth, run, wibStamp, wibParts, graphifyQuery,
 } from './lib.mjs';
 import { askClaude, askGlm } from './claude.mjs';
 import crypto from 'node:crypto';
@@ -22,14 +22,6 @@ const DRY = process.argv.includes('--dry');
 const QUEUE = path.join(STATE, 'queue');
 const DECISIONS_DIR = path.join(ROOT, 'docs', 'conductor');
 const CLOSED = new Set(['done', 'canceled', 'cancelled', 'archived']);
-const GRAPHIFY = 'C:/Users/WIN10/.local/bin/graphify.exe';
-
-// PRD v5.1 s4.3: a short graph hint per unassigned/new ticket, not the whole
-// board — keeps the deterministic summary handed to the model small.
-async function graphifyQuery(question, budget) {
-  const r = await run(GRAPHIFY, ['query', question, '--budget', String(budget)], { cwd: ROOT, timeoutMs: 20000 });
-  return r.code === 0 ? r.stdout.trim() : null;
-}
 
 const SCHEMA = {
   type: 'object',

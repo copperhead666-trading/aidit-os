@@ -7,22 +7,8 @@
 // comments on the issue and moves it to in_review (never done: QA does that).
 import fs from 'node:fs';
 import path from 'node:path';
-import { ROOT, STATE, NODE22, company, paperclipCfg, loadEnvLocal, readJson, writeJson, ledgerAppend, isPaused, run, wibStamp } from './lib.mjs';
+import { ROOT, STATE, NODE22, company, paperclipCfg, loadEnvLocal, readJson, writeJson, ledgerAppend, isPaused, run, wibStamp, graphifyQuery, graphifyUpdate } from './lib.mjs';
 import { runOnChain } from './lanes.mjs';
-
-const GRAPHIFY = 'C:/Users/WIN10/.local/bin/graphify.exe';
-// PRD v5.1 s4: pre-fetch graph context instead of letting the lane roam
-// Glob/Grep freely; --budget keeps the packet under the 8kB ceiling.
-async function graphifyQuery(question, budget, cwd = ROOT) {
-  const r = await run(GRAPHIFY, ['query', question, '--budget', String(budget)], { cwd, timeoutMs: 30000 });
-  return r.code === 0 ? r.stdout.trim() : null;
-}
-// PRD v5.1 s4.1: "--update dipanggil integrator setelah merge" — head.mjs is
-// the integrator (it owns the commit), so it refreshes the graph right after
-// instead of relying on a standing `graphify watch` daemon.
-function graphifyUpdate(cwd = ROOT) {
-  run(GRAPHIFY, ['update', cwd], { cwd, timeoutMs: 5 * 60000 }).catch(() => {});
-}
 
 loadEnvLocal();
 const argv = process.argv.slice(2);
