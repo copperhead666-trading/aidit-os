@@ -35,7 +35,7 @@ const SCHEMA = {
       items: {
         type: 'object',
         properties: {
-          type: { type: 'string', enum: ['assign', 'comment', 'create_issue', 'ask', 'alert', 'note'] },
+          type: { type: 'string', enum: ['assign', 'comment', 'create_issue', 'ask', 'alert', 'note', 'edit_lane_config'] },
           issueId: { type: 'string' },
           department: { type: 'string' },
           title: { type: 'string' },
@@ -45,6 +45,9 @@ const SCHEMA = {
           askId: { type: 'string' },
           defaultIfSilent: { type: 'string' },
           options: { type: 'array', items: { type: 'string' } },
+          role: { type: 'string', description: 'edit_lane_config only: a key in laneHealth.roles, e.g. head-other' },
+          newChain: { type: 'array', items: { type: 'string' }, description: 'edit_lane_config only: the replacement lane order for that role, using only lane ids that exist in laneHealth' },
+          reason: { type: 'string', description: 'edit_lane_config only: why this reroute, referencing the actual failure pattern seen' },
         },
         required: ['type'],
       },
@@ -66,6 +69,7 @@ function systemPrompt(co) {
     'Never create duplicate issues: check the open list first. Never mark anything done: heads do that when acceptance passes.',
     'Issues titled "EPIC ..." are containers for a venture: never assign, reassign or queue them; create child issues under them instead (projectKey = the venture). An agent status of "error" is a transient runtime blip handled by Ops automatically: never build decisions around it and never mention it to the owner.',
     'Asks to the owner are only for: production deploys, money, outside people, purchases, or a venture-level tradeoff the owner explicitly reserved (PRD approval, cutover date). Internal staffing, retries and reassignments are yours: do them silently. needsOpus is true only for a venture-level tradeoff or a spec conflict; otherwise false.',
+    'Lane/quota health is YOUR business, not something to ignore (owner decision 2026-09-16, per Bennett: you are the one who reasons about routing failures, not a static config table). laneHealth.recentFailuresLast80Runs shows real failure counts per lane; laneHealth.roles shows the current chain each department/worker role tries in order. If a role\'s chain is genuinely failing a lot (not a one-off), emit an edit_lane_config decision: {type:"edit_lane_config", role, newChain, reason} -- newChain must use only lane ids that exist in laneHealth.roles\' own values, reordered/trimmed to route around the failing one(s). This is enforced as a needsOpus-only action: set needsOpus true with needsOpusReason explaining the failure pattern, or it will be ignored. If the real fix isn\'t a reroute but something structural (a timeout too short, a missing binary, a code bug), create_issue for Engineering/Platform describing exactly what you saw instead of guessing at a reroute that won\'t help.',
     'You have NO tools and cannot run commands or read files: everything you need is in the JSON state given to you. Answer ONLY with the structured JSON output (summary, needsOpus, decisions). Do not write prose, plans or shell commands.',
   ].join('\n');
 }
@@ -88,11 +92,23 @@ async function gather(co) {
   const newTickets = open.filter((i) => !i.department && !/^EPIC /.test(i.title)).slice(0, 3);
   for (const i of newTickets) { const hint = await graphifyQuery(i.title, 600); if (hint) i.graphHint = hint; }
   const b = opusBudget(co.conductor.opusTurnsPerDay);
+  // Lane/quota health is now explicitly Conductor's business, not just a
+  // silently-managed background detail (owner decision 2026-09-16 morning,
+  // per Bennett: the headless orchestrator itself reasons about routing
+  // failures and proposes or makes the fix, rather than a fixed config
+  // table quietly absorbing every outage). recentFailures counts real
+  // lane.run failures from the tail so Conductor sees an actual pattern,
+  // not just today's static ready/resting/disabled snapshot.
+  const laneTail = ledgerTail(80).filter((e) => e.kind === 'lane.run' && !e.ok);
+  const recentFailures = {};
+  for (const e of laneTail) recentFailures[e.lane] = (recentFailures[e.lane] || 0) + 1;
+  const lanesLive = readJson(path.join(ROOT, 'config', 'lanes.json'), { lanes: {}, roles: {} });
   return {
     now: wibStamp(),
     paperclip: health,
     machine: await machineHealth(),
     lanes: readJson(path.join(STATE, 'lanes-status.json'), { note: 'no probe yet' }),
+    laneHealth: { roles: lanesLive.roles, recentFailuresLast80Runs: recentFailures },
     opus: { used: b.used, remaining: b.remaining },
     openAsks: listAsks().map((a) => ({ id: a.id, title: a.title, askedAt: a.wib })),
     issues: open,
@@ -109,7 +125,7 @@ function enqueue(issueId, department, instructions) {
   writeJson(qf, { issueId, department, instructions: instructions || '', status: 'queued', attempts: prev?.attempts || 0, queuedAt: new Date().toISOString() });
 }
 
-async function applyDecision(d, cfg, log) {
+export async function applyDecision(d, cfg, log, modelUsed, decisionModel) {
   const heads = cfg.heads || {};
   switch (d.type) {
     case 'assign': {
@@ -164,6 +180,30 @@ async function applyDecision(d, cfg, log) {
       if (DRY) { log.push('alert (dry)'); return; }
       const r = await alert({ what: d.body || d.title || '', needsOwner: false });
       log.push(`alert sent=${!!r.sent}`);
+      return;
+    }
+    case 'edit_lane_config': {
+      // Owner decision 2026-09-16 morning, per Bennett: the headless
+      // orchestrator itself may reroute its own execution lanes -- no
+      // ticket/approval gate, by explicit choice. The one hard guard kept:
+      // only the escalated (opus) decision may actually write this file,
+      // never the cheap routine GLM tick that runs every 30 minutes --
+      // same discipline as every other hard call in this system.
+      if (modelUsed !== decisionModel) { log.push(`edit_lane_config skip (butuh keputusan opus, ini rutin): ${d.role}`); return; }
+      if (!d.role || !Array.isArray(d.newChain) || !d.newChain.length) { log.push('skip edit_lane_config: role/newChain kosong'); return; }
+      if (DRY) { log.push(`edit_lane_config (dry) ${d.role} -> ${d.newChain.join(',')}`); return; }
+      const lanesPath = path.join(ROOT, 'config', 'lanes.json');
+      const live = readJson(lanesPath, null);
+      if (!live?.roles?.[d.role]) { log.push(`skip edit_lane_config: role tidak dikenal ${d.role}`); return; }
+      const validIds = Object.keys(live.lanes || {});
+      const newChain = d.newChain.filter((id) => validIds.includes(id));
+      if (!newChain.length) { log.push(`skip edit_lane_config: newChain tidak berisi lane id yang valid (${d.newChain.join(',')})`); return; }
+      const oldChain = live.roles[d.role];
+      live.roles[d.role] = newChain;
+      writeJson(lanesPath, live);
+      ledgerAppend({ kind: 'conductor.lane-reroute', role: d.role, from: oldChain, to: newChain, reason: d.reason || null });
+      await alert({ what: `Saya mengubah urutan tim kerja untuk peran "${d.role}" karena ${d.reason || 'sering gagal'}.`, done: `Urutan baru: ${newChain.join(' lalu ')}.`, needsOwner: false });
+      log.push(`edit_lane_config ${d.role}: ${oldChain.join(',')} -> ${newChain.join(',')}`);
       return;
     }
     default:
@@ -233,7 +273,7 @@ ${JSON.stringify(SCHEMA)}`;
   const out = res.structured;
   const log = [];
   for (const d of (out.decisions || []).slice(0, 6)) {
-    try { await applyDecision(d, cfg, log); } catch (e) { log.push(`error ${d.type}: ${e.message.slice(0, 160)}`); }
+    try { await applyDecision(d, cfg, log, modelUsed, co.conductor.decisionModel); } catch (e) { log.push(`error ${d.type}: ${e.message.slice(0, 160)}`); }
   }
   // nudgeHeads removed (PRD v5.1 s6 step 7): Paperclip's own wake-on-assign
   // heartbeat already spawns a head when an issue is assigned to it.
