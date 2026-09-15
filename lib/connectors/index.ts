@@ -14,6 +14,7 @@ import { whatsappStatus } from '@/lib/connectors/whatsapp';
 import { obsidianStatus } from '@/lib/connectors/obsidian';
 import { localStackStatus } from '@/lib/connectors/local-stack';
 import { llmStatus } from '@/lib/connectors/llm';
+import { orchestratorStatus } from '@/lib/connectors/conductor';
 import { webinarjamStatus } from '@/lib/connectors/webinarjam';
 import { trakyoStatus } from '@/lib/connectors/trakyo';
 import { metaAdsStatus } from '@/lib/connectors/meta-ads';
@@ -37,6 +38,7 @@ async function brainConnectorStatus(): Promise<ConnectorStatus> {
 const CHECKS: [string, ConnectorStatus['kind'], () => Promise<ConnectorStatus>][] = [
   ['gbrain', 'brain', brainConnectorStatus],
   ['llm', 'orchestration', llmStatus],
+  ['orchestrator', 'orchestration', orchestratorStatus],
   ['whatsapp', 'social', whatsappStatus],
   ['zernio', 'social', zernioStatus],
   ['beehiiv', 'social', () => beehiivStatus(runtimeEnv())],
