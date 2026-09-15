@@ -34,7 +34,7 @@ dan penempatan kuota yang tepat. Tidak ada belanja baru; tidak ada meter per-tok
 
 | Layer | Bennett ($) | v5.1 (kuota yang ada) |
 |---|---|---|
-| 01 Orchestrator | Claude Code headless, langganan | Claude Code headless **akun #1 (mesin, `~/.claude`)**: Conductor keputusan + review Engineering/QA. Sesi manusia/orkestrator = **akun #2 (Bapak)** via `CLAUDE_CONFIG_DIR=D:aidit-claude-machine` (mesin), Sonnet, ≤ 150 turn |
+| 01 Orchestrator | Claude Code headless, langganan | Claude Code headless **akun #1 (mesin, `~/.claude`)**: Conductor keputusan + review Engineering/QA. Sesi manusia/orkestrator = **akun #2 (Bapak)** via `CLAUDE_CONFIG_DIR=D:idit-claude-machine` (mesin), Sonnet, ≤ 150 turn |
 | 02 Back office | Paperclip | Paperclip 3120 ✓ (heartbeat/wake-on-assign saja) |
 | 03 Model lanes | GLM-5.2 berat / 5.1 kode / flash ringan (paket GLM) + Codex | **sama**, GLM lewat Ollama Cloud (flat $20) + Codex Plus; Kimi Code = lane konteks besar (disabled sampai reset); kimi via Ollama dimatikan (jaga kuota Ollama) |
 | 04 Worker pool | Hermes, cron, MCP, loopback+Tailscale | Hermes 0.21 ✓ (provider Ollama, `fallback` GLM-5.2→5.1→flash→Nous free); semua pekerja + kepala non-Claude |

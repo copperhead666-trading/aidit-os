@@ -29,7 +29,7 @@ Aturan sesi (hemat token — ini alasan sesi ini ada):
   (instal, uji lane), pakai `ScheduleWakeup` 20–60 menit dengan prompt yang menyebut langkah berikutnya;
   jangan idle.
 - Owner (Telegram) hanya menerima Ask/Alert lewat `conductor/owner.mjs` (Indonesia formal, "Bapak",
-  lexicon). Yang butuh owner hadir: login akun Claude mesin (`pusatberasmurah`) Kamis 2026-09-17 ≥ 06:00 WIB ke `D:aidit-claude-machine`, WSL2/Docker,
+  lexicon). Yang butuh owner hadir: login akun Claude mesin (`pusatberasmurah`) Kamis 2026-09-17 ≥ 06:00 WIB ke `D:idit-claude-machine`, WSL2/Docker,
   tanggal reset Kimi — masing-masing satu Ask, lalu lanjut dengan default.
 - Tidak ada belanja baru; tidak ada meter per-token; Tailscale satu-satunya pintu. Jangan sentuh
   dokumen pribadi, `MT5 Credentials.env`, kredensial broker.
