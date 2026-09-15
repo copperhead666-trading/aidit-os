@@ -9,6 +9,17 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 export const STATE = path.join(ROOT, 'state');
 export const NODE22 = process.env.AIDIT_NODE || 'D:/aidit-node/node-v22.14.0-win-x64/node.exe';
 
+// RTK (PRD v5.1 s1/s6.4): installed to a dedicated dir, not the system PATH
+// (avoids the setx ~1024-char truncation risk on this machine) — lane
+// spawns that need it get it prepended to their own child env instead.
+export const RTK_DIR = process.env.RTK_DIR || 'D:/aidit-tools/rtk';
+export function withRtkPath(env = process.env) {
+  const out = { ...env };
+  const key = Object.keys(out).find((k) => k.toLowerCase() === 'path') || 'PATH';
+  out[key] = `${RTK_DIR}${path.delimiter}${out[key] || ''}`;
+  return out;
+}
+
 export function loadEnvLocal(file = path.join(ROOT, '.env.local')) {
   let text;
   try { text = fs.readFileSync(file, 'utf8'); } catch { return []; }

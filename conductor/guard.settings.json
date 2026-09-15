@@ -8,6 +8,11 @@
             "type": "command",
             "command": "node \"D:/AI/aidit-os-v5/conductor/guard.mjs\"",
             "timeout": 20
+          },
+          {
+            "type": "command",
+            "command": "rtk hook claude",
+            "timeout": 20
           }
         ]
       }
