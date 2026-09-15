@@ -82,6 +82,26 @@ for (const d of company.departments) {
   state.heads[d.id] = head.id;
 }
 
+// Hermes-agent's own board seat (Bennett stack parity, 2026-09-15 night):
+// Bennett describes Hermes as "one employee with its own chat, cron, and
+// MCP" -- registering it as a real agent gives it the board-level comment
+// thread every agent gets, and its adapterConfig names its actual standing
+// behavior (ops.mjs's 15-min tick fires `hermes cron tick`, see
+// conductor/ops.mjs's tickHermesCron()). It has no head/department of its
+// own -- it's the runtime every GLM/Kimi lane call already goes through
+// (conductor/lanes.mjs's runHermes()), not a ticket-taking worker itself.
+const hermes = await ensureAgent(c.id, {
+  name: 'Hermes',
+  role: 'general',
+  title: 'Worker pool engine (Hermes Agent)',
+  reportsTo: conductor.id,
+  capabilities: 'Runtime for every GLM/Kimi lane call (hermes-cli, HERMES_HOME=D:/aidit-hermes-machine); own cron job aidit-os-hermes-heartbeat fires every ~15min via ops.mjs; inherits .mcp.json (graphify, gbrain, github) from the workspace it runs in.',
+  adapterType: 'process',
+  adapterConfig: { command: 'hermes.cmd', args: ['cron', 'tick'], cwd: ROOT },
+  metadata: { lane: 'hermes', engine: true },
+}, agents);
+state.hermesId = hermes.id;
+
 const projects = await api('GET', `/api/companies/${c.id}/projects`);
 state.projects = state.projects || {};
 for (const v of company.ventures) {

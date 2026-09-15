@@ -17,7 +17,14 @@ module.exports = {
     // env var redirects codex-cli to its own dedicated, explicit config dir
     // instead -- same pattern as CLAUDE_CONFIG_DIR below. Log in once with:
     //   $env:CODEX_HOME="D:\aidit-codex-machine"; codex login
-    { name: "paperclip-v5", script: "ops/pm2-launch-paperclip.cjs", cwd: __dirname, autorestart: true, max_restarts: 20, restart_delay: 5000, env: { CODEX_HOME: "D:/aidit-codex-machine" } },
+    // HERMES_HOME: same reasoning as CODEX_HOME above -- paperclip-v5's child
+    // head.mjs also calls hermes-cli directly for every GLM/Kimi lane (the
+    // system's PRIMARY coding lane after 2026-09-15 night's lane rework).
+    // hermes-cli defaults to %LOCALAPPDATA%\hermes, a per-OS-user path;
+    // migrated the working WIN10 config into this dedicated dir and verified
+    // a real call (`hermes chat -q "..." -m glm-5.3-flash:cloud`) succeeds
+    // under it before wiring this in.
+    { name: "paperclip-v5", script: "ops/pm2-launch-paperclip.cjs", cwd: __dirname, autorestart: true, max_restarts: 20, restart_delay: 5000, env: { CODEX_HOME: "D:/aidit-codex-machine", HERMES_HOME: "D:/aidit-hermes-machine" } },
     // CLAUDE_CONFIG_DIR: the conductor-decision/review Claude calls run as the
     // MACHINE account (pusatberasmurah), never the orchestrator's ~/.claude
     // (adityainofficial) — see ops/claude-machine.cmd. Until that account logs
@@ -27,7 +34,12 @@ module.exports = {
     // ops/claude-machine.cmd if you want it sooner).
     { name: "conductor", ...node22("conductor/run.mjs"), env: { CLAUDE_CONFIG_DIR: "D:/aidit-claude-machine", CODEX_HOME: "D:/aidit-codex-machine" } },
     { name: "telegram", ...node22("conductor/telegram.mjs") },
-    { name: "ops", ...node22("conductor/ops.mjs") },
+    // HERMES_HOME here too: ops.mjs's tick calls `hermes cron tick` to fire
+    // Hermes's own standing cron jobs (its "board employee" presence, per
+    // Bennett's stack description -- 2026-09-15 night). conductor/run.mjs's
+    // askGlm() does NOT need this: it hits Ollama's local HTTP API directly
+    // (127.0.0.1:11434/api/chat), bypassing hermes-cli entirely.
+    { name: "ops", ...node22("conductor/ops.mjs"), env: { HERMES_HOME: "D:/aidit-hermes-machine" } },
   ],
 };
 // PRD v5.1 s4: `graphify watch` needs the Python `watchdog` package, which

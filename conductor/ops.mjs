@@ -91,6 +91,16 @@ export function checkTelegramHeartbeat(file = TG_HEARTBEAT_FILE) {
   return { ok: true, ageSec: Math.round(ms / 1000) };
 }
 
+// Hermes's own standing "cron" presence on the board (Bennett stack parity,
+// 2026-09-15 night) -- `hermes cron tick` only runs jobs that are actually
+// due, so reusing this existing 15-min PM2 loop is enough; no separate
+// `hermes gateway install` background service needed (this repo already
+// avoids standing daemons in favor of PM2-driven polling everywhere else).
+export async function tickHermesCron() {
+  const r = await run(process.platform === 'win32' ? 'hermes.cmd' : 'hermes', ['cron', 'tick'], { timeoutMs: 60000 });
+  return { ok: r.code === 0, output: (r.stdout || '').trim().slice(0, 300), error: r.code === 0 ? null : (r.stderr || '').slice(0, 200) };
+}
+
 export async function tick() {
   const probe = await probeLanes().catch((e) => ({ error: e.message }));
   const graph = await maybeUpdateGraph().catch((e) => ({ updated: false, error: e.message }));
@@ -100,7 +110,8 @@ export async function tick() {
   const selfImprove = await maybeRunSelfImprove(today).catch((e) => ({ acted: false, error: e.message }));
   const dashboard = await probeDashboard();
   const telegramHeartbeat = checkTelegramHeartbeat();
-  const platformHealth = { kind: 'ops.platform-health', dashboard, telegramHeartbeat };
+  const hermesCron = await tickHermesCron().catch((e) => ({ ok: false, error: e.message }));
+  const platformHealth = { kind: 'ops.platform-health', dashboard, telegramHeartbeat, hermesCron };
   const low = [];
   if (m.freeDiskGb != null && m.freeDiskGb < DISK_MIN_GB) low.push(`disk ${m.freeDiskGb} GB`);
   if (m.freeRamMb < RAM_MIN_MB) low.push(`ram ${m.freeRamMb} MB`);
