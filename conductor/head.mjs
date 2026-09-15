@@ -178,7 +178,24 @@ async function workOne(dept) {
     ? `[Kepala ${dept.name}] Selesai di lane ${r.lane}${commit.committed ? `, commit ${commit.sha} di ${ws.branch} (${commit.files.length} file)` : commit.refused ? ', commit DITOLAK: menyentuh berkas rahasia' : ''}.\n\n${String(r.summary).slice(0, 6000)}`
     : `[Kepala ${dept.name}] Gagal di semua lane: ${JSON.stringify(r.tried).slice(0, 800)}`;
   await api('POST', `/api/issues/${issue.id}/comments`, { body });
-  if (r.ok) await api('PATCH', `/api/issues/${issue.id}`, { status: 'in_review' });
+  if (r.ok) {
+    // Found live 2026-09-15 while building the JARVIS score (conductor/
+    // score.mjs): this PATCH intermittently 422s ("would leave the issue
+    // in_review without anyone or anything own[ing it]") then succeeds on a
+    // plain retry seconds later (reproduced manually) — a timing quirk in
+    // Paperclip's own disposition check, not a wrong payload from here (the
+    // September 15 04:52 WIB fix already stopped the OTHER 422 class: never
+    // patching in_progress->todo). Retry instead of crashing the whole head
+    // process on it; if it still fails, the comment above already landed,
+    // so leave the status alone for the next wake/tick to pick back up.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try { await api('PATCH', `/api/issues/${issue.id}`, { status: 'in_review' }); break; }
+      catch (e) {
+        if (attempt === 2) ledgerAppend({ kind: 'head.error', dept: DEPT, issue: issue.identifier, error: `in_review PATCH failed after retries: ${e.message}` });
+        else await new Promise((res) => setTimeout(res, 2000 * (attempt + 1)));
+      }
+    }
+  }
   ledgerAppend({ kind: 'head.done', dept: DEPT, issue: issue.identifier, ok: r.ok, lane: r.lane, sha: commit.sha || null, tried: r.tried });
   console.log(JSON.stringify({ ok: r.ok, issue: issue.identifier, lane: r.lane, sha: commit.sha || null }));
   return r.ok;
