@@ -120,7 +120,12 @@ function scoreLine() {
 // any failure here must never block or fail the text report.
 async function sendSpokenReport(s, hour) {
   const model = path.join(process.env.LOCALAPPDATA || path.join(ROOT, 'state'), 'AiditOS', 'piper', `${EN_PIPER_MODEL}.onnx`);
-  const text = renderSpokenReport({ waiting: Array.from({ length: s.asks || 0 }), stuck: s.blocked }, { hour });
+  // Pass the SAME status object the text report's humanStatus(s) reads, plus
+  // score on evening reports -- was previously boiled down to just two of
+  // its fields (waiting/stuck), and `done`/`budget` were never wired at all,
+  // producing near-silent reports on any day with zero pending Asks.
+  const score = hour >= 13 ? computeScore() : null;
+  const text = renderSpokenReport(s, { hour, score });
   const r = await synthesize(text, { provider: 'piper', model });
   if (!r.ok) { ledgerAppend({ kind: 'voice.report', ok: false, error: r.reason, text }); return; }
   const wavFile = r.file.replace(/\.ogg$/i, '.wav');

@@ -30,34 +30,39 @@ function greetingForHour(hour) {
 }
 
 /**
- * Render an English JARVIS spoken report (at most 8 lines).
+ * Render an English JARVIS spoken report -- a genuine spoken counterpart to
+ * telegram.mjs's humanStatus(s) text lines, not a separate thinner summary.
+ * Found live 2026-09-15: the old shape (summary.done/waiting/stuck/budget)
+ * was never fully populated by its only caller (done/budget were NEVER
+ * wired at all), so most evenings only "Stuck: N." survived -- a 2-4 second
+ * clip regardless of how much was actually happening. This version takes
+ * the same status object telegram.mjs's text report already builds
+ * (statusLines()'s return value) plus an optional score, so voice and text
+ * can never drift apart in substance again.
  *
- * @param {object} summary – digest summary from owner-surface.buildDigest
+ * @param {object} s – statusLines()'s return value (paused, boardOk, open,
+ *   inProgress, review, blocked, asks, resting, freeDiskGb)
  * @param {object} opts
- * @param {number} opts.hour – WIB hour (7 or 19)
+ * @param {number} opts.hour – WIB hour
+ * @param {{jarvis:number}} [opts.score] – computeScore()'s result, evening only
  * @returns {string}
  */
-export function renderSpokenReport(summary, { hour = 7 } = {}) {
-  const lines = [];
+export function renderSpokenReport(s, { hour = 7, score = null } = {}) {
+  const lines = [`${greetingForHour(hour)}, Sir.`];
 
-  lines.push(`${greetingForHour(hour)}, Sir.`);
-
-  if (summary?.done !== undefined) {
-    lines.push(`Done: ${numberWord(summary.done)}.`);
+  if (s?.paused) {
+    lines.push('All departments are currently paused.');
+  } else if (s?.boardOk === false) {
+    lines.push('The board is unreachable. Recovering.');
+  } else {
+    lines.push(`Open work: ${numberWord(s?.open ?? 0)}. In progress: ${numberWord(s?.inProgress ?? 0)}. In review: ${numberWord(s?.review ?? 0)}. Stuck: ${numberWord(s?.blocked ?? 0)}.`);
   }
 
-  const waiting = Array.isArray(summary?.waiting) ? summary.waiting : [];
-  if (waiting.length > 0) {
-    lines.push(`Waiting on you: ${numberWord(waiting.length)}.`);
-  }
+  lines.push(s?.asks ? `Waiting on you: ${numberWord(s.asks)}.` : 'Nothing waiting on your decision.');
 
-  if (summary?.stuck !== undefined && summary.stuck > 0) {
-    lines.push(`Stuck: ${numberWord(summary.stuck)}.`);
-  }
-
-  if (summary?.budget?.percentLeft !== undefined) {
-    lines.push(`Voice budget: ${numberWord(summary.budget.percentLeft)} percent.`);
-  }
+  if (s?.resting) { const w = numberWord(s.resting); lines.push(`${w[0].toUpperCase()}${w.slice(1)} lane${s.resting === 1 ? '' : 's'} resting.`); }
+  if (s?.freeDiskGb != null && s.freeDiskGb < 10) lines.push(`Disk space is low: ${numberWord(Math.round(s.freeDiskGb))} gigabytes left.`);
+  if (score?.jarvis !== undefined) lines.push(`JARVIS score: ${numberWord(score.jarvis)} out of one hundred.`);
 
   return lines.join('\n');
 }
