@@ -144,3 +144,28 @@ Multiple Claude Code sessions work on this repo concurrently:
 - Run `npm test && npm run typecheck` before claiming anything done.
 - Don't kill the dev server on 4100 — another session may be using it.
 - Leave handoff notes in `docs/` if you stop mid-feature.
+
+## Orchestrator session (v5.1)
+
+The `conductor/` tree (Ruflo AI-company harness — Conductor, department
+heads, model lanes, owner Telegram door) is a second system living in this
+same repo, distinct from the FounderOS app above. PRD:
+`docs/prd/PRD-AIDIT-OS-V5.1-HEMAT.md`.
+
+- Model: Sonnet. Budget: **≤150 turns/session**; hand off in
+  `docs/verification/` and ask for a new session before that.
+- Never open `state/ledger.jsonl`, PM2 logs, or a full source file "to
+  understand the system" — run `node conductor/status.mjs` first (PM2, board,
+  busy heads, lanes, asks, today's usage in ~20 lines) and
+  `graphify query "<question>" --budget 800` (graph at `graphify-out/`,
+  rebuilt with `graphify update D:/AI/aidit-os-v5`, no LLM) for anything
+  deeper. Read a file only when you're about to edit the exact part in it.
+- Test lane/head/conductor changes with `--dry` (`node conductor/head.mjs
+  --department X --dry`, `node conductor/run.mjs --once --dry`) or by calling
+  a function directly — never restart the `conductor` PM2 process to see if a
+  change works; every restart is a tick, and a tick spends a model call.
+- **Once v5.1 has passed its PRD §7 verification and Conductor is
+  unpaused, the orchestrator session stops writing code.** From then on this
+  session decides and reviews; `conductor/head.mjs` (via Codex/Hermes/Claude
+  headless lanes) is the one that edits files. Going back to writing code
+  yourself is itself a decision to flag, not a default.
