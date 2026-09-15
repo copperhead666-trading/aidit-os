@@ -100,6 +100,7 @@ export async function runOnLane(id, packet, { workspace, maxTurns, timeoutMs = 2
   try {
     if (lane.runtime === 'claude-cli') r = await runClaude(lane, packet, { workspace, maxTurns, timeoutMs });
     else if (lane.runtime === 'codex-cli') r = await runCodex(lane, packet, { workspace, timeoutMs });
+    else if (lane.runtime === 'kimi-cli') r = await runKimi(lane, packet, { workspace, timeoutMs });
     else if (lane.runtime === 'hermes-cli') {
       const limit = lanesCfg().semaphore?.[lane.pool] ?? 2;
       const delays = [5000, 15000, 45000];
@@ -112,7 +113,7 @@ export async function runOnLane(id, packet, { workspace, maxTurns, timeoutMs = 2
     else r = { ok: false, error: `runtime ${lane.runtime} not implemented` };
   } catch (e) { r = { ok: false, error: e.message }; }
   r.ms = Date.now() - started;
-  ledgerAppend({ kind: 'lane.run', lane: id, ok: r.ok, ms: r.ms, error: r.error ? String(r.error).slice(0, 200) : null, tag: packet.tag || null });
+  ledgerAppend({ kind: 'lane.run', lane: id, ok: r.ok, ms: r.ms, error: r.error ? String(r.error).slice(0, 200) : null, tag: packet.tag || null, ...(lane.runtime === 'claude-cli' ? { configDir: process.env.CLAUDE_CONFIG_DIR || '~/.claude' } : {}) });
   return r;
 }
 
@@ -122,9 +123,16 @@ function packetText(packet) {
 
 async function runClaude(lane, packet, { workspace, maxTurns, timeoutMs }) {
   const tools = packet.readOnly ? 'Read,Glob,Grep' : 'Read,Glob,Grep,Write,Edit,Bash';
-  const args = ['-p', '--model', lane.model, '--output-format', 'json', '--no-session-persistence', '--restricted', '--strict-mcp-config', '--setting-sources', 'user',
-    '--tools', tools, '--allowedTools', tools, '--permission-mode', 'dontAsk', '--settings', GUARD_SETTINGS, '--max-turns', String(maxTurns || lane.maxTurns || 40)];
+  // PRD v5.1 s6 step 6: --setting-sources "" so a headless call never inherits
+  // the interactive orchestrator's ~/.claude/settings.json (plugins, hooks,
+  // statusline) — only --settings GUARD_SETTINGS below applies.
+  const args = ['-p', '--model', lane.model, '--output-format', 'json', '--no-session-persistence', '--restricted', '--strict-mcp-config', '--setting-sources', '',
+    '--tools', tools, '--allowedTools', tools, '--permission-mode', 'dontAsk', '--settings', GUARD_SETTINGS, '--max-turns', String(maxTurns || lane.maxTurns || 20)];
   if (packet.addDirs?.length) args.push('--add-dir', ...packet.addDirs);
+  // CLAUDE_CONFIG_DIR (which account this call authenticates as) is inherited
+  // from the process env, not set per-lane here: the "conductor" PM2 process
+  // carries it in ecosystem.config.cjs, so a manual/orchestrator invocation
+  // (this env var unset) correctly falls back to ~/.claude instead.
   const r = await run(process.platform === 'win32' ? 'claude.cmd' : 'claude', args, { cwd: workspace || ROOT, timeoutMs, input: packetText(packet), env: withRtkPath() });
   let out = null; try { out = JSON.parse(r.stdout); } catch {}
   if (r.code !== 0 || !out || out.is_error) return { ok: false, error: (out?.result || r.stderr || r.stdout || `exit ${r.code}`).toString().slice(0, 400), raw: r.stdout.slice(-2000) };
@@ -142,6 +150,27 @@ async function runCodex(lane, packet, { workspace, timeoutMs }) {
   try { last = fs.readFileSync(outFile, 'utf8').trim(); fs.unlinkSync(outFile); } catch {}
   if (r.code !== 0 || !last) return { ok: false, error: ((r.stdout + '\n' + r.stderr).trim().split('\n').slice(-12).join('\n') || `exit ${r.code}`).slice(0, 400) };
   return { ok: true, summary: last };
+}
+
+// ---- Kimi Code CLI (PRD v5.1 s2b/s3/s6 step 6) ---------------------------
+// UNVERIFIED end to end: the account has had a 403 (monthly quota) since
+// 2026-09-14 with no known reset date (an owner Ask), so this has only been
+// exercised against `kimi doctor`/`--help`, never a real -p call. The
+// "dispatch" model (65536 ctx, no always_thinking) lives in the existing
+// ~/.kimi-code/config.toml under the same already-authenticated
+// managed:kimi-code provider, rather than a separate `dispatch/kimi-home`
+// dir — a fresh home's oauth-token portability could not be verified while
+// the account has no quota to test against, so reusing the working login
+// in place was the lower-risk choice. No retry (PRD: "tanpa retry"); no
+// wire.jsonl parsed for tokens yet — reparse once a real session file can be
+// inspected after reset.
+async function runKimi(lane, packet, { workspace, timeoutMs = 15 * 60000 }) {
+  const args = ['-p', packetText(packet), '--yolo', '--add-dir', workspace || ROOT];
+  if (lane.model) args.push('-m', lane.model);
+  const r = await run(process.platform === 'win32' ? 'kimi.cmd' : 'kimi', args, { cwd: workspace || ROOT, timeoutMs, env: withRtkPath() });
+  const text = (r.stdout || '').trim();
+  if (r.code !== 0 || !text) return { ok: false, error: (r.stderr || text || `exit ${r.code}`).slice(0, 400) };
+  return { ok: true, summary: text };
 }
 
 // ---- Hermes CLI (PRD v5.1 s4/s6.3) ---------------------------------------

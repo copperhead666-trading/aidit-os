@@ -35,6 +35,6 @@ export async function askClaude({ system, prompt, model = 'sonnet', schema, maxT
     error: ok ? null : (out?.result || out?.subtype || r.stderr || r.stdout || `exit ${r.code}`).toString().slice(0, 500),
     subtype: out?.subtype ?? null,
   };
-  ledgerAppend({ kind: 'claude.call', tag, model, ok, ms: result.ms, turns: result.turns, error: result.error });
+  ledgerAppend({ kind: 'claude.call', tag, model, ok, ms: result.ms, turns: result.turns, error: result.error, configDir: process.env.CLAUDE_CONFIG_DIR || '~/.claude' });
   return result;
 }

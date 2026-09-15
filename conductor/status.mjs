@@ -62,6 +62,20 @@ function pendingAsks() {
   return byId.size ? [...byId.values()].join('; ') : '(tidak ada)';
 }
 
+async function claudeAccounts() {
+  const dirs = { '~/.claude (orkestrator)': undefined, 'D:/aidit-claude-machine (mesin)': 'D:/aidit-claude-machine' };
+  const lines = [];
+  for (const [label, dir] of Object.entries(dirs)) {
+    const env = dir ? { ...process.env, CLAUDE_CONFIG_DIR: dir } : process.env;
+    const r = await run(process.platform === 'win32' ? 'claude.cmd' : 'claude', ['auth', 'status'], { env, timeoutMs: 15000 });
+    try {
+      const j = JSON.parse(r.stdout);
+      lines.push(`${label}=${j.loggedIn ? j.email : 'logged out'}`);
+    } catch { lines.push(`${label}=(gagal baca)`); }
+  }
+  return lines.join(' | ');
+}
+
 function usageToday() {
   const file = path.join(STATE, 'ledger.jsonl');
   if (!fs.existsSync(file)) return '(ledger kosong)';
@@ -88,6 +102,7 @@ function usageToday() {
 async function main() {
   const p = wibParts();
   console.log(`WIB ${p.date} ${p.time} | paused=${isPaused()}`);
+  console.log(`claude: ${await claudeAccounts()}`);
   console.log(`pm2: ${await pm2Summary()}`);
   console.log(`papan: ${await board()}`);
   console.log(`kepala sibuk: ${busyHeads()}`);
