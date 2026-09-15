@@ -53,6 +53,16 @@ async function ensureWorkspace(issue, { key, venture }) {
   if (venture) {
     // one clone per venture per department: heads never share a checkout
     const dir = path.join(WS_ROOT, venture.id, DEPT);
+    // Adversarial fix (AID-5): a stale index.lock or corrupted index from an
+    // interrupted clone makes all git operations fail silently (empty stderr)
+    // — the 2026-09-14 22:48 "clone failed: " errors were this, not dubious
+    // ownership. If .git exists but git status fails, nuke and re-clone.
+    if (fs.existsSync(path.join(dir, '.git'))) {
+      const st = await run('git', ['status', '--porcelain'], { cwd: dir, timeoutMs: 15000 });
+      if (st.code !== 0) {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    }
     if (!fs.existsSync(path.join(dir, '.git'))) {
       const src = fs.existsSync(path.join(venture.localPath, '.git')) ? venture.localPath : venture.repo;
       const r = await run('git', ['clone', '--quiet', src, dir], { timeoutMs: 10 * 60000 });

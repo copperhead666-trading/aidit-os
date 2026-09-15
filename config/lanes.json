@@ -1,6 +1,6 @@
 {
   "version": "5.1",
-  "note": "Model lanes (PRD v5.1 s2c, s3). No per-token meter anywhere. A lane is ready | resting(until) | disabled; the probe (conductor/lanes.mjs probeLanes) updates state/lanes-status.json every 15 minutes. Claude lanes are reserved for conductor-decision and review only (owner decision 2026-09-15) — heads and workers never use claude-*. Entire codex-chatgpt pool (gpt-6-astra, gpt-5.5, codex) hit a session-wide 401 Unauthorized on 2026-09-15 evening (websocket auth, not a model or quota issue) -- owner decision: revert to codex-family = orchestration fallback only (gpt-6-astra in conductor-routine), Ollama/GLM = the real head/worker coding lane until the codex-cli login is fixed. gpt-5.5 lane definition kept (unused in roles) so it's ready to re-wire once auth is confirmed fixed. kimi-k27 (Ollama) is disabled to protect the Ollama Cloud quota; kimi-k3 (Kimi Code CLI) is disabled until the monthly reset.",
+  "note": "Model lanes (PRD v5.1 s2c, s3). No per-token meter anywhere. A lane is ready | resting(until) | disabled; the probe (conductor/lanes.mjs probeLanes) updates state/lanes-status.json every 15 minutes. Claude lanes are reserved for conductor-decision and review only (owner decision 2026-09-15) — heads and workers never use claude-*. gpt-6-astra is reserved for orchestration fallback only (owner decision 2026-09-15 evening), heads/workers use gpt-5.5 for Codex-plan coding. Root cause of 2026-09-15 evening's session-wide codex-chatgpt 401: conductor/paperclip-v5 run as Windows user SYSTEM (see PM2's pm2_env.username), which has its own separate %USERPROFILE%\\.codex with no auth.json at all -- SYSTEM's codex-cli had never been logged in, unrelated to quota/rate-limit. Fixed by copying the working WIN10 user's auth.json into SYSTEM's .codex folder (verified via a one-off SYSTEM-context scheduled task: `codex exec` completed cleanly, real token usage). kimi-k27 (Ollama) is disabled to protect the Ollama Cloud quota; kimi-k3 (Kimi Code CLI) is disabled until the monthly reset.",
   "probe": { "intervalMinutes": 15, "restMinutes": 60, "retryAfterMinutes": 5 },
   "semaphore": { "ollama-cloud-glm": 2, "ollama-cloud-kimi": 2 },
   "lanes": {
@@ -19,10 +19,10 @@
     "conductor-routine": ["glm-52", "glm-51", "gpt-6-astra", "claude-sonnet"],
     "conductor-decision": ["claude-sonnet", "glm-52"],
     "review": ["claude-sonnet", "glm-52"],
-    "head-claude": ["glm-51", "kimi-k3", "glm-52"],
-    "head-other": ["glm-52", "glm-51", "kimi-k3", "kimi-k27"],
-    "worker": ["glm-51", "glm-52", "kimi-k3"],
-    "berat": ["glm-52", "glm-51", "kimi-k3"],
+    "head-claude": ["gpt-5.5", "kimi-k3", "glm-51", "codex"],
+    "head-other": ["gpt-5.5", "kimi-k3", "glm-52", "kimi-k27", "codex"],
+    "worker": ["gpt-5.5", "codex", "kimi-k3", "glm-51"],
+    "berat": ["glm-52", "glm-51", "gpt-5.5", "codex", "kimi-k3"],
     "light": ["glm-53-flash", "glm-51"]
   }
 }
