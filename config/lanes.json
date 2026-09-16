@@ -69,6 +69,7 @@
       "runtime": "codex-cli",
       "model": "gpt-5.5",
       "pool": "codex-chatgpt",
+      "timeoutMinutes": 30,
       "capabilities": [
         "decide",
         "plan",
@@ -99,6 +100,7 @@
       "runtime": "hermes-cli",
       "model": "glm-5.2:cloud",
       "pool": "ollama-cloud-glm",
+      "timeoutMinutes": 40,
       "capabilities": [
         "write",
         "plan",
@@ -112,6 +114,7 @@
       "runtime": "hermes-cli",
       "model": "glm-5.1:cloud",
       "pool": "ollama-cloud-glm",
+      "timeoutMinutes": 30,
       "capabilities": [
         "code",
         "write"
@@ -122,6 +125,7 @@
       "runtime": "hermes-cli",
       "model": "glm-5.3-flash:cloud",
       "pool": "ollama-cloud-glm",
+      "timeoutMinutes": 10,
       "capabilities": [
         "light",
         "decide"

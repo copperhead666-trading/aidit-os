@@ -15,6 +15,10 @@ import { ROOT, STATE, NODE22, lanesCfg, readJson, writeJson, run, ledgerAppend, 
 const STATUS_FILE = path.join(STATE, 'lanes-status.json');
 const GUARD_SETTINGS = path.join(ROOT, 'conductor', 'guard.settings.json');
 const OLLAMA = process.env.OLLAMA_HOST || 'http://127.0.0.1:11434';
+const LOCK_DIR = path.join(STATE, 'locks');
+const LOCK_STALE_MS = 90 * 60000;
+const LOCK_WAIT_MS = 10 * 60000;
+const LOCK_POLL_MS = 15000;
 
 // PRD v5.1 s2c: "resting sampai jam di pesan" — parse "resets at HH:MM" /
 // "try again at HH:MM" from a lane error and rest until that WIB clock time
@@ -29,12 +33,53 @@ export function parseResetTime(msg) {
   return target.toISOString();
 }
 
-const POOL_INFLIGHT = new Map(); // pool -> count, in-process semaphore
+function poolLockPath(lockDir, pool, slot) {
+  const safePool = String(pool || 'default').replace(/[^a-z0-9_.-]/gi, '_');
+  return path.join(lockDir, `pool-${safePool}-${slot}.lock`);
+}
+
+function pidAlive(pid) {
+  if (!pid || !Number.isInteger(pid) || pid === process.pid) return true;
+  try { process.kill(pid, 0); return true; }
+  catch (e) { return e.code === 'EPERM'; }
+}
+
+function staleLock(file, now = Date.now()) {
+  let lock;
+  try { lock = JSON.parse(fs.readFileSync(file, 'utf8')); }
+  catch { return true; }
+  const age = now - Date.parse(lock.at || 0);
+  return age > LOCK_STALE_MS || !pidAlive(lock.pid);
+}
+
+export async function acquirePoolSlot(pool, limit = 1, { lockDir = LOCK_DIR, waitMs = LOCK_WAIT_MS, pollMs = LOCK_POLL_MS } = {}) {
+  fs.mkdirSync(lockDir, { recursive: true });
+  const deadline = Date.now() + waitMs;
+  const slots = Math.max(1, Number(limit) || 1);
+  for (;;) {
+    for (let slot = 0; slot < slots; slot++) {
+      const file = poolLockPath(lockDir, pool, slot);
+      try {
+        const fd = fs.openSync(file, 'wx');
+        fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: new Date().toISOString(), pool, slot }) + '\n');
+        fs.closeSync(fd);
+        return { ok: true, release: () => { try { fs.unlinkSync(file); } catch {} }, file };
+      } catch (e) {
+        if (e.code !== 'EEXIST') throw e;
+        if (!staleLock(file)) continue;
+        try { fs.unlinkSync(file); } catch {}
+        slot--;
+      }
+    }
+    if (Date.now() >= deadline) return { ok: false, error: `semaphore: ${pool} busy` };
+    await sleep(Math.min(pollMs, Math.max(0, deadline - Date.now())));
+  }
+}
+
 async function withPoolSlot(pool, limit, fn) {
-  const cur = POOL_INFLIGHT.get(pool) || 0;
-  if (cur >= limit) return { ok: false, error: `semaphore: ${pool} at ${limit} concurrent already` };
-  POOL_INFLIGHT.set(pool, cur + 1);
-  try { return await fn(); } finally { POOL_INFLIGHT.set(pool, (POOL_INFLIGHT.get(pool) || 1) - 1); }
+  const slot = await acquirePoolSlot(pool, limit);
+  if (!slot.ok) return slot;
+  try { return await fn(); } finally { slot.release(); }
 }
 
 export function lanesStatus() {
@@ -97,8 +142,13 @@ export async function runOnChain(role, packet, opts = {}) {
   return { ok: false, lane: null, error: 'no lane succeeded', tried };
 }
 
-export async function runOnLane(id, packet, { workspace, maxTurns, timeoutMs = 25 * 60000 } = {}) {
+export function laneTimeoutMs(lane) {
+  return (lane?.timeoutMinutes ?? 25) * 60000;
+}
+
+export async function runOnLane(id, packet, { workspace, maxTurns, timeoutMs } = {}) {
   const lane = lanesCfg().lanes[id];
+  timeoutMs ??= laneTimeoutMs(lane);
   const started = Date.now();
   let r;
   try {
@@ -106,7 +156,7 @@ export async function runOnLane(id, packet, { workspace, maxTurns, timeoutMs = 2
     else if (lane.runtime === 'codex-cli') r = await runCodex(lane, packet, { workspace, timeoutMs });
     else if (lane.runtime === 'kimi-cli') r = await runKimi(lane, packet, { workspace, timeoutMs });
     else if (lane.runtime === 'hermes-cli') {
-      const limit = lanesCfg().semaphore?.[lane.pool] ?? 2;
+      const limit = lanesCfg().semaphore?.[lane.pool] ?? 1;
       const delays = [5000, 15000, 45000];
       for (let attempt = 0; ; attempt++) {
         r = await withPoolSlot(lane.pool, limit, () => runHermes(lane, packet, { workspace, timeoutMs }));
@@ -117,7 +167,8 @@ export async function runOnLane(id, packet, { workspace, maxTurns, timeoutMs = 2
     else r = { ok: false, error: `runtime ${lane.runtime} not implemented` };
   } catch (e) { r = { ok: false, error: e.message }; }
   r.ms = Date.now() - started;
-  ledgerAppend({ kind: 'lane.run', lane: id, ok: r.ok, ms: r.ms, error: r.error ? String(r.error).slice(0, 200) : null, tag: packet.tag || null, tokens: r.usage?.tokens ?? null, costUsd: r.usage?.costUsd ?? null, ...(lane.runtime === 'claude-cli' ? { configDir: process.env.CLAUDE_CONFIG_DIR || '~/.claude' } : {}) });
+  const timedOut = !r.ok && r.ms >= timeoutMs && /(?:timed? ?out|exit null)/i.test(String(r.error || ''));
+  ledgerAppend({ kind: 'lane.run', lane: id, ok: r.ok, ms: r.ms, error: r.error ? String(r.error).slice(0, 200) : null, timedOut, tag: packet.tag || null, tokens: r.usage?.tokens ?? null, costUsd: r.usage?.costUsd ?? null, ...(lane.runtime === 'claude-cli' ? { configDir: process.env.CLAUDE_CONFIG_DIR || '~/.claude' } : {}) });
   return r;
 }
 
@@ -193,15 +244,23 @@ let HERMES_ENTRY = null;
 async function hermesEntry() {
   if (HERMES_ENTRY) return HERMES_ENTRY;
   if (process.env.HERMES_ENTRY_JS && fs.existsSync(process.env.HERMES_ENTRY_JS)) return (HERMES_ENTRY = process.env.HERMES_ENTRY_JS);
+  const candidates = [];
+  if (process.env.HERMES_BIN) candidates.push(process.env.HERMES_BIN);
   const r = await run('where', ['hermes.cmd'], { timeoutMs: 10000 });
-  const cmdPath = r.stdout.trim().split(/\r?\n/)[0];
-  if (!cmdPath) throw new Error('hermes.cmd tidak ditemukan di PATH');
-  const entry = path.join(path.dirname(cmdPath), 'node_modules', 'hermes-agent', 'bin', 'hermes.js');
-  if (!fs.existsSync(entry)) throw new Error(`hermes entry tidak ada: ${entry}`);
-  return (HERMES_ENTRY = entry);
+  candidates.push(...r.stdout.trim().split(/\r?\n/).filter(Boolean));
+  candidates.push('D:/Development/npm-global/hermes.cmd');
+
+  const errors = [];
+  for (const cmdPath of candidates) {
+    if (!fs.existsSync(cmdPath)) { errors.push(`${cmdPath}: tidak ada`); continue; }
+    const entry = path.join(path.dirname(cmdPath), 'node_modules', 'hermes-agent', 'bin', 'hermes.js');
+    if (fs.existsSync(entry)) return (HERMES_ENTRY = entry);
+    errors.push(`${entry}: tidak ada`);
+  }
+  throw new Error(`hermes entry tidak ditemukan setelah mencoba HERMES_BIN, PATH, dan fallback: ${errors.join('; ')}`);
 }
 
-async function runHermes(lane, packet, { workspace, timeoutMs = 25 * 60000 }) {
+async function runHermes(lane, packet, { workspace, timeoutMs }) {
   const entry = await hermesEntry();
   const ws = workspace || ROOT;
   const usageFile = path.join(STATE, 'conductor', `hermes-usage-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.json`);
