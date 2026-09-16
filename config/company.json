@@ -24,6 +24,33 @@
   },
   "ventures": [
     {
+      "id": "sj1-katering",
+      "name": "Sederhana Jaya 1 - Katering ANP",
+      "repo": "E:/Business/Katering Harian ANP/Sederhana Jaya 1",
+      "localPath": "E:/Business/Katering Harian ANP/Sederhana Jaya 1",
+      "stack": "Google Sheets + Apps Script (clasp), HTML templates -> PDF, Playwright QA",
+      "staging": {
+        "branch": "main"
+      },
+      "goal": "Sistem operasional katering harian: surat jalan cetak, invoice digital, quotation, kwitansi, rekap termin Jumat, roster shift 05/11/17, absensi web app, upah harian",
+      "milestones": [
+        {
+          "date": "2026-09-16",
+          "what": "Logo + sistem desain disetujui Bapak"
+        },
+        {
+          "date": "2026-09-17",
+          "what": "Workbook + Apps Script terpasang, surat jalan & invoice pertama"
+        },
+        {
+          "date": "2026-09-18",
+          "what": "Absensi, upah harian, roster, rekap termin lulus QA"
+        }
+      ],
+      "status": "active",
+      "priority": 1
+    },
+    {
       "id": "sjs-superapps",
       "name": "SJS SuperApps",
       "repo": "https://github.com/copperhead666-trading/sjs-superapps",
@@ -56,7 +83,7 @@
           "what": "Pindah penuh bila Bapak setuju"
         }
       ],
-      "status": "active"
+      "status": "hold"
     },
     {
       "id": "caveman-trading-os",

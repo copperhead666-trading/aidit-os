@@ -17,8 +17,8 @@ const MACHINE_ENV = {
   CODEX_HOME: "D:/aidit-codex-machine",
   HERMES_HOME: "D:/aidit-hermes-machine",
   OLLAMA_HOST: "http://127.0.0.1:11434",
-  TEMP: "D:/Temp",
-  TMP: "D:/Temp",
+  TEMP: "D:\\Temp",
+  TMP: "D:\\Temp",
   PATH: [
     "D:\\aidit-node\\node-v22.14.0-win-x64",
     "D:\\Development\\npm-global",

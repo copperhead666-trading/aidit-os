@@ -78,7 +78,7 @@
         "code"
       ],
       "maxTurns": 60,
-      "dailyTasks": 30,
+      "dailyTasks": 45,
       "endpoint": "codex exec (ChatGPT plan)",
       "reason": "re-enabled 2026-09-16: the 401s were a SYSTEM-profile auth gap, not quota; CODEX_HOME=D:/aidit-codex-machine verified with a PONG"
     },

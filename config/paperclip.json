@@ -16,7 +16,8 @@
   "projects": {
     "sjs-superapps": "25fc4802-5b22-4181-887b-3b792ffaec42",
     "caveman-trading-os": "976aa2cf-8ba0-438c-a786-5c3090fa4337",
-    "internal": "6822da41-afe0-491c-82a6-a1b05c7cc10b"
+    "internal": "6822da41-afe0-491c-82a6-a1b05c7cc10b",
+    "sj1-katering": "cecb124f-a68d-4070-8f06-b6deef5eec10"
   },
   "epics": {
     "sjs-superapps": "fe2ef00c-53ec-43d8-b12d-2e982732da61",
