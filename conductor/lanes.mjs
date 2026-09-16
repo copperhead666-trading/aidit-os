@@ -267,6 +267,7 @@ async function runHermes(lane, packet, { workspace, timeoutMs }) {
   fs.mkdirSync(path.dirname(usageFile), { recursive: true });
   const args = [entry, '-z', packetText(packet), '--usage-file', usageFile, '--in', ws, '--yolo', '--no-restore-cwd'];
   if (lane.model) args.push('-m', lane.model);
+  if (lane.provider) args.push('--provider', lane.provider);
   const r = await run(NODE22, args, { cwd: ws, timeoutMs, env: { ...withRtkPath(), HERMES_ACCEPT_HOOKS: '1' } });
   let usage = null; try { usage = JSON.parse(fs.readFileSync(usageFile, 'utf8')); } catch {}
   try { fs.unlinkSync(usageFile); } catch {}

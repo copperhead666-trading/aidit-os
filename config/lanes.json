@@ -1,6 +1,6 @@
 {
   "version": "5.1",
-  "note": "Model lanes (PRD v5.1 s2c, s3). No per-token meter anywhere. A lane is ready | resting(until) | disabled; the probe (conductor/lanes.mjs probeLanes) updates state/lanes-status.json every 15 minutes. Owner decision 2026-09-15 night: Conductor's decisionModel is opus (config/company.json), NOT sonnet -- Bennett's own stack description names GLM-5.1 as his real 'Codex' (primary coding) with ChatGPT's Codex-plan as a secondary lane only, which this file now mirrors. codex-chatgpt pool (gpt-6-astra, gpt-5.5) disabled entirely: owner reports quota at 0% the evening of 2026-09-15 with cause unverified (plausible cause: 3 overlapping codex-family lanes -- gpt-6-astra, gpt-5.5, and a since-removed plain 'codex' lane -- all hammering the same shared ChatGPT-plan pool through several hours of live debugging). gpt-6-astra was already found to burn far more tokens per call than even Opus; it is not used for anything (coding or orchestration fallback) until quota is confirmed healthy and a cheaper lane genuinely needs it. Orchestrator's own fallback (when opus/sonnet are unavailable) is Hermes+Ollama GLM-5.3-flash, not Codex. kimi-k27 (Ollama) is disabled to protect the Ollama Cloud quota; kimi-k3 (Kimi Code CLI) is disabled until the monthly reset. | 2026-09-16 owner decision after GIBRAN audit: Bennett shape — GLM primary via Hermes, Codex (gpt-5.5) second lane, Claude only for decisions/review, Kimi disabled until reset, one Hermes run per pool at a time (shared HERMES_HOME session store).",
+  "note": "Model lanes (PRD v5.1 s2c, s3). No per-token meter anywhere. A lane is ready | resting(until) | disabled; the probe (conductor/lanes.mjs probeLanes) updates state/lanes-status.json every 15 minutes. Owner decision 2026-09-15 night: Conductor's decisionModel is opus (config/company.json), NOT sonnet -- Bennett's own stack description names GLM-5.1 as his real 'Codex' (primary coding) with ChatGPT's Codex-plan as a secondary lane only, which this file now mirrors. codex-chatgpt pool (gpt-6-astra, gpt-5.5) disabled entirely: owner reports quota at 0% the evening of 2026-09-15 with cause unverified (plausible cause: 3 overlapping codex-family lanes -- gpt-6-astra, gpt-5.5, and a since-removed plain 'codex' lane -- all hammering the same shared ChatGPT-plan pool through several hours of live debugging). gpt-6-astra was already found to burn far more tokens per call than even Opus; it is not used for anything (coding or orchestration fallback) until quota is confirmed healthy and a cheaper lane genuinely needs it. Orchestrator's own fallback (when opus/sonnet are unavailable) is Hermes+Ollama GLM-5.3-flash, not Codex. kimi-k27 (Ollama) is disabled to protect the Ollama Cloud quota; kimi-k3 (Kimi Code CLI) is disabled until the monthly reset. | 2026-09-16 owner decision after GIBRAN audit: Bennett shape — GLM primary via Hermes, Codex (gpt-5.5) second lane, Claude only for decisions/review, Kimi disabled until reset, one Hermes run per pool at a time (shared HERMES_HOME session store). | 2026-09-16 13:40 owner: OpenRouter added (WORKER_POOL_OPENROUTER_API_KEY, key limit $5, prepaid $10): free lanes first (strongest free models), paid fallback, Codex stays second lane, Claude = brain.",
   "probe": {
     "intervalMinutes": 15,
     "restMinutes": 60,
@@ -9,7 +9,9 @@
   "semaphore": {
     "ollama-cloud-glm": 1,
     "ollama-cloud-kimi": 1,
-    "codex-chatgpt": 1
+    "codex-chatgpt": 1,
+    "openrouter-free": 2,
+    "openrouter-paid": 2
   },
   "lanes": {
     "claude-sonnet": {
@@ -131,45 +133,204 @@
         "decide"
       ],
       "endpoint": "hermes -z (Ollama Cloud via 127.0.0.1:11434)"
+    },
+    "or-nemotron-free": {
+      "runtime": "hermes-cli",
+      "provider": "openrouter",
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "pool": "openrouter-free",
+      "capabilities": [
+        "code",
+        "write",
+        "review",
+        "plan"
+      ],
+      "maxSteps": 80,
+      "timeoutMinutes": 30,
+      "endpoint": "https://openrouter.ai/api/v1 via Hermes"
+    },
+    "or-laguna-free": {
+      "runtime": "hermes-cli",
+      "provider": "openrouter",
+      "model": "poolside/laguna-s-2.1:free",
+      "pool": "openrouter-free",
+      "capabilities": [
+        "code",
+        "write"
+      ],
+      "maxSteps": 80,
+      "timeoutMinutes": 30,
+      "endpoint": "https://openrouter.ai/api/v1 via Hermes"
+    },
+    "or-gemma-free": {
+      "runtime": "hermes-cli",
+      "provider": "openrouter",
+      "model": "google/gemma-4-31b-it:free",
+      "pool": "openrouter-free",
+      "capabilities": [
+        "write",
+        "review",
+        "plan",
+        "light"
+      ],
+      "maxSteps": 80,
+      "timeoutMinutes": 30,
+      "endpoint": "https://openrouter.ai/api/v1 via Hermes"
+    },
+    "or-glm52-free": {
+      "runtime": "hermes-cli",
+      "provider": "openrouter",
+      "model": "z-ai/glm-5.2:free",
+      "pool": "openrouter-free",
+      "capabilities": [
+        "decide",
+        "plan"
+      ],
+      "maxSteps": 80,
+      "timeoutMinutes": 30,
+      "endpoint": "https://openrouter.ai/api/v1 via Hermes",
+      "note": "32K ctx, no tools: Conductor routine/JSON only"
+    },
+    "or-deepseek-flash": {
+      "runtime": "hermes-cli",
+      "provider": "openrouter",
+      "model": "deepseek/deepseek-v4-flash",
+      "pool": "openrouter-paid",
+      "capabilities": [
+        "code",
+        "write",
+        "review",
+        "plan"
+      ],
+      "maxSteps": 80,
+      "timeoutMinutes": 30,
+      "endpoint": "https://openrouter.ai/api/v1 via Hermes",
+      "priceIn": 0.09,
+      "priceOut": 0.18
+    },
+    "or-glm53-flash": {
+      "runtime": "hermes-cli",
+      "provider": "openrouter",
+      "model": "z-ai/glm-5.3-flash",
+      "pool": "openrouter-paid",
+      "capabilities": [
+        "code",
+        "write",
+        "review",
+        "plan"
+      ],
+      "maxSteps": 80,
+      "timeoutMinutes": 30,
+      "endpoint": "https://openrouter.ai/api/v1 via Hermes",
+      "priceIn": 0.1,
+      "priceOut": 0.33
+    },
+    "or-qwen-coder": {
+      "runtime": "hermes-cli",
+      "provider": "openrouter",
+      "model": "qwen/qwen3-coder-next",
+      "pool": "openrouter-paid",
+      "capabilities": [
+        "code",
+        "review"
+      ],
+      "maxSteps": 80,
+      "timeoutMinutes": 30,
+      "endpoint": "https://openrouter.ai/api/v1 via Hermes",
+      "priceIn": 0.12,
+      "priceOut": 0.8
+    },
+    "or-kimi-k27": {
+      "runtime": "hermes-cli",
+      "provider": "openrouter",
+      "model": "moonshotai/kimi-k2.7-code",
+      "pool": "openrouter-paid",
+      "capabilities": [
+        "code",
+        "review",
+        "plan"
+      ],
+      "maxSteps": 80,
+      "timeoutMinutes": 30,
+      "endpoint": "https://openrouter.ai/api/v1 via Hermes",
+      "priceIn": 0.71,
+      "priceOut": 3.21,
+      "note": "berat saja"
     }
   },
   "roles": {
     "conductor-routine": [
+      "or-glm52-free",
       "glm-52",
       "glm-51",
       "glm-53-flash"
     ],
     "conductor-decision": [
       "claude-sonnet",
+      "or-glm52-free",
       "glm-52"
     ],
     "review": [
       "claude-sonnet",
-      "glm-52"
+      "or-nemotron-free",
+      "or-deepseek-flash"
     ],
     "head-claude": [
       "gpt-5.5",
-      "glm-52",
-      "glm-51"
+      "or-nemotron-free",
+      "or-laguna-free",
+      "or-gemma-free",
+      "or-deepseek-flash",
+      "or-glm53-flash",
+      "or-qwen-coder",
+      "glm-52"
     ],
     "head-other": [
+      "or-nemotron-free",
+      "or-laguna-free",
+      "or-gemma-free",
+      "or-deepseek-flash",
+      "or-glm53-flash",
+      "or-qwen-coder",
       "glm-52",
-      "glm-51",
-      "gpt-5.5"
+      "glm-51"
     ],
     "worker": [
       "gpt-5.5",
-      "glm-51",
-      "glm-52"
+      "or-nemotron-free",
+      "or-laguna-free",
+      "or-gemma-free",
+      "or-deepseek-flash",
+      "or-glm53-flash",
+      "or-qwen-coder",
+      "or-kimi-k27",
+      "glm-51"
     ],
     "berat": [
-      "glm-52",
-      "glm-51",
-      "gpt-5.5"
+      "or-nemotron-free",
+      "or-laguna-free",
+      "or-gemma-free",
+      "or-kimi-k27",
+      "or-deepseek-flash",
+      "or-glm53-flash",
+      "or-qwen-coder",
+      "glm-52"
     ],
     "light": [
+      "or-gemma-free",
       "glm-53-flash",
       "glm-51"
     ]
+  },
+  "pools": {
+    "openrouter-paid": {
+      "dailyUsd": 1.5,
+      "keyEnv": "WORKER_POOL_OPENROUTER_API_KEY",
+      "keyLimitUsd": 5
+    },
+    "openrouter-free": {
+      "rpm": 20,
+      "rpd": 1000
+    }
   }
 }
