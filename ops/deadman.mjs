@@ -66,7 +66,7 @@ async function sendTelegram(text) {
 }
 
 const problems = [];
-const conductorStatus = pm2Status('conductor');
+const conductorStatus = pm2Status('orkestrator');
 // Gate worker (aturan Tahap 2: bila Orkestrator mati, worker/lane berhenti
 // mengambil tugas baru): deadman menulis flag saat conductor tidak online,
 // dan lanes.mjs menolaknya dengan error "orkestrator down".
