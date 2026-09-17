@@ -282,11 +282,27 @@ export async function probeLanes() {
   const cfg = lanesCfg();
   const st = lanesStatus();
   const results = {};
+  // Probe konektivitas OpenRouter sekali saja (GET /models, gratis) untuk
+  // semua lane or-*: sebelumnya SEMUA lane hermes-cli diprobe ke Ollama
+  // 127.0.0.1:11434 sehingga lane OpenRouter ikut jatuh (temuan audit
+  // 2026-09-17 "lane or-* memanggil ollama.com").
+  let openrouterOk = null;
   // Ollama: one tiny generate per distinct model in use (cloud lanes 503 loudly).
   for (const [id, lane] of Object.entries(cfg.lanes)) {
     if (lane.status === 'disabled') { results[id] = 'disabled'; continue; }
     if (laneState(id) === 'resting') { results[id] = 'resting'; continue; }
     if (lane.runtime === 'hermes-cli') {
+      if (lane.provider === 'openrouter') {
+        if (openrouterOk === null) {
+          try {
+            const res = await fetch('https://openrouter.ai/api/v1/models', { signal: AbortSignal.timeout(30000) });
+            openrouterOk = res.ok;
+          } catch { openrouterOk = false; }
+        }
+        if (openrouterOk) { st.lanes[id] = { state: 'ready', at: new Date().toISOString() }; results[id] = 'ready'; }
+        else { markLane(id, 'resting', { reason: 'probe openrouter.ai unreachable' }); results[id] = 'resting'; }
+        continue;
+      }
       try {
         const res = await fetch(`${OLLAMA}/api/generate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: lane.model, prompt: 'ping', stream: false, options: { num_predict: 4 } }), signal: AbortSignal.timeout(60000) });
         if (res.ok) { st.lanes[id] = { state: 'ready', at: new Date().toISOString() }; results[id] = 'ready'; }

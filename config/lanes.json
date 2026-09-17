@@ -110,7 +110,9 @@
         "code",
         "decide"
       ],
-      "endpoint": "hermes -z (Ollama Cloud via 127.0.0.1:11434)"
+      "endpoint": "hermes -z (Ollama Cloud via 127.0.0.1:11434)",
+      "status": "disabled",
+      "reason": "2026-09-17: Ollama lokal mati (port 11434 tidak listen) dan owner memutuskan melepas Ollama; lane or-* OpenRouter menggantikannya"
     },
     "glm-51": {
       "runtime": "hermes-cli",
@@ -121,7 +123,9 @@
         "code",
         "write"
       ],
-      "endpoint": "hermes -z (Ollama Cloud via 127.0.0.1:11434)"
+      "endpoint": "hermes -z (Ollama Cloud via 127.0.0.1:11434)",
+      "status": "disabled",
+      "reason": "2026-09-17: Ollama lokal mati (port 11434 tidak listen) dan owner memutuskan melepas Ollama; lane or-* OpenRouter menggantikannya"
     },
     "glm-53-flash": {
       "runtime": "hermes-cli",
@@ -132,7 +136,9 @@
         "light",
         "decide"
       ],
-      "endpoint": "hermes -z (Ollama Cloud via 127.0.0.1:11434)"
+      "endpoint": "hermes -z (Ollama Cloud via 127.0.0.1:11434)",
+      "status": "disabled",
+      "reason": "2026-09-17: Ollama lokal mati (port 11434 tidak listen) dan owner memutuskan melepas Ollama; lane or-* OpenRouter menggantikannya"
     },
     "or-nemotron-free": {
       "runtime": "hermes-cli",

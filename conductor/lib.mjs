@@ -180,9 +180,19 @@ export async function resolveClaudeBin() {
   if (process.platform !== 'win32') return (CLAUDE_EXE = 'claude');
   const r = await run('where', ['claude.cmd'], { timeoutMs: 10000 });
   const cmdPath = r.stdout.trim().split(/\r?\n/)[0];
-  if (!cmdPath) throw new Error('claude.cmd tidak ditemukan di PATH');
+  // Fallback jalur absolut (audit 2026-09-17: PM2 env PATH kadang tidak
+  // memuat npm-global sehingga `where claude.cmd` kosong dan proses mati
+  // exit 1 — claude.exe ini terverifikasi ada di mesin ini).
+  const KNOWN = 'D:/Development/npm-global/node_modules/@anthropic-ai/claude-code/bin/claude.exe';
+  if (!cmdPath) {
+    if (fs.existsSync(KNOWN)) return (CLAUDE_EXE = KNOWN);
+    throw new Error('claude.cmd tidak ditemukan di PATH');
+  }
   const exe = path.join(path.dirname(cmdPath), 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe');
-  if (!fs.existsSync(exe)) throw new Error(`claude.exe tidak ada: ${exe}`);
+  if (!fs.existsSync(exe)) {
+    if (fs.existsSync(KNOWN)) return (CLAUDE_EXE = KNOWN);
+    throw new Error(`claude.exe tidak ada: ${exe}`);
+  }
   return (CLAUDE_EXE = exe);
 }
 export async function graphifyQuery(question, budget, cwd = ROOT) {

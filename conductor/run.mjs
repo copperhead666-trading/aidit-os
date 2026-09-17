@@ -284,7 +284,10 @@ ${JSON.stringify(SCHEMA)}`;
 
 async function main() {
   const co = company();
-  console.log(JSON.stringify(await tick()));
+  // Tick pertama dibungkus try/catch: sebelumnya error di tick pertama
+  // (mis. resolveClaudeBin melempar) mematikan proses dengan exit 1
+  // (bukti: pm2home/logs/conductor-error.log 2026-09-16).
+  try { console.log(JSON.stringify(await tick())); } catch (e) { ledgerAppend({ kind: 'conductor.tick', ok: false, error: e.message }); console.error(e); }
   if (ONCE) return;
   setInterval(async () => {
     try { console.log(JSON.stringify(await tick())); } catch (e) { ledgerAppend({ kind: 'conductor.tick', ok: false, error: e.message }); console.error(e); }

@@ -62,6 +62,37 @@ export async function askGlm({ system, prompt, model = 'glm-5.2:cloud', schema, 
     structured = schema ? JSON.parse(fenced ? fenced[1] : text) : null;
     ok = true;
   } catch (e) { error = e.message; }
+  // Fallback OpenRouter (keputusan owner 2026-09-17: Ollama akan dilepas,
+  // dan Ollama lokal terbukti mati — port 11434 tidak listen). Kunci dari
+  // env WORKER_POOL_OPENROUTER_API_KEY yang sudah ada; nilai tidak pernah
+  // dibaca ulang/ditampilkan. Model murah yang setara GLM: z-ai/glm-5.2:free.
+  if (!ok) {
+    const key = process.env.WORKER_POOL_OPENROUTER_API_KEY || process.env.OPEN_ROUTER_API_KEY;
+    if (key) {
+      const orModel = process.env.CONDUCTOR_ROUTINE_OPENROUTER_MODEL || 'z-ai/glm-5.2:free';
+      try {
+        const body = {
+          model: orModel,
+          messages,
+          ...(schema ? { response_format: { type: 'json_schema', json_schema: { name: 'output', schema, strict: false } } } : {}),
+        };
+        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        if (!res.ok) throw new Error(`openrouter ${res.status}: ${(await res.text()).slice(0, 200)}`);
+        const data = await res.json();
+        text = data.choices?.[0]?.message?.content ?? null;
+        const fenced = String(text || '').trim().match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+        structured = schema ? JSON.parse(fenced ? fenced[1] : text) : null;
+        ok = true;
+        model = `${orModel} (openrouter-fallback)`;
+        error = null;
+      } catch (e2) { error = `${error} | fallback openrouter: ${e2.message}`; }
+    }
+  }
   const result = { ok, model, ms: Date.now() - started, structured, text, error };
   ledgerAppend({ kind: 'glm.call', tag, model, ok, ms: result.ms, error });
   return result;
