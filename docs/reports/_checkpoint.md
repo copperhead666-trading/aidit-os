@@ -14,9 +14,23 @@ Branch: `v5` (sudah berisi merge `fix/v5-recovery` — commit `ff6672f` — + 21
   mesin: fallback Ollama mati dihapus dari config.yaml; tidak ada bentrok Telegram (Hermes tidak
   pernah pakai token Telegram). AID-72 → `done`. AID-73/74/75 dilepas dari `blocked`/lock eksekusi
   Hermes → `todo`, siap diambil dispatch normal Orkestrator (lihat `docs/reports/INSTRUKSI05_HASIL.md`).
-- [ ] Tahap 5 — Jarvis (AID-73) — **todo**, kini milik Orkestrator (bukan Hermes lagi), menunggu tick berikutnya (~21.45 WIB atau setelah `pm2 restart`)
-- [ ] Tahap 6 — Katering (AID-74) — **todo**, idem
-- [ ] Tahap 7 — Bootstrap (AID-75) — **todo**, idem
+- [x] instruksi-06 (2026-09-17 22:15 WIB, sesi interaktif) — Ollama dilepas total dari jalur tick
+  rutin (`askRoutine()`: Sonnet dulu, fallback DeepSeek; bukan cuma lane, panggilan langsung
+  `askGlm()` yang bypass gating juga diganti). Ditemukan PRD 10-layer ASLI Aidit
+  (`D:\AI\Aidit OS\PRD-AIDIT-OS-10-LAYER.md`) — beda total dari framework tebakan yang dipakai
+  `10_LAYER_AIDIT_OS.md` selama ini; disalin ke `docs/prd/legacy/`, inventaris lengkap di
+  `docs/architecture/SUMBER_LAYER_INVENTARIS.md`. Katering: 3 keputusan Aidit dicatat
+  (`docs/ventures/katering/DECISIONS.md`), AID-54/63/69/70 dijalankan ulang (gerbang dead-man
+  switch basi + Prompt Matrix ikut diperbaiki). 46 backlog dinilai ulang, 11 USANG dibatalkan
+  (kontradiksi "bukan multi-mesin"), 13 RELEVAN diprioritaskan (`docs/backlog/BACKLOG_INVENTARIS_V6.md`).
+  `config/lanes.json` dapat `activeFrom`/`activeUntil` (kimi-k3 s.d. 27 Sep, gpt-5.5 mulai 19 Sep
+  23:00 WIB). 6 pengingat Telegram terjadwal + `docs/guides/TRANSISI_AKUN_CLAUDE.md`. **Menunggu
+  Aidit: `pm2 restart orkestrator ops`** (masih EPERM dari sesi Claude Code). Lihat
+  `docs/reports/INSTRUKSI06_HASIL.md`.
+- [ ] Tahap 5 — Jarvis (AID-73) — **todo**, milik Orkestrator, belum diproses (fokus sesi ini: katering)
+- [~] Tahap 6 — Katering (AID-74) — **sedang berjalan** (AID-54/63/69/70 dispatch background saat
+  checkpoint ini ditulis) — cek `node conductor/status.mjs` baris "kepala sibuk"
+- [ ] Tahap 7 — Bootstrap (AID-75) — **todo**, belum diproses
 
 ## Status PM2 (semua online per `node conductor/status.mjs`)
 orkestrator, ops, aidit-v5, telegram, paperclip-v5, pm2-logrotate
