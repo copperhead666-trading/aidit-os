@@ -147,6 +147,11 @@ export function laneTimeoutMs(lane) {
 }
 
 export async function runOnLane(id, packet, { workspace, maxTurns, timeoutMs } = {}) {
+  // Gate dead-man switch (Tahap 2): bila Orkestrator mati, ops/deadman.mjs
+  // menulis state/orkestrator-down.flag dan worker tidak boleh mengambil
+  // tugas baru sampai Orkestrator hidup lagi.
+  const GATE = path.join(STATE, 'orkestrator-down.flag');
+  if (fs.existsSync(GATE)) return { ok: false, error: 'orkestrator down: worker gate closed (dead-man switch)', ms: 0 };
   const lane = lanesCfg().lanes[id];
   timeoutMs ??= laneTimeoutMs(lane);
   const started = Date.now();
