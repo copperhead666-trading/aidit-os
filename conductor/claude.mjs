@@ -65,32 +65,36 @@ export async function askGlm({ system, prompt, model = 'glm-5.2:cloud', schema, 
   // Fallback OpenRouter (keputusan owner 2026-09-17: Ollama akan dilepas,
   // dan Ollama lokal terbukti mati — port 11434 tidak listen). Kunci dari
   // env WORKER_POOL_OPENROUTER_API_KEY yang sudah ada; nilai tidak pernah
-  // dibaca ulang/ditampilkan. Model murah yang setara GLM: z-ai/glm-5.2:free.
+  // dibaca ulang/ditampilkan. Rantai model gratis dipisah koma: 429 di satu
+  // model langsung coba model berikutnya (tanpa retry berulang per model).
   if (!ok) {
     const key = process.env.WORKER_POOL_OPENROUTER_API_KEY || process.env.OPEN_ROUTER_API_KEY;
     if (key) {
-      const orModel = process.env.CONDUCTOR_ROUTINE_OPENROUTER_MODEL || 'z-ai/glm-5.2:free';
-      try {
-        const body = {
-          model: orModel,
-          messages,
-          ...(schema ? { response_format: { type: 'json_schema', json_schema: { name: 'output', schema, strict: false } } } : {}),
-        };
-        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-          body: JSON.stringify(body),
-          signal: AbortSignal.timeout(timeoutMs),
-        });
-        if (!res.ok) throw new Error(`openrouter ${res.status}: ${(await res.text()).slice(0, 200)}`);
-        const data = await res.json();
-        text = data.choices?.[0]?.message?.content ?? null;
-        const fenced = String(text || '').trim().match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
-        structured = schema ? JSON.parse(fenced ? fenced[1] : text) : null;
-        ok = true;
-        model = `${orModel} (openrouter-fallback)`;
-        error = null;
-      } catch (e2) { error = `${error} | fallback openrouter: ${e2.message}`; }
+      const orModels = (process.env.CONDUCTOR_ROUTINE_OPENROUTER_MODEL || 'z-ai/glm-5.2:free,deepseek/deepseek-v4-flash,nvidia/nemotron-3-ultra-550b-a55b:free,google/gemma-4-31b-it:free').split(',').map((s) => s.trim()).filter(Boolean);
+      for (const orModel of orModels) {
+        try {
+          const body = {
+            model: orModel,
+            messages,
+            ...(schema ? { response_format: { type: 'json_schema', json_schema: { name: 'output', schema, strict: false } } } : {}),
+          };
+          const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(Math.min(timeoutMs, 60000)), // per-model cap: rantai 4 model tidak boleh makan 8 menit
+          });
+          if (!res.ok) throw new Error(`openrouter ${res.status}: ${(await res.text()).slice(0, 120)}`);
+          const data = await res.json();
+          text = data.choices?.[0]?.message?.content ?? null;
+          const fenced = String(text || '').trim().match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+          structured = schema ? JSON.parse(fenced ? fenced[1] : text) : null;
+          ok = true;
+          model = `${orModel} (openrouter-fallback)`;
+          error = null;
+          break;
+        } catch (e2) { error = `${error} | fallback ${orModel}: ${e2.message}`; }
+      }
     }
   }
   const result = { ok, model, ms: Date.now() - started, structured, text, error };
