@@ -87,10 +87,23 @@ export function lanesStatus() {
   return readJson(STATUS_FILE, { updatedAt: null, lanes: {} });
 }
 
+// instruksi-06 s5: siklus hidup langganan lewat activeFrom/activeUntil (ISO
+// 8601 dengan offset eksplisit, mis. "2026-09-19T23:00:00+07:00" -- WIB).
+// Deterministik: hanya bandingkan angka waktu, tidak baca jam sistem/timezone
+// lokal proses. Lane di luar rentang dianggap disabled (bukan resting) --
+// tidak akan dicoba sama sekali, konsisten dengan cfg.status === 'disabled'.
+export function isLaneActiveByDate(cfg, now = Date.now()) {
+  const t = typeof now === 'number' ? now : now.getTime();
+  if (cfg.activeFrom && t < Date.parse(cfg.activeFrom)) return false;
+  if (cfg.activeUntil && t > Date.parse(cfg.activeUntil)) return false;
+  return true;
+}
+
 export function laneState(id) {
   const cfg = lanesCfg().lanes[id];
   if (!cfg) return 'unknown';
   if (cfg.status === 'disabled') return 'disabled';
+  if (!isLaneActiveByDate(cfg)) return 'disabled';
   const s = lanesStatus().lanes[id];
   if (s?.state === 'resting' && s.until && Date.parse(s.until) > Date.now()) return 'resting';
   // Keyed by pool, not lane id: gpt-6-astra and codex share one ChatGPT
@@ -115,11 +128,47 @@ export function chainFor(role) {
   return (cfg.roles[role] || []).filter((id) => cfg.lanes[id]);
 }
 
-const LIMIT_RE = /(429|503|502|rate ?limit|usage limit|quota|overloaded|ETIMEDOUT|timed? ?out|ECONNRESET|Not logged in|unauthorized|403)/i;
+const LIMIT_RE = /(429|401|503|502|rate ?limit|usage limit|quota|overloaded|ETIMEDOUT|timed? ?out|ECONNRESET|Not logged in|unauthorized|403)/i;
 // PRD v5.1 s2c: Ollama pool retries transient overload/connection errors
 // 3x (5s/15s/45s) on the same lane before falling through to the next one.
 const RETRY_RE = /(429|503|ECONNRESET)/i;
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
+// instruksi-02 A.2: 3x gagal 429/401 berturut-turut (tanpa jeda sukses) ->
+// lewati lane itu 60 menit. Bila provider sudah memberi jam reset eksplisit
+// (parseResetTime), langsung resting -- tidak perlu menunggu 3x karena
+// provider sudah bilang pasti gagal sampai jam itu.
+export const CIRCUIT_BREAKER_THRESHOLD = 3;
+
+export function recordLaneFailure(id, errorMsg) {
+  const resetAt = parseResetTime(errorMsg);
+  if (resetAt) {
+    markLane(id, 'resting', { reason: String(errorMsg).slice(0, 160), until: resetAt, failCount: 0 });
+    return { tripped: true, failCount: 0 };
+  }
+  const st = lanesStatus();
+  const prev = st.lanes[id] || {};
+  const failCount = (prev.failCount || 0) + 1;
+  if (failCount >= CIRCUIT_BREAKER_THRESHOLD) {
+    markLane(id, 'resting', { reason: String(errorMsg).slice(0, 160), failCount: 0 });
+    return { tripped: true, failCount: 0 };
+  }
+  st.lanes[id] = { ...prev, at: new Date().toISOString(), failCount, reason: String(errorMsg).slice(0, 160) };
+  st.updatedAt = new Date().toISOString();
+  writeJson(STATUS_FILE, st);
+  ledgerAppend({ kind: 'lane.state', lane: id, state: 'fail-cooldown-track', reason: `${failCount}/${CIRCUIT_BREAKER_THRESHOLD}` });
+  return { tripped: false, failCount };
+}
+
+export function recordLaneSuccess(id) {
+  const st = lanesStatus();
+  const prev = st.lanes[id];
+  if (prev && prev.failCount) {
+    st.lanes[id] = { ...prev, failCount: 0 };
+    st.updatedAt = new Date().toISOString();
+    writeJson(STATUS_FILE, st);
+  }
+}
 
 /** Run a packet on the first ready lane of the chain. Returns {ok, lane, summary, raw, tried}. */
 export async function runOnChain(role, packet, opts = {}) {
@@ -137,14 +186,14 @@ export async function runOnChain(role, packet, opts = {}) {
     const r = await runOnLane(id, packet, opts);
     tried.push({ lane: id, ok: r.ok, error: r.error || null, ms: r.ms });
     if (r.ok) {
+      recordLaneSuccess(id);
       const cfg = lanesCfg().lanes[id];
       const limit = cfg.dailyTasks ?? cfg.dailyCalls;
       if (limit != null) laneBudget(cfg.pool || id, limit).spend(1);
       return { ...r, lane: id, tried };
     }
     if (LIMIT_RE.test(String(r.error || ''))) {
-      const resetAt = parseResetTime(r.error);
-      markLane(id, 'resting', { reason: String(r.error).slice(0, 160), ...(resetAt ? { until: resetAt } : {}) });
+      recordLaneFailure(id, r.error);
     }
   }
   return { ok: false, lane: null, error: 'no lane succeeded', tried };

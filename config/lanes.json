@@ -51,8 +51,8 @@
       "maxTurns": 40,
       "dailyTasks": 10,
       "endpoint": "kimi CLI (Kimi Code subscription, dispatch model: 65536 ctx, no always_thinking — config.toml)",
-      "status": "disabled",
-      "reason": "403 monthly quota exhausted 2026-09-14; reset date unknown (Ask owner)"
+      "activeUntil": "2026-09-27T23:59:59+07:00",
+      "reason": "instruksi-06 2026-09-17: status disabled manual dilepas -- langganan Kimi Moderato tagihan 27 Sep, kuota tersisa boleh dipakai sampai saat itu. Peran: builder/reviewer kedua. Kesiapan nyata tetap ditentukan probeLanes() tiap 15 menit (bukan otomatis ready) -- bila kuota masih 403, probe akan resting-kan lagi."
     },
     "gpt-6-astra": {
       "runtime": "codex-cli",
@@ -82,8 +82,8 @@
       "maxTurns": 60,
       "dailyTasks": 45,
       "endpoint": "codex exec (ChatGPT plan)",
-      "status": "disabled",
-      "reason": "instruksi-04 2026-09-17 21:05 WIB: bukan 401 lagi (auth D:/aidit-codex-machine OK, dites langsung) -- codex exec sekarang balas 'You've hit your usage limit ... try again at Sep 19th, 2026 10:59 PM'. Nonaktifkan sementara sampai kuota reset (owner bisa upgrade di chatgpt.com/codex/settings/usage). Aktifkan lagi manual setelah 2026-09-19 22:59 WIB atau setelah dicek ulang."
+      "activeFrom": "2026-09-19T23:00:00+07:00",
+      "reason": "instruksi-06 2026-09-17: status disabled manual (instruksi-04, usage limit sampai Sep 19 22:59 WIB) diganti activeFrom deterministik -- lane otomatis ready mulai 19 Sep 23:00 WIB, tidak perlu diaktifkan manual lagi. Sebelum itu tetap tidak dicoba sama sekali."
     },
     "kimi-k27": {
       "runtime": "hermes-cli",
