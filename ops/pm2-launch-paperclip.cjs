@@ -12,6 +12,7 @@ const child = spawn(node, [entry, "run", "--data-dir", dataDir, "--instance", "d
   cwd: root,
   stdio: "inherit",
   env: { ...process.env },
+  windowsHide: true,
 });
 child.on("exit", (code) => process.exit(code ?? 1));
 process.on("SIGINT", () => child.kill("SIGINT"));

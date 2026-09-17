@@ -1,4 +1,4 @@
-# FOUNDER OS
+# AIDIT OS
 
 Personal OS / AI agent command center. Live web recreation of the FounderOS
 "Conducting AI" board. Runs on port **4200** (command-center owns 4000).
@@ -169,3 +169,4 @@ same repo, distinct from the FounderOS app above. PRD:
   session decides and reviews; `conductor/head.mjs` (via Codex/Hermes/Claude
   headless lanes) is the one that edits files. Going back to writing code
   yourself is itself a decision to flag, not a default.
+- **Prompt Matrix**: setiap prompt antar-agent wajib memuat 8 unsur — lihat `docs/standards/PROMPT_MATRIX.md`.

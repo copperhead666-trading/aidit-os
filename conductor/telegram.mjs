@@ -136,7 +136,7 @@ async function sendSpokenReport(s, hour) {
   let durationSec = null;
   try {
     const { execSync } = await import('node:child_process');
-    durationSec = Number(execSync(`ffprobe -v error -show_entries format=duration -of csv=p=0 "${r.file}"`, { encoding: 'utf8', timeout: 10000 }).trim());
+    durationSec = Number(execSync(`ffprobe -v error -show_entries format=duration -of csv=p=0 "${r.file}"`, { encoding: 'utf8', timeout: 10000, windowsHide: true }).trim());
   } catch {}
   try {
     const vr = await sendVoice(r.file, '', { allowTechnical: true });

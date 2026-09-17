@@ -1,4 +1,4 @@
-# FOUNDER OS — agent rules
+# AIDIT OS V5 — agent rules
 
 Full project docs live in **CLAUDE.md** (same directory) — read it first.
 This file exists so non-Claude agents (Codex, etc.) get the same house rules.
@@ -38,3 +38,4 @@ Multiple agent sessions (Claude, Codex) work this repo concurrently:
   uncommitted changes in (`git status` shows them).
 - The Playwright browser is shared across sessions — expect interference.
 - Leave handoff notes in `docs/` if you stop mid-feature.
+- Prompt antar-agent wajib 8 unsur: lihat `docs/standards/PROMPT_MATRIX.md`.

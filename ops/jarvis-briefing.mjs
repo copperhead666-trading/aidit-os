@@ -29,7 +29,7 @@ loadEnvLocal();
 
 function pm2() {
   try {
-    const out = execFileSync('pm2', ['jlist'], { encoding: 'utf8', timeout: 30000, shell: process.platform === 'win32' });
+    const out = execFileSync('pm2', ['jlist'], { encoding: 'utf8', timeout: 30000, shell: process.platform === 'win32', windowsHide: true });
     return JSON.parse(out).map((p) => ({ name: p.name, status: p.pm2_env.status }));
   } catch { return []; }
 }
@@ -38,7 +38,7 @@ function disk() {
   try {
     const out = execFileSync('powershell', ['-NoProfile', '-Command',
       "Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object { '{0} {1:N1}' -f $_.DeviceID, ($_.FreeSpace/1GB) }"],
-      { encoding: 'utf8', timeout: 30000 });
+      { encoding: 'utf8', timeout: 30000, windowsHide: true });
     return out.trim().split(/\r?\n/).filter(Boolean).join(' · ');
   } catch { return '?'; }
 }

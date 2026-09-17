@@ -29,7 +29,7 @@ function writeJson(f, v) { fs.mkdirSync(path.dirname(f), { recursive: true }); f
 
 function pm2Status(name) {
   try {
-    const out = execFileSync('pm2', ['jlist'], { encoding: 'utf8', timeout: 30000, shell: process.platform === 'win32' });
+    const out = execFileSync('pm2', ['jlist'], { encoding: 'utf8', timeout: 30000, shell: process.platform === 'win32', windowsHide: true });
     const list = JSON.parse(out);
     const app = list.find((p) => p.name === name);
     return app ? app.pm2_env.status : 'missing';
@@ -40,7 +40,7 @@ function diskFreePercent(drive) {
   try {
     const out = execFileSync('powershell', ['-NoProfile', '-Command',
       `(Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='${drive}:'").FreeSpace / (Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='${drive}:'").Size * 100`],
-      { encoding: 'utf8', timeout: 30000 });
+      { encoding: 'utf8', timeout: 30000, windowsHide: true });
     return parseFloat(out.trim());
   } catch { return null; }
 }

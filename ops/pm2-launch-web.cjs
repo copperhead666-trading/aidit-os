@@ -11,6 +11,7 @@ const child = spawn(node, [next, "start", "-p", "4200"], {
   cwd: root,
   stdio: "inherit",
   env: { ...process.env, NODE_ENV: "production" },
+  windowsHide: true,
 });
 child.on("exit", (code) => process.exit(code ?? 1));
 process.on("SIGINT", () => child.kill("SIGINT"));
