@@ -12,7 +12,7 @@ import {
   ROOT, STATE, company, paperclipCfg, loadEnvLocal, readJson, writeJson,
   ledgerAppend, ledgerTail, isPaused, opusBudget, pc, paperclipHealth, machineHealth, run, wibStamp, wibParts, graphifyQuery,
 } from './lib.mjs';
-import { askClaude, askGlm } from './claude.mjs';
+import { askClaude, askRoutine } from './claude.mjs';
 import crypto from 'node:crypto';
 import { ask, alert, listAsks } from './owner.mjs';
 import { maybeStartInterview } from './interview.mjs';
@@ -252,15 +252,16 @@ export async function tick() {
   }
   const prompt = `Waktu: ${ctx.now}\n\nKeadaan perusahaan (JSON):\n${JSON.stringify(ctx, null, 1)}\n\nPutuskan langkah 30 menit ke depan. Jawab HANYA dengan JSON persis mengikuti skema ini (tanpa prosa):
 ${JSON.stringify(SCHEMA)}`;
-  // Routine tick runs on GLM-5.2 (Ollama), not Claude (PRD v5.1 s5). Opus is
-  // reserved for a genuine hard decision, capped at 5/day (company.json's
+  // Routine tick runs on Claude Sonnet, fallback OpenRouter deepseek-v4-flash
+  // dst (Ollama dilepas owner 17 Sep 2026 -- lihat askRoutine di claude.mjs).
+  // Opus tetap reserved untuk keputusan sulit, capped 5/hari (company.json's
   // conductor.decisionModel -- owner decision 2026-09-15 night, per Bennett).
-  let res = await askGlm({ system: systemPrompt(co), prompt, model: co.conductor.routineModel, schema: SCHEMA, tag: 'conductor.routine' });
+  let res = await askRoutine({ system: systemPrompt(co), prompt, model: co.conductor.routineModel, schema: SCHEMA, tag: 'conductor.routine' });
   let modelUsed = co.conductor.routineModel;
   if (res.ok && res.structured?.needsOpus) {
     const b = opusBudget(co.conductor.opusTurnsPerDay);
     if (b.remaining > 0) {
-      const decisionRes = await askClaude({ system: systemPrompt(co), prompt: `${prompt}\n\nGLM flagged a hard decision: ${res.structured.needsOpusReason || ''}. Decide it.`, model: co.conductor.decisionModel, schema: SCHEMA, tag: 'conductor.decision' });
+      const decisionRes = await askClaude({ system: systemPrompt(co), prompt: `${prompt}\n\nSonnet flagged a hard decision: ${res.structured.needsOpusReason || ''}. Decide it.`, model: co.conductor.decisionModel, schema: SCHEMA, tag: 'conductor.decision' });
       b.spend(1);
       if (decisionRes.ok) { res = decisionRes; modelUsed = co.conductor.decisionModel; }
     }

@@ -283,7 +283,7 @@
     "id": "conductor",
     "name": "JARVIS",
     "intervalMinutes": 30,
-    "routineModel": "glm-5.2:cloud",
+    "routineModel": "sonnet",
     "decisionModel": "opus",
     "opusTurnsPerDay": 5,
     "chatHistoryTurns": 0,

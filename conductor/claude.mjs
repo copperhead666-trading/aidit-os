@@ -101,3 +101,43 @@ export async function askGlm({ system, prompt, model = 'glm-5.2:cloud', schema, 
   ledgerAppend({ kind: 'glm.call', tag, model, ok, ms: result.ms, error });
   return result;
 }
+
+// Ollama dilepas (keputusan owner 17 Sep 2026): tick rutin tidak lagi
+// memanggil Ollama sama sekali (askGlm di atas tetap ada, tidak dihapus,
+// tapi run.mjs tidak lagi memakainya sebagai jalur default). Jalur baru:
+// Claude Sonnet dulu, fallback OpenRouter (deepseek-v4-flash dst) kalau gagal.
+export async function askRoutine({ system, prompt, model = 'sonnet', schema, tag = 'conductor.routine', timeoutMs = 120000 }) {
+  const claudeRes = await askClaude({ system, prompt, model, schema, tag, timeoutMs });
+  if (claudeRes.ok) return claudeRes;
+  const messages = [];
+  if (system) messages.push({ role: 'system', content: system });
+  messages.push({ role: 'user', content: prompt });
+  let ok = false, structured = null, text = null, error = claudeRes.error, fallbackModel = model;
+  const key = process.env.WORKER_POOL_OPENROUTER_API_KEY || process.env.OPEN_ROUTER_API_KEY;
+  if (key) {
+    const orModels = (process.env.CONDUCTOR_ROUTINE_OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash,nvidia/nemotron-3-ultra-550b-a55b:free,google/gemma-4-31b-it:free').split(',').map((s) => s.trim()).filter(Boolean);
+    for (const orModel of orModels) {
+      try {
+        const body = { model: orModel, messages, ...(schema ? { response_format: { type: 'json_schema', json_schema: { name: 'output', schema, strict: false } } } : {}) };
+        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(Math.min(timeoutMs, 60000)),
+        });
+        if (!res.ok) throw new Error(`openrouter ${res.status}: ${(await res.text()).slice(0, 120)}`);
+        const data = await res.json();
+        text = data.choices?.[0]?.message?.content ?? null;
+        const fenced = String(text || '').trim().match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+        structured = schema ? JSON.parse(fenced ? fenced[1] : text) : null;
+        ok = true;
+        fallbackModel = `${orModel} (openrouter-fallback)`;
+        error = null;
+        break;
+      } catch (e2) { error = `${error} | fallback ${orModel}: ${e2.message}`; }
+    }
+  }
+  const result = { ok, model: fallbackModel, ms: claudeRes.ms, structured, text, error };
+  ledgerAppend({ kind: 'routine.call', tag, model: fallbackModel, ok, ms: result.ms, error });
+  return result;
+}

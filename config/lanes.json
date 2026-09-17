@@ -82,7 +82,8 @@
       "maxTurns": 60,
       "dailyTasks": 45,
       "endpoint": "codex exec (ChatGPT plan)",
-      "reason": "re-enabled 2026-09-16: the 401s were a SYSTEM-profile auth gap, not quota; CODEX_HOME=D:/aidit-codex-machine verified with a PONG"
+      "status": "disabled",
+      "reason": "instruksi-04 2026-09-17 21:05 WIB: bukan 401 lagi (auth D:/aidit-codex-machine OK, dites langsung) -- codex exec sekarang balas 'You've hit your usage limit ... try again at Sep 19th, 2026 10:59 PM'. Nonaktifkan sementara sampai kuota reset (owner bisa upgrade di chatgpt.com/codex/settings/usage). Aktifkan lagi manual setelah 2026-09-19 22:59 WIB atau setelah dicek ulang."
     },
     "kimi-k27": {
       "runtime": "hermes-cli",
@@ -96,7 +97,7 @@
       ],
       "endpoint": "hermes -z (Ollama Cloud via 127.0.0.1:11434)",
       "status": "disabled",
-      "reason": "owner decision 2026-09-15: kimi via Ollama off to protect Ollama Cloud quota"
+      "reason": "Ollama dilepas owner 17 Sep 2026 (kuota habis, tagihan 22 Sep); sebelumnya sudah off 15 Sep untuk jaga kuota Ollama Cloud"
     },
     "glm-52": {
       "runtime": "hermes-cli",
@@ -112,7 +113,7 @@
       ],
       "endpoint": "hermes -z (Ollama Cloud via 127.0.0.1:11434)",
       "status": "disabled",
-      "reason": "2026-09-17: Ollama lokal mati (port 11434 tidak listen) dan owner memutuskan melepas Ollama; lane or-* OpenRouter menggantikannya"
+      "reason": "Ollama dilepas owner 17 Sep 2026 (kuota habis, tagihan 22 Sep) -- port 11434 lokal juga mati; lane or-* OpenRouter menggantikannya"
     },
     "glm-51": {
       "runtime": "hermes-cli",
@@ -125,7 +126,7 @@
       ],
       "endpoint": "hermes -z (Ollama Cloud via 127.0.0.1:11434)",
       "status": "disabled",
-      "reason": "2026-09-17: Ollama lokal mati (port 11434 tidak listen) dan owner memutuskan melepas Ollama; lane or-* OpenRouter menggantikannya"
+      "reason": "Ollama dilepas owner 17 Sep 2026 (kuota habis, tagihan 22 Sep) -- port 11434 lokal juga mati; lane or-* OpenRouter menggantikannya"
     },
     "glm-53-flash": {
       "runtime": "hermes-cli",
@@ -138,7 +139,7 @@
       ],
       "endpoint": "hermes -z (Ollama Cloud via 127.0.0.1:11434)",
       "status": "disabled",
-      "reason": "2026-09-17: Ollama lokal mati (port 11434 tidak listen) dan owner memutuskan melepas Ollama; lane or-* OpenRouter menggantikannya"
+      "reason": "Ollama dilepas owner 17 Sep 2026 (kuota habis, tagihan 22 Sep) -- port 11434 lokal juga mati; lane or-* OpenRouter menggantikannya"
     },
     "or-nemotron-free": {
       "runtime": "hermes-cli",
