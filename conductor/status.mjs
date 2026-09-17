@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { STATE, ROOT, company, lanesCfg, isPaused, wibParts, readJson, run, pc } from './lib.mjs';
-import { lanesStatus } from './lanes.mjs';
+import { lanesStatus, laneState } from './lanes.mjs';
 
 const co = company();
 
@@ -40,14 +40,19 @@ function busyHeads() {
   return busy.length ? busy.join(', ') : '(tidak ada)';
 }
 
+// instruksi-06 s5: pakai laneState() (lanes.mjs) langsung, bukan logika
+// duplikat -- sebelumnya baris ini tidak tahu soal activeFrom/activeUntil
+// dan bisa menampilkan "ready" untuk lane yang sebenarnya belum/tidak aktif.
 function laneLine() {
   const cfg = lanesCfg();
   const st = lanesStatus();
   return Object.keys(cfg.lanes).map((id) => {
-    if (cfg.lanes[id].status === 'disabled') return `${id}=disabled`;
-    const s = st.lanes[id];
-    if (s?.state === 'resting' && s.until && Date.parse(s.until) > Date.now()) return `${id}=resting(${s.until.slice(11, 16)})`;
-    return `${id}=ready`;
+    const state = laneState(id);
+    if (state === 'resting') {
+      const until = st.lanes[id]?.until;
+      return until ? `${id}=resting(${until.slice(11, 16)})` : `${id}=resting`;
+    }
+    return `${id}=${state}`;
   }).join(' ');
 }
 
