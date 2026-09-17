@@ -70,7 +70,7 @@ export async function askGlm({ system, prompt, model = 'glm-5.2:cloud', schema, 
   if (!ok) {
     const key = process.env.WORKER_POOL_OPENROUTER_API_KEY || process.env.OPEN_ROUTER_API_KEY;
     if (key) {
-      const orModels = (process.env.CONDUCTOR_ROUTINE_OPENROUTER_MODEL || 'z-ai/glm-5.2:free,deepseek/deepseek-v4-flash,nvidia/nemotron-3-ultra-550b-a55b:free,google/gemma-4-31b-it:free').split(',').map((s) => s.trim()).filter(Boolean);
+      const orModels = (process.env.CONDUCTOR_ROUTINE_OPENROUTER_MODEL || 'deepseek/deepseek-v4-flash,nvidia/nemotron-3-ultra-550b-a55b:free,google/gemma-4-31b-it:free').split(',').map((s) => s.trim()).filter(Boolean);
       for (const orModel of orModels) {
         try {
           const body = {
