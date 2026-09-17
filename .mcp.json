@@ -46,7 +46,10 @@
     "canva": {
       "type": "http",
       "url": "https://mcp.canva.com/mcp"
-    },
+    }
+  },
+  "_disabledMcpServers": {
+    "_note": "Tahap 3 (2026-09-17, prompt otonom): claude-flow/ruflo dinonaktifkan — daemon tidak jalan, versi @latest tidak di-pin (garis merah 11), npx spawn berisiko membakar kuota. Untuk mengembalikan: pindahkan blok 'claude-flow' ini kembali ke 'mcpServers'. Konfigurasinya diarsipkan juga di docs/standards/MCP_RUFLO_ARCHIVE.md.",
     "claude-flow": {
       "type": "stdio",
       "command": "cmd",

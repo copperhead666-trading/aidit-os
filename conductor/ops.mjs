@@ -3,7 +3,7 @@
 // caches, and alerts the owner once per day. PM2 process "ops".
 import fs from 'node:fs';
 import path from 'node:path';
-import { ROOT, STATE, loadEnvLocal, readJson, writeJson, ledgerAppend, machineHealth, run, wibParts, graphifyUpdate } from './lib.mjs';
+import { ROOT, STATE, loadEnvLocal, readJson, writeJson, ledgerAppend, ledgerRotate, machineHealth, run, wibParts, graphifyUpdate } from './lib.mjs';
 import { probeLanes } from './lanes.mjs';
 import { alert } from './owner.mjs';
 import { maybeSelfImprove } from './self-improve.mjs';
@@ -102,6 +102,9 @@ export async function tickHermesCron() {
 }
 
 export async function tick() {
+  // Tahap 3: rotasi ledger tiap tick ops (arsip .gz, tidak menghapus data).
+  let ledgerRotated = null;
+  try { ledgerRotated = ledgerRotate(); } catch (e) { ledgerRotated = { error: e.message }; }
   const probe = await probeLanes().catch((e) => ({ error: e.message }));
   const graph = await maybeUpdateGraph().catch((e) => ({ updated: false, error: e.message }));
   const m = await machineHealth();
@@ -125,8 +128,8 @@ export async function tick() {
       alarms[today] = 'sent'; writeJson(ALARM_FILE, alarms);
     }
   }
-  ledgerAppend({ kind: 'ops.tick', machine: m, probe, graph, selfImprove, platformHealth });
-  return { machine: m, probe, low, removed: removed.length, graph, selfImprove, platformHealth };
+  ledgerAppend({ kind: 'ops.tick', machine: m, probe, graph, selfImprove, platformHealth, ledgerRotated });
+  return { machine: m, probe, low, removed: removed.length, graph, selfImprove, platformHealth, ledgerRotated };
 }
 
 if (!process.env.VITEST) {

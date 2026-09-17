@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, STATE, NODE22, lanesCfg, readJson, writeJson, run, ledgerAppend, laneBudget, wibParts, withRtkPath, resolveClaudeBin } from './lib.mjs';
+import { validatePromptMatrix } from './guard.mjs';
 
 const STATUS_FILE = path.join(STATE, 'lanes-status.json');
 const GUARD_SETTINGS = path.join(ROOT, 'conductor', 'guard.settings.json');
@@ -122,6 +123,13 @@ const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
 /** Run a packet on the first ready lane of the chain. Returns {ok, lane, summary, raw, tried}. */
 export async function runOnChain(role, packet, opts = {}) {
+  // Prompt Matrix (Tahap 3): tolak dispatch tanpa 8 unsur wajib
+  // (docs/standards/PROMPT_MATRIX.md, validator di guard.mjs).
+  const matrix = validatePromptMatrix(packetText(packet));
+  if (!matrix.ok) {
+    ledgerAppend({ kind: 'prompt-matrix.reject', role, tag: packet.tag || null, missing: matrix.missing });
+    return { ok: false, lane: null, error: `prompt-matrix: unsur hilang (${matrix.missing.join(', ')})`, tried: [] };
+  }
   const tried = [];
   for (const id of chainFor(role)) {
     const state = laneState(id);

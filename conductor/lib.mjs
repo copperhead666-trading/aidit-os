@@ -2,6 +2,7 @@
 // client, Opus budget, pause flag. Pure Node 22, no framework.
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -90,8 +91,50 @@ export function ledgerAppend(event) {
 export function ledgerTail(n = 30) {
   const file = path.join(STATE, 'ledger.jsonl');
   if (!fs.existsSync(file)) return [];
-  const lines = fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean);
+  // Tahap 3 (2026-09-17): jangan baca ledger penuh — ambil 256 KB terakhir
+  // saja (cukup untuk n entri; tiap baris << 8 KB), lalu n baris terakhir.
+  const size = fs.statSync(file).size;
+  const CHUNK = 256 * 1024;
+  let text;
+  if (size <= CHUNK) {
+    text = fs.readFileSync(file, 'utf8');
+  } else {
+    const fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(CHUNK);
+    fs.readSync(fd, buf, 0, CHUNK, size - CHUNK);
+    fs.closeSync(fd);
+    text = buf.toString('utf8');
+    const nl = text.indexOf('\n'); // buang baris pertama yang mungkin terpotong
+    if (nl >= 0) text = text.slice(nl + 1);
+  }
+  const lines = text.trim().split('\n').filter(Boolean);
   return lines.slice(-n).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+}
+
+// Rotasi ledger (Tahap 3): bila ledger.jsonl melewati maxBytes, potong
+// bagian lama ke state/ledger-<tanggal>.jsonl lalu kompres .gz (arsip,
+// bukan hapus — keputusan owner: tidak ada penghapusan).
+export function ledgerRotate(maxBytes = 5 * 1024 * 1024) {
+  const file = path.join(STATE, 'ledger.jsonl');
+  if (!fs.existsSync(file)) return null;
+  const size = fs.statSync(file).size;
+  if (size <= maxBytes) return null;
+  const keep = Math.floor(size * 0.2); // simpan 20% terbaru di file aktif
+  const fd = fs.openSync(file, 'r');
+  const old = Buffer.alloc(size - keep);
+  fs.readSync(fd, old, 0, size - keep, 0);
+  const rest = Buffer.alloc(keep);
+  fs.readSync(fd, rest, 0, keep, size - keep);
+  fs.closeSync(fd);
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  const archPlain = path.join(STATE, `ledger-${stamp}.jsonl`);
+  fs.writeFileSync(archPlain, old);
+  try {
+    fs.writeFileSync(archPlain + '.gz', zlib.gzipSync(old));
+    fs.unlinkSync(archPlain); // .gz adalah arsipnya; file mentah perantara dihapus
+  } catch { /* bila gzip gagal, .jsonl polos tetap jadi arsip */ }
+  fs.writeFileSync(file, rest);
+  return { rotatedTo: archPlain + '.gz', archivedBytes: size - keep };
 }
 
 // ---- Pause flag (Telegram /pause) ------------------------------------------

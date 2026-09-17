@@ -107,5 +107,26 @@ async function main() {
   if (reason) { console.error(`claude-guard DENIED ${name}: ${reason}`); process.exit(2); }
 }
 
+// Prompt Matrix (Tahap 3, 2026-09-17 — docs/standards/PROMPT_MATRIX.md):
+// setiap packet dispatch wajib memuat 8 unsur. Validator sederhana: cek
+// penanda per unsur di teks packet akhir (header Inggris dari packetText
+// atau label Indonesia dari template). Dipakai lanes.mjs untuk menolak
+// dispatch yang tidak lengkap.
+const PROMPT_MATRIX_MARKERS = [
+  ['peran', /# Role\b|PERAN:/i],
+  ['tujuan', /# Task\b|TUJUAN:/i],
+  ['konteks', /# Context\b|KONTEKS:/i],
+  ['batasan', /BATASAN:|Never touch credentials|Do not push/i],
+  ['langkah', /LANGKAH:|^\s*1[\).]/m],
+  ['format output', /# Output contract\b|FORMAT OUTPUT:/i],
+  ['kriteria selesai', /KRITERIA SELESAI:|exit criterion|how it was verified/i],
+  ['eskalasi', /ESKALASI:|what remains/i],
+];
+export function validatePromptMatrix(text) {
+  const t = String(text || '');
+  const missing = PROMPT_MATRIX_MARKERS.filter(([, re]) => !re.test(t)).map(([name]) => name);
+  return { ok: missing.length === 0, missing };
+}
+
 const isEntry = (() => { try { return path.resolve(process.argv[1] || '') === fileURLToPath(import.meta.url); } catch { return false; } })();
 if (isEntry) main().catch((err) => { console.error(`claude-guard: ${err && err.message}`); process.exit(2); });
