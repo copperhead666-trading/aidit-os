@@ -1,0 +1,26 @@
+model:
+  provider: openrouter
+  default: nvidia/nemotron-3-ultra-550b-a55b:free
+fallback_providers:
+  - provider: openrouter
+    model: deepseek/deepseek-v4-flash
+  - provider: openrouter
+    model: z-ai/glm-5.3-flash
+  - provider: openrouter
+    model: qwen/qwen3-coder-next
+  - provider: ollama
+    model: glm-5.1:cloud
+    base_url: http://127.0.0.1:11434/v1
+_config_version: 39
+custom_providers:
+  - name: ollama
+    base_url: http://127.0.0.1:11434/v1
+    models:
+      kimi-k2.6:cloud: {}
+      kimi-k2.7-code:cloud: {}
+      glm-5.3-flash:cloud: {}
+      glm-5.1:cloud: {}
+      glm-5.2:cloud: {}
+    models_discovered: true
+agent:
+  max_turns: 40

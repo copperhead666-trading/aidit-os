@@ -9,16 +9,11 @@
 // the root of the 401 Codex storm, "hermes.cmd not found" and "session storage
 // busy". So every app gets the SAME explicit tool homes and PATH below and
 // never depends on the OS user again. Machine homes:
-//   C:/Users/WIN10/.claude   claude (account pusatberasmurah, fresh weekly quota;
-//                            instruksi-04 2026-09-17: D:/aidit-claude-machine was
-//                            never actually logged in, so orkestrator now shares
-//                            the owner's own already-logged-in default profile
-//                            instead. Backup of the old value:
-//                            docs/reports/backups/2026-09-17/ecosystem.config.cjs.bak)
+//   D:/aidit-claude-machine  claude (account pusatberasmurah; login Thu 06:00 via ops/claude-machine.cmd)
 //   D:/aidit-codex-machine   codex  (ChatGPT plan; auth copied from the owner's ~/.codex 2026-09-16)
 //   D:/aidit-hermes-machine  hermes (GLM via Ollama + fallbacks; Nous login)
 const MACHINE_ENV = {
-  CLAUDE_CONFIG_DIR: "C:/Users/WIN10/.claude",
+  CLAUDE_CONFIG_DIR: "D:/aidit-claude-machine",
   CODEX_HOME: "D:/aidit-codex-machine",
   HERMES_HOME: "D:/aidit-hermes-machine",
   OLLAMA_HOST: "http://127.0.0.1:11434",
