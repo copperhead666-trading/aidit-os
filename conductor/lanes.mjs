@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, STATE, NODE22, lanesCfg, readJson, writeJson, run, ledgerAppend, laneBudget, wibParts, withRtkPath, resolveClaudeBin } from './lib.mjs';
+import { validatePromptMatrix } from './guard.mjs';
 
 const STATUS_FILE = path.join(STATE, 'lanes-status.json');
 const GUARD_SETTINGS = path.join(ROOT, 'conductor', 'guard.settings.json');
@@ -122,6 +123,13 @@ const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
 /** Run a packet on the first ready lane of the chain. Returns {ok, lane, summary, raw, tried}. */
 export async function runOnChain(role, packet, opts = {}) {
+  // Prompt Matrix (Tahap 3): tolak dispatch tanpa 8 unsur wajib
+  // (docs/standards/PROMPT_MATRIX.md, validator di guard.mjs).
+  const matrix = validatePromptMatrix(packetText(packet));
+  if (!matrix.ok) {
+    ledgerAppend({ kind: 'prompt-matrix.reject', role, tag: packet.tag || null, missing: matrix.missing });
+    return { ok: false, lane: null, error: `prompt-matrix: unsur hilang (${matrix.missing.join(', ')})`, tried: [] };
+  }
   const tried = [];
   for (const id of chainFor(role)) {
     const state = laneState(id);
@@ -147,6 +155,11 @@ export function laneTimeoutMs(lane) {
 }
 
 export async function runOnLane(id, packet, { workspace, maxTurns, timeoutMs } = {}) {
+  // Gate dead-man switch (Tahap 2): bila Orkestrator mati, ops/deadman.mjs
+  // menulis state/orkestrator-down.flag dan worker tidak boleh mengambil
+  // tugas baru sampai Orkestrator hidup lagi.
+  const GATE = path.join(STATE, 'orkestrator-down.flag');
+  if (fs.existsSync(GATE)) return { ok: false, error: 'orkestrator down: worker gate closed (dead-man switch)', ms: 0 };
   const lane = lanesCfg().lanes[id];
   timeoutMs ??= laneTimeoutMs(lane);
   const started = Date.now();
@@ -282,11 +295,27 @@ export async function probeLanes() {
   const cfg = lanesCfg();
   const st = lanesStatus();
   const results = {};
+  // Probe konektivitas OpenRouter sekali saja (GET /models, gratis) untuk
+  // semua lane or-*: sebelumnya SEMUA lane hermes-cli diprobe ke Ollama
+  // 127.0.0.1:11434 sehingga lane OpenRouter ikut jatuh (temuan audit
+  // 2026-09-17 "lane or-* memanggil ollama.com").
+  let openrouterOk = null;
   // Ollama: one tiny generate per distinct model in use (cloud lanes 503 loudly).
   for (const [id, lane] of Object.entries(cfg.lanes)) {
     if (lane.status === 'disabled') { results[id] = 'disabled'; continue; }
     if (laneState(id) === 'resting') { results[id] = 'resting'; continue; }
     if (lane.runtime === 'hermes-cli') {
+      if (lane.provider === 'openrouter') {
+        if (openrouterOk === null) {
+          try {
+            const res = await fetch('https://openrouter.ai/api/v1/models', { signal: AbortSignal.timeout(30000) });
+            openrouterOk = res.ok;
+          } catch { openrouterOk = false; }
+        }
+        if (openrouterOk) { st.lanes[id] = { state: 'ready', at: new Date().toISOString() }; results[id] = 'ready'; }
+        else { markLane(id, 'resting', { reason: 'probe openrouter.ai unreachable' }); results[id] = 'resting'; }
+        continue;
+      }
       try {
         const res = await fetch(`${OLLAMA}/api/generate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: lane.model, prompt: 'ping', stream: false, options: { num_predict: 4 } }), signal: AbortSignal.timeout(60000) });
         if (res.ok) { st.lanes[id] = { state: 'ready', at: new Date().toISOString() }; results[id] = 'ready'; }

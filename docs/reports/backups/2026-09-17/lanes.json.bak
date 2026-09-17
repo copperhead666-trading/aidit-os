@@ -1,6 +1,6 @@
 {
   "version": "5.1",
-  "note": "Model lanes (PRD v5.1 s2c, s3). No per-token meter anywhere. A lane is ready | resting(until) | disabled; the probe (conductor/lanes.mjs probeLanes) updates state/lanes-status.json every 15 minutes. Owner decision 2026-09-15 night: Conductor's decisionModel is opus (config/company.json), NOT sonnet -- Bennett's own stack description names GLM-5.1 as his real 'Codex' (primary coding) with ChatGPT's Codex-plan as a secondary lane only, which this file now mirrors. codex-chatgpt pool (gpt-6-astra, gpt-5.5) disabled entirely: owner reports quota at 0% the evening of 2026-09-15 with cause unverified (plausible cause: 3 overlapping codex-family lanes -- gpt-6-astra, gpt-5.5, and a since-removed plain 'codex' lane -- all hammering the same shared ChatGPT-plan pool through several hours of live debugging). gpt-6-astra was already found to burn far more tokens per call than even Opus; it is not used for anything (coding or orchestration fallback) until quota is confirmed healthy and a cheaper lane genuinely needs it. Orchestrator's own fallback (when opus/sonnet are unavailable) is Hermes+Ollama GLM-5.3-flash, not Codex. kimi-k27 (Ollama) is disabled to protect the Ollama Cloud quota; kimi-k3 (Kimi Code CLI) is disabled until the monthly reset. | 2026-09-16 owner decision after GIBRAN audit: Bennett shape — GLM primary via Hermes, Codex (gpt-5.5) second lane, Claude only for decisions/review, Kimi disabled until reset, one Hermes run per pool at a time (shared HERMES_HOME session store). | 2026-09-16 13:40 owner: OpenRouter added (WORKER_POOL_OPENROUTER_API_KEY, key limit $5, prepaid $10): free lanes first (strongest free models), paid fallback, Codex stays second lane, Claude = brain. | 2026-09-17 Tahap 3: disederhanakan jadi 4 lane aktif (claude-sonnet/opus keputusan, gpt-5.5 coding rutin, or-deepseek-flash harian, or-nemotron-free cadangan gratis). Lane lain disabled+alasan, tidak dihapus.",
+  "note": "Model lanes (PRD v5.1 s2c, s3). No per-token meter anywhere. A lane is ready | resting(until) | disabled; the probe (conductor/lanes.mjs probeLanes) updates state/lanes-status.json every 15 minutes. Owner decision 2026-09-15 night: Conductor's decisionModel is opus (config/company.json), NOT sonnet -- Bennett's own stack description names GLM-5.1 as his real 'Codex' (primary coding) with ChatGPT's Codex-plan as a secondary lane only, which this file now mirrors. codex-chatgpt pool (gpt-6-astra, gpt-5.5) disabled entirely: owner reports quota at 0% the evening of 2026-09-15 with cause unverified (plausible cause: 3 overlapping codex-family lanes -- gpt-6-astra, gpt-5.5, and a since-removed plain 'codex' lane -- all hammering the same shared ChatGPT-plan pool through several hours of live debugging). gpt-6-astra was already found to burn far more tokens per call than even Opus; it is not used for anything (coding or orchestration fallback) until quota is confirmed healthy and a cheaper lane genuinely needs it. Orchestrator's own fallback (when opus/sonnet are unavailable) is Hermes+Ollama GLM-5.3-flash, not Codex. kimi-k27 (Ollama) is disabled to protect the Ollama Cloud quota; kimi-k3 (Kimi Code CLI) is disabled until the monthly reset. | 2026-09-16 owner decision after GIBRAN audit: Bennett shape — GLM primary via Hermes, Codex (gpt-5.5) second lane, Claude only for decisions/review, Kimi disabled until reset, one Hermes run per pool at a time (shared HERMES_HOME session store). | 2026-09-16 13:40 owner: OpenRouter added (WORKER_POOL_OPENROUTER_API_KEY, key limit $5, prepaid $10): free lanes first (strongest free models), paid fallback, Codex stays second lane, Claude = brain.",
   "probe": {
     "intervalMinutes": 15,
     "restMinutes": 60,
@@ -166,9 +166,7 @@
       ],
       "maxSteps": 80,
       "timeoutMinutes": 30,
-      "endpoint": "https://openrouter.ai/api/v1 via Hermes",
-      "status": "disabled",
-      "reason": "2026-09-17 Tahap 3 (keputusan owner): disederhanakan jadi 4 lane aktif - claude-sonnet/opus (keputusan), gpt-5.5 (coding rutin), or-deepseek-flash (harian murah), or-nemotron-free (cadangan gratis stabil)"
+      "endpoint": "https://openrouter.ai/api/v1 via Hermes"
     },
     "or-gemma-free": {
       "runtime": "hermes-cli",
@@ -183,9 +181,7 @@
       ],
       "maxSteps": 80,
       "timeoutMinutes": 30,
-      "endpoint": "https://openrouter.ai/api/v1 via Hermes",
-      "status": "disabled",
-      "reason": "2026-09-17 Tahap 3 (keputusan owner): disederhanakan jadi 4 lane aktif - claude-sonnet/opus (keputusan), gpt-5.5 (coding rutin), or-deepseek-flash (harian murah), or-nemotron-free (cadangan gratis stabil)"
+      "endpoint": "https://openrouter.ai/api/v1 via Hermes"
     },
     "or-glm52-free": {
       "runtime": "hermes-cli",
@@ -199,9 +195,7 @@
       "maxSteps": 80,
       "timeoutMinutes": 30,
       "endpoint": "https://openrouter.ai/api/v1 via Hermes",
-      "note": "32K ctx, no tools: Conductor routine/JSON only",
-      "status": "disabled",
-      "reason": "2026-09-17 Tahap 3 (keputusan owner): disederhanakan jadi 4 lane aktif - claude-sonnet/opus (keputusan), gpt-5.5 (coding rutin), or-deepseek-flash (harian murah), or-nemotron-free (cadangan gratis stabil)"
+      "note": "32K ctx, no tools: Conductor routine/JSON only"
     },
     "or-deepseek-flash": {
       "runtime": "hermes-cli",
@@ -235,9 +229,7 @@
       "timeoutMinutes": 30,
       "endpoint": "https://openrouter.ai/api/v1 via Hermes",
       "priceIn": 0.1,
-      "priceOut": 0.33,
-      "status": "disabled",
-      "reason": "2026-09-17 Tahap 3 (keputusan owner): disederhanakan jadi 4 lane aktif - claude-sonnet/opus (keputusan), gpt-5.5 (coding rutin), or-deepseek-flash (harian murah), or-nemotron-free (cadangan gratis stabil)"
+      "priceOut": 0.33
     },
     "or-qwen-coder": {
       "runtime": "hermes-cli",
@@ -252,9 +244,7 @@
       "timeoutMinutes": 30,
       "endpoint": "https://openrouter.ai/api/v1 via Hermes",
       "priceIn": 0.12,
-      "priceOut": 0.8,
-      "status": "disabled",
-      "reason": "2026-09-17 Tahap 3 (keputusan owner): disederhanakan jadi 4 lane aktif - claude-sonnet/opus (keputusan), gpt-5.5 (coding rutin), or-deepseek-flash (harian murah), or-nemotron-free (cadangan gratis stabil)"
+      "priceOut": 0.8
     },
     "or-kimi-k27": {
       "runtime": "hermes-cli",
@@ -271,18 +261,20 @@
       "endpoint": "https://openrouter.ai/api/v1 via Hermes",
       "priceIn": 0.71,
       "priceOut": 3.21,
-      "note": "berat saja",
-      "status": "disabled",
-      "reason": "2026-09-17 Tahap 3 (keputusan owner): disederhanakan jadi 4 lane aktif - claude-sonnet/opus (keputusan), gpt-5.5 (coding rutin), or-deepseek-flash (harian murah), or-nemotron-free (cadangan gratis stabil)"
+      "note": "berat saja"
     }
   },
   "roles": {
     "conductor-routine": [
-      "or-nemotron-free"
+      "or-glm52-free",
+      "glm-52",
+      "glm-51",
+      "glm-53-flash"
     ],
     "conductor-decision": [
       "claude-sonnet",
-      "or-nemotron-free"
+      "or-glm52-free",
+      "glm-52"
     ],
     "review": [
       "claude-sonnet",
@@ -292,24 +284,48 @@
     "head-claude": [
       "gpt-5.5",
       "or-nemotron-free",
-      "or-deepseek-flash"
+      "or-laguna-free",
+      "or-gemma-free",
+      "or-deepseek-flash",
+      "or-glm53-flash",
+      "or-qwen-coder",
+      "glm-52"
     ],
     "head-other": [
       "or-nemotron-free",
-      "or-deepseek-flash"
+      "or-laguna-free",
+      "or-gemma-free",
+      "or-deepseek-flash",
+      "or-glm53-flash",
+      "or-qwen-coder",
+      "glm-52",
+      "glm-51"
     ],
     "worker": [
       "gpt-5.5",
       "or-nemotron-free",
-      "or-deepseek-flash"
+      "or-laguna-free",
+      "or-gemma-free",
+      "or-deepseek-flash",
+      "or-glm53-flash",
+      "or-qwen-coder",
+      "or-kimi-k27",
+      "glm-51"
     ],
     "berat": [
-      "gpt-5.5",
+      "or-nemotron-free",
+      "or-laguna-free",
+      "or-gemma-free",
+      "or-kimi-k27",
       "or-deepseek-flash",
-      "or-nemotron-free"
+      "or-glm53-flash",
+      "or-qwen-coder",
+      "glm-52"
     ],
     "light": [
-      "or-nemotron-free"
+      "or-gemma-free",
+      "glm-53-flash",
+      "glm-51"
     ]
   },
   "pools": {

@@ -38,7 +38,9 @@ module.exports = {
     { name: "aidit-v5", script: "ops/pm2-launch-web.cjs", cwd: __dirname, autorestart: true, max_restarts: 20, restart_delay: 5000, env: { ...MACHINE_ENV, NODE_ENV: "production" } },
     // paperclip-v5 spawns conductor/head.mjs (process adapter) — heads inherit MACHINE_ENV from here.
     { name: "paperclip-v5", script: "ops/pm2-launch-paperclip.cjs", cwd: __dirname, autorestart: true, max_restarts: 20, restart_delay: 5000, env: { ...MACHINE_ENV } },
-    { name: "conductor", ...node22("conductor/run.mjs"), env: { ...MACHINE_ENV } },
+    // Rename 2026-09-17 (keputusan owner): Conductor -> Orkestrator.
+    // Folder kode tetap conductor/ agar state & referensi tidak putus.
+    { name: "orkestrator", ...node22("conductor/run.mjs"), env: { ...MACHINE_ENV } },
     { name: "telegram", ...node22("conductor/telegram.mjs"), env: { ...MACHINE_ENV } },
     { name: "ops", ...node22("conductor/ops.mjs"), env: { ...MACHINE_ENV } },
   ],
