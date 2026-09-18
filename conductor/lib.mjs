@@ -80,6 +80,22 @@ export function wibParts(d = new Date()) {
 }
 export const wibStamp = (d) => { const p = wibParts(d); return `${p.date} ${p.time} WIB`; };
 
+// 2026-09-18 harness fix: "Waktu terlindungi" (docs/DECISIONS.md, keputusan
+// 2026-09-18 "Waktu terlindungi") -- diam total (tanpa broadcast/eskalasi/
+// pesan proaktif) 22.00-05.00 WIB setiap hari + Sabtu-Minggu sampai jam
+// 10.00 WIB -- sudah tercatat sebagai aturan mengikat sejak awal tapi TIDAK
+// PERNAH diimplementasikan di kode mana pun (dicek: nol referensi di
+// conductor/*.mjs sebelum ini). Ditemukan/ditutup sesi instruksi-09 tepat
+// sebelum Aidit tidur -- lihat pemakaian di conductor/owner.mjs.
+export function isProtectedHours(d = new Date()) {
+  const p = wibParts(d);
+  const weekday = new Intl.DateTimeFormat('en-US', { timeZone: WIB, weekday: 'short' }).format(d);
+  const isWeekend = weekday === 'Sat' || weekday === 'Sun';
+  if (p.hour >= 22 || p.hour < 5) return true;
+  if (isWeekend && p.hour < 10) return true;
+  return false;
+}
+
 // ---- Ledger ---------------------------------------------------------------
 export function ledgerAppend(event) {
   const file = path.join(STATE, 'ledger.jsonl');

@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, STATE, loadEnvLocal, readJson, writeJson, ledgerAppend, ledgerRotate, machineHealth, run, wibParts, graphifyUpdate } from './lib.mjs';
 import { probeLanes } from './lanes.mjs';
-import { alert } from './owner.mjs';
+import { alert, flushPendingNotifications } from './owner.mjs';
 import { maybeSelfImprove } from './self-improve.mjs';
 
 loadEnvLocal();
@@ -102,6 +102,10 @@ export async function tickHermesCron() {
 }
 
 export async function tick() {
+  // 2026-09-18: kirim ulang ask/report/alert yang ditahan pas waktu
+  // terlindungi (owner.mjs::flushPendingNotifications) -- no-op sendiri
+  // kalau masih dalam jam terlindungi.
+  const notificationsFlushed = await flushPendingNotifications().catch((e) => ({ flushed: 0, error: e.message }));
   // Tahap 3: rotasi ledger tiap tick ops (arsip .gz, tidak menghapus data).
   let ledgerRotated = null;
   try { ledgerRotated = ledgerRotate(); } catch (e) { ledgerRotated = { error: e.message }; }
@@ -128,8 +132,8 @@ export async function tick() {
       alarms[today] = 'sent'; writeJson(ALARM_FILE, alarms);
     }
   }
-  ledgerAppend({ kind: 'ops.tick', machine: m, probe, graph, selfImprove, platformHealth, ledgerRotated });
-  return { machine: m, probe, low, removed: removed.length, graph, selfImprove, platformHealth, ledgerRotated };
+  ledgerAppend({ kind: 'ops.tick', machine: m, probe, graph, selfImprove, platformHealth, ledgerRotated, notificationsFlushed });
+  return { machine: m, probe, low, removed: removed.length, graph, selfImprove, platformHealth, ledgerRotated, notificationsFlushed };
 }
 
 if (!process.env.VITEST) {
