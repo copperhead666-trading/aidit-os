@@ -159,7 +159,17 @@ async function workOne(dept) {
   if (!issue) { console.log(JSON.stringify({ dept: DEPT, idle: true })); return false; }
   const vent = ventureFor(issue);
   ledgerAppend({ kind: 'head.start', dept: DEPT, issue: issue.identifier, venture: vent.key, runId: process.env.PAPERCLIP_RUN_ID || null });
-  if (!DRY) await api('PATCH', `/api/issues/${issue.id}`, { status: 'in_progress' });
+  // 2026-09-18 harness fix: manual `--issue <id>` dispatch skips run.mjs's
+  // own assign step, so an unassigned issue's PATCH to in_progress used to
+  // 422 ("in_progress issues require an assignee") and left Paperclip stuck
+  // in a "stranded_assigned_issue" recovery state needing a hand fix every
+  // time (instruksi-09 session, AID-105/AID-102). Set the assignee in the
+  // same call when missing, same agent pickIssue()'s `mine` filter expects.
+  if (!DRY) {
+    const patch = { status: 'in_progress' };
+    if (!issue.assigneeAgentId && AGENT_ID) patch.assigneeAgentId = AGENT_ID;
+    await api('PATCH', `/api/issues/${issue.id}`, patch);
+  }
   const comments = await api('GET', `/api/issues/${issue.id}/comments`).catch(() => []);
   let ws;
   try { ws = await ensureWorkspace(issue, vent); } catch (e) {
@@ -184,11 +194,25 @@ async function workOne(dept) {
     const outDir = path.join(STATE, 'results'); fs.mkdirSync(outDir, { recursive: true });
     fs.writeFileSync(path.join(outDir, `${issue.identifier}.md`), r.summary);
   }
-  const body = r.ok
+  // 2026-09-18 harness fix: a write-type lane can exit 0 with a detailed,
+  // plausible-sounding "done" summary while touching ZERO files (found
+  // live: or-nemotron-free on AID-70 -- fabricated 269 lines of changes,
+  // specific test counts, none of it on disk anywhere). r.ok alone only
+  // means the process didn't crash; it says nothing about whether the
+  // claimed work actually happened. Treat "claimed done, nothing to
+  // commit, nothing refused" as a failure of THIS lane, not a success --
+  // same "leave disposition alone, comment honestly" pattern already used
+  // for a workspace-setup failure above, so the next wake/manual retry
+  // tries again instead of the board believing a no-op finished the task.
+  const suspiciousNoop = r.ok && !packet.readOnly && !commit.committed && !commit.refused;
+  if (suspiciousNoop) ledgerAppend({ kind: 'head.suspicious-noop', dept: DEPT, issue: issue.identifier, lane: r.lane, reason: 'lane reported ok but committed zero files' });
+  const body = suspiciousNoop
+    ? `[Kepala ${dept.name}] Lane ${r.lane} melapor selesai TAPI nol file berubah/di-commit -- kemungkinan laporan tidak sesuai kerja nyata. Tidak dipindah ke in_review, perlu dikerjakan ulang.\n\nLaporan lane (diragukan):\n${String(r.summary).slice(0, 3000)}`
+    : r.ok
     ? `[Kepala ${dept.name}] Selesai di lane ${r.lane}${commit.committed ? `, commit ${commit.sha} di ${ws.branch} (${commit.files.length} file)` : commit.refused ? ', commit DITOLAK: menyentuh berkas rahasia' : ''}.\n\n${String(r.summary).slice(0, 6000)}`
     : `[Kepala ${dept.name}] Gagal di semua lane: ${JSON.stringify(r.tried).slice(0, 800)}`;
   await api('POST', `/api/issues/${issue.id}/comments`, { body });
-  if (r.ok) {
+  if (r.ok && !suspiciousNoop) {
     // Found live 2026-09-15 while building the JARVIS score (conductor/
     // score.mjs): this PATCH intermittently 422s ("would leave the issue
     // in_review without anyone or anything own[ing it]") then succeeds on a
@@ -206,9 +230,9 @@ async function workOne(dept) {
       }
     }
   }
-  ledgerAppend({ kind: 'head.done', dept: DEPT, issue: issue.identifier, ok: r.ok, lane: r.lane, sha: commit.sha || null, tried: r.tried });
-  console.log(JSON.stringify({ ok: r.ok, issue: issue.identifier, lane: r.lane, sha: commit.sha || null }));
-  return r.ok;
+  ledgerAppend({ kind: 'head.done', dept: DEPT, issue: issue.identifier, ok: r.ok && !suspiciousNoop, lane: r.lane, sha: commit.sha || null, tried: r.tried, suspiciousNoop: suspiciousNoop || undefined });
+  console.log(JSON.stringify({ ok: r.ok && !suspiciousNoop, issue: issue.identifier, lane: r.lane, sha: commit.sha || null }));
+  return r.ok && !suspiciousNoop;
 }
 
 main().catch((e) => { ledgerAppend({ kind: 'head.error', dept: DEPT, error: e.message }); console.error(e); process.exit(1); });

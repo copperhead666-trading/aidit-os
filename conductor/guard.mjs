@@ -76,13 +76,19 @@ export function judgeFileTool(input, cwd) {
   return inside(cwd, target) ? null : `file tool may only touch the workspace: ${target}`;
 }
 
-// Tool names that write files, across both runtimes this hook now guards:
-// Claude Code (Write/Edit/MultiEdit/NotebookEdit) and Kimi Code
-// (WriteFile/EditFile/Write/Edit/StrReplace). All are judged the same way,
-// on whichever of file_path/notebook_path/path the tool_input carries.
-const FILE_TOOL_NAMES = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'WriteFile', 'EditFile', 'StrReplace']);
-// Shell tool names across both runtimes: Claude's Bash/PowerShell, Kimi's Shell.
-const SHELL_TOOL_NAMES = new Set(['Bash', 'PowerShell', 'Shell']);
+// Tool names that write files, across every runtime this hook now guards:
+// Claude Code (Write/Edit/MultiEdit/NotebookEdit), Kimi Code
+// (WriteFile/EditFile/Write/Edit/StrReplace), and Hermes CLI (write_file,
+// patch -- 2026-09-18, AID-105 follow-up: Hermes/OpenRouter lanes had ZERO
+// guard until now, found live when an unguarded Hermes lane wrote a file
+// straight into the main repo instead of its worktree during AID-102).
+// All are judged the same way, on whichever of file_path/notebook_path/path
+// the tool_input carries -- Hermes's write_file/patch already use "path",
+// so no extra mapping was needed.
+const FILE_TOOL_NAMES = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'WriteFile', 'EditFile', 'StrReplace', 'write_file', 'patch']);
+// Shell tool names across every runtime: Claude's Bash/PowerShell, Kimi's
+// Shell, Hermes's terminal (arg key is "command" on all three already).
+const SHELL_TOOL_NAMES = new Set(['Bash', 'PowerShell', 'Shell', 'terminal']);
 
 // judgeTool({ tool_name, tool_input, cwd }) -> reason string | null. The single
 // entry point main() uses, and the one dispatch/probe-agent.mjs and the

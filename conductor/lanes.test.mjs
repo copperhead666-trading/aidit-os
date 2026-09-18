@@ -8,7 +8,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { STATE, readJson, writeJson } from './lib.mjs';
-import { recordLaneFailure, recordLaneSuccess, lanesStatus, CIRCUIT_BREAKER_THRESHOLD, isLaneActiveByDate } from './lanes.mjs';
+import { recordLaneFailure, recordLaneSuccess, lanesStatus, CIRCUIT_BREAKER_THRESHOLD, isLaneActiveByDate, isUnauthorizedModel } from './lanes.mjs';
 
 const STATUS_FILE = path.join(STATE, 'lanes-status.json');
 const FAKE_LANE = '__test-only-circuit-breaker__';
@@ -91,4 +91,31 @@ test('isLaneActiveByDate: both bounds -> only active inside the window', () => {
   assert.equal(isLaneActiveByDate(cfg, Date.parse('2026-09-01T00:00:00+07:00')), false);
   assert.equal(isLaneActiveByDate(cfg, Date.parse('2026-09-20T00:00:00+07:00')), true);
   assert.equal(isLaneActiveByDate(cfg, Date.parse('2026-10-01T00:00:00+07:00')), false);
+});
+
+// 2026-09-18 incident: or-nemotron-free (free lane) got billed against
+// qwen/qwen3-coder-next (disabled, paid) -- Hermes' own config.yaml
+// fallback_providers cascaded past our lanes.json without telling us.
+const FAKE_CFG = {
+  lanes: {
+    'or-nemotron-free': { model: 'nvidia/nemotron-3-ultra-550b-a55b:free' },
+    'or-deepseek-flash': { model: 'deepseek/deepseek-v4-flash' },
+    'or-qwen-coder': { model: 'qwen/qwen3-coder-next', status: 'disabled' },
+  },
+};
+
+test('isUnauthorizedModel: same model as the lane -> authorized', () => {
+  assert.equal(isUnauthorizedModel(FAKE_CFG.lanes['or-nemotron-free'], 'nvidia/nemotron-3-ultra-550b-a55b:free', FAKE_CFG), false);
+});
+
+test('isUnauthorizedModel: a different but currently-enabled lane\'s model -> authorized', () => {
+  assert.equal(isUnauthorizedModel(FAKE_CFG.lanes['or-nemotron-free'], 'deepseek/deepseek-v4-flash', FAKE_CFG), false);
+});
+
+test('isUnauthorizedModel: a disabled lane\'s model -> unauthorized (the actual incident)', () => {
+  assert.equal(isUnauthorizedModel(FAKE_CFG.lanes['or-nemotron-free'], 'qwen/qwen3-coder-next', FAKE_CFG), true);
+});
+
+test('isUnauthorizedModel: a model that matches no lane at all -> unauthorized', () => {
+  assert.equal(isUnauthorizedModel(FAKE_CFG.lanes['or-nemotron-free'], 'anthropic/claude-9-ultra', FAKE_CFG), true);
 });

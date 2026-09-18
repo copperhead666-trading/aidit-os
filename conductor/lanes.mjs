@@ -203,6 +203,15 @@ export function laneTimeoutMs(lane) {
   return (lane?.timeoutMinutes ?? 25) * 60000;
 }
 
+// True when `actualModel` is neither the lane's own configured model nor any
+// other currently-enabled lane's model -- i.e. Hermes silently used a model
+// nobody approved (see the 2026-09-18 qwen/qwen3-coder-next incident above).
+export function isUnauthorizedModel(lane, actualModel, cfg) {
+  if (!lane || !actualModel || actualModel === lane.model) return false;
+  const allowed = new Set(Object.values(cfg.lanes).filter((l) => l.status !== 'disabled').map((l) => l.model));
+  return !allowed.has(actualModel);
+}
+
 export async function runOnLane(id, packet, { workspace, maxTurns, timeoutMs } = {}) {
   // Gate dead-man switch (Tahap 2): bila Orkestrator mati, ops/deadman.mjs
   // menulis state/orkestrator-down.flag dan worker tidak boleh mengambil
@@ -228,6 +237,21 @@ export async function runOnLane(id, packet, { workspace, maxTurns, timeoutMs } =
     }
     else r = { ok: false, error: `runtime ${lane.runtime} not implemented` };
   } catch (e) { r = { ok: false, error: e.message }; }
+  // 2026-09-18 harness fix (owner: "jangan sembarangan pakai model"): Hermes
+  // CLI's own config.yaml fallback_providers can quietly cascade to a model
+  // we never approved for this lane (found live: or-nemotron-free -- a free
+  // lane -- billed against qwen/qwen3-coder-next, a disabled paid model, and
+  // tripped the shared $5 OpenRouter key). A pruned fallback list in
+  // D:/aidit-hermes-machine/config.yaml stops the common case, but this is
+  // the deterministic backstop: if the model Hermes actually used isn't the
+  // one this lane is configured for AND isn't any other currently-enabled
+  // lane's model either, that is an unauthorized model call, full stop --
+  // rest the pool immediately (protective stop in code, not a prompt) and
+  // log it loud so it is never silently paid for again.
+  if (lane?.runtime === 'hermes-cli' && r?.usage?.model && isUnauthorizedModel(lane, r.usage.model, lanesCfg())) {
+    ledgerAppend({ kind: 'lane.model-mismatch', lane: id, expected: lane.model, actual: r.usage.model, pool: lane.pool });
+    markLane(id, 'resting', { reason: `model mismatch: expected ${lane.model}, got ${r.usage.model} (unauthorized, pool ${lane.pool} dihentikan sampai ditinjau)` });
+  }
   r.ms = Date.now() - started;
   const timedOut = !r.ok && r.ms >= timeoutMs && /(?:timed? ?out|exit null)/i.test(String(r.error || ''));
   ledgerAppend({ kind: 'lane.run', lane: id, ok: r.ok, ms: r.ms, error: r.error ? String(r.error).slice(0, 200) : null, timedOut, tag: packet.tag || null, tokens: r.usage?.tokens ?? null, costUsd: r.usage?.costUsd ?? null, ...(lane.runtime === 'claude-cli' ? { configDir: process.env.CLAUDE_CONFIG_DIR || '~/.claude' } : {}) });
@@ -322,12 +346,25 @@ async function hermesEntry() {
   throw new Error(`hermes entry tidak ditemukan setelah mencoba HERMES_BIN, PATH, dan fallback: ${errors.join('; ')}`);
 }
 
+// 2026-09-18 harness fix: Hermes enables `code_execution` (Python sandbox),
+// `browser`, and `computer_use` by default -- all three can write files or
+// control the OS WITHOUT ever calling `write_file`/`patch`/`terminal`, so
+// guard.mjs's tool-name checks never even see them. Found live: AID-108's
+// dispatch wrote straight to the main repo again despite the guard hook
+// (zero guard.deny logged) -- registration was confirmed active in
+// agent.log, so the escape was a tool the guard doesn't watch, not a
+// broken hook. `-t` restricts the toolset to what engineering dispatch
+// actually needs (run tests/build via terminal, edit files, look things
+// up, track its own todos) and excludes every guard-bypass path instead of
+// trying to sandbox arbitrary Python/browser/OS-control individually.
+const HERMES_TOOLSETS = 'terminal,file,web,memory,todo,skills';
+
 async function runHermes(lane, packet, { workspace, timeoutMs }) {
   const entry = await hermesEntry();
   const ws = workspace || ROOT;
   const usageFile = path.join(STATE, 'conductor', `hermes-usage-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.json`);
   fs.mkdirSync(path.dirname(usageFile), { recursive: true });
-  const args = [entry, '-z', packetText(packet), '--usage-file', usageFile, '--in', ws, '--yolo', '--no-restore-cwd'];
+  const args = [entry, '-z', packetText(packet), '--usage-file', usageFile, '--in', ws, '--yolo', '--no-restore-cwd', '-t', HERMES_TOOLSETS];
   if (lane.model) args.push('-m', lane.model);
   if (lane.provider) args.push('--provider', lane.provider);
   const r = await run(NODE22, args, { cwd: ws, timeoutMs, env: { ...withRtkPath(), HERMES_ACCEPT_HOOKS: '1' } });
@@ -356,10 +393,14 @@ export async function probeLanes() {
     if (lane.runtime === 'hermes-cli') {
       if (lane.provider === 'openrouter') {
         if (openrouterOk === null) {
-          try {
-            const res = await fetch('https://openrouter.ai/api/v1/models', { signal: AbortSignal.timeout(30000) });
-            openrouterOk = res.ok;
-          } catch { openrouterOk = false; }
+          // 2026-09-18: a single fetch hiccup (local network blip, seen
+          // alongside a same-minute conductor.tick "fetch failed" on every
+          // fallback) used to rest EVERY or-* lane for a full hour even
+          // though openrouter.ai answered fine seconds later -- retry once
+          // before believing it (same fix shape as pm2Status in
+          // ops/deadman.mjs, instruksi-09 session).
+          const pingOnce = async () => { try { const res = await fetch('https://openrouter.ai/api/v1/models', { signal: AbortSignal.timeout(30000) }); return res.ok; } catch { return false; } };
+          openrouterOk = (await pingOnce()) || (await pingOnce());
         }
         if (openrouterOk) { st.lanes[id] = { state: 'ready', at: new Date().toISOString() }; results[id] = 'ready'; }
         else { markLane(id, 'resting', { reason: 'probe openrouter.ai unreachable' }); results[id] = 'resting'; }

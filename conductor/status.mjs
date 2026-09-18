@@ -10,7 +10,14 @@ import { lanesStatus, laneState } from './lanes.mjs';
 const co = company();
 
 async function pm2Summary() {
-  const r = await run(process.platform === 'win32' ? 'pm2.cmd' : 'pm2', ['jlist'], { timeoutMs: 15000 });
+  // 2026-09-18 harness fix: without an explicit PM2_HOME, `pm2 jlist` can
+  // fail to reach the already-running daemon (Windows named-pipe race,
+  // worse under memory pressure) and silently spawns a brand-new detached
+  // daemon instead -- found live: ~100 orphaned `pm2/lib/Daemon.js`
+  // processes had piled up from repeated status/deadman checks, eating the
+  // RAM that then killed a real dispatch. Pinning the real home removes the
+  // ambiguity that causes that spawn.
+  const r = await run(process.platform === 'win32' ? 'pm2.cmd' : 'pm2', ['jlist'], { timeoutMs: 15000, env: { ...process.env, PM2_HOME: process.env.PM2_HOME || 'D:\\pm2home' } });
   try {
     const list = JSON.parse(r.stdout);
     return list.map((p) => `${p.name}:${p.pm2_env.status}`).join(', ');
