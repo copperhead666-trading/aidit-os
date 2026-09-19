@@ -92,14 +92,61 @@ conductor/*.test.mjs` tetap 0 gagal setelah tiap perubahan.
 - Fase 7: 13 backlog v6 (`docs/backlog/BACKLOG_INVENTARIS_V6.md`) -- belum disentuh.
 - Fase 8: Caveman riset jam-sesi + persona -- belum disentuh.
 
-## 6. Cara lanjut sesi berikutnya
+## 7. Update 2026-09-19 pagi (sesi lanjutan sebelum Aidit keluar kota)
 
-1. Baca laporan ini dulu, lalu `docs/ARCHITECTURE.md` §2 (status terbaru semua layer).
-2. `node conductor/status.mjs` -- cek gate/lane/ask masih sama atau sudah berubah.
-3. Kalau 2 ask di §2.1 sudah dijawab: lanjut fase 4 (clasp clone TSS) dan fase 3 (AID-54 QA).
-4. Kalau belum dijawab: lanjut fase 6 -- pilih satu layer skor terendah (L8 Evals atau L4 Tool),
-   buat tiket Prompt Matrix, dispatch, review independen (JANGAN percaya laporan lane tanpa cek
-   `git log`/`git status` langsung di workspace-nya -- pola ini terbukti krusial hari ini, 2x
-   fabrikasi ketemu dengan cara ini).
-5. Ingat: `or-nemotron-free` (lane gratis) punya riwayat fabrikasi berulang hari ini -- jangan
-   percaya "ok:true" begitu saja, terutama dari lane ini.
+**STATUS SISTEM SEKARANG: PAUSED.** Aidit minta stop total pagi ini (`state/pause.json`
+`paused:true`, `by: owner-request-2026-09-19-pagi`). PM2 juga kosong (nol app jalan -- entah
+kenapa mati sendiri semalam, ditemukan begini pagi ini, bukan dimatikan sengaja sebelum permintaan
+pause). **Sesi berikutnya: JANGAN nyalakan ulang / `pm2 resurrect` / `setPaused(false)` tanpa
+konfirmasi Aidit dulu** -- dia yang minta berhenti, kemungkinan karena mau pergi dan belum tentu
+mau sistem jalan sendiri tanpa pengawasan.
+
+**Fase 4 (audit TSS/Central Kitchen) TIDAK LAGI BLOCKED** -- Aidit kirim scriptId:
+`1a5L8BJQnWNyQyTK6_4IaIRzzATZWCIC9ZCV8xTIH8VJKkFzKbU4l2Spa` (spreadsheet "Buku Toko dan Central
+Kitchen", ditemukan lewat Drive API search di ASUS, diverifikasi Aidit sendiri lewat browser).
+Sudah di-clone (read-only, belum ada yang diubah) ke
+`state/workspaces/tss-central-kitchen/audit/` (gitignored, bukan bagian repo). Audit awal:
+- 4 file: `Code.js` (2881 baris, inti sistem), `Index.html` (2071 baris, UI web app), `Migrasi.js`
+  (utilitas migrasi manual, ada mode uji coba, tidak otomatis), `appsscript.json`.
+- 4 trigger waktu otomatis: `rekapHarian`, `kirimPOMalam`, `hitungRingkasLoka` (jam 20:00),
+  `cekHarianKas` (jam 07:00).
+- Web app: akses `ANYONE` (publik), jalan sebagai `USER_DEPLOYING`. `doGet()` cuma nyajiin shell
+  HTML kosong; aksi/data asli lewat fungsi server dijaga PIN (`_siapa(pin)`, `_boleh(...)`) --
+  bukan celah terbuka, tapi model keamanannya ringan (PIN doang, bukan OAuth/allowlist).
+- 3 deployment ada (1 @HEAD + 2 versi "3.0") -- belum dikonfirmasi Aidit yang mana persis dipakai
+  staf sehari-hari.
+- **Belum lanjut ke langkah berikut instruksi-09 fase 4** (bandingkan versi lama vs rencana
+  konsolidasi ARCHITECTURE.md §5) -- baru audit awal, dihentikan karena mau handoff sesi.
+
+**Akses ASUS dikonfirmasi jalan penuh** (buat sesi berikutnya kalau perlu): Tailscale ping OK
+(`asus-gray` 100.113.151.82), SSH key-based login jalan tanpa password
+(`~/.ssh/id_ed25519_asus`, user `asus`, **akun admin**). Aidit sudah pasang clasp + Antigravity di
+ASUS sendiri, login sebagai pusatberasmurah@gmail.com (sama dengan Lenovo).
+
+**MCP untuk clasp -- DIPUTUSKAN SKIP.** Dicoba 2 package: `gas-clasp-mcp` (rusak/tidak
+respons sama sekali, setahun tidak di-update) dan `@shivaduke28/google-apps-script-mcp` (perlu
+setup GCP OAuth project baru dari nol, bukan tinggal pasang). Keputusan Aidit: cukup pakai `clasp`
+CLI langsung (sudah terbukti jalan penuh buat clone+audit TSS di atas, tidak butuh MCP tambahan).
+**Jangan coba pasang MCP clasp lagi kecuali Aidit minta ulang dan sudah siap bikin GCP project.**
+
+**Ethernet Lenovo bermasalah** (di luar scope v6, dicatat biar tidak bingung lain kali): kabel LAN
+nyambung fisik (1Gbps) tapi gagal dapat IP dari DHCP (`169.254.x.x`/APIPA) -- sudah dicoba lewat
+extender TL-WA850RE (gagal) dan langsung ke router (masih gagal juga). Root cause belum ketemu
+(bukan software Windows, sudah dicoba reset adapter). Internet jalan normal lewat WiFi, tidak
+memblokir kerjaan apa pun -- cuma dicatat kalau Aidit tanya lagi nanti.
+
+## 8. Cara lanjut sesi berikutnya (diperbarui)
+
+1. Baca laporan ini dulu (semua, termasuk §7), lalu `docs/ARCHITECTURE.md` §2.
+2. **Cek `state/pause.json` dulu.** Kalau masih `paused:true`, JANGAN resume sendiri -- tanya
+   Aidit eksplisit dulu, dia yang minta stop.
+3. Setelah (kalau) di-resume: `node conductor/status.mjs` -- cek gate/lane/ask.
+4. Fase 4 (TSS/Central Kitchen) sekarang bisa lanjut lebih dalam -- scriptId + audit awal sudah
+   ada di §7, tinggal lanjut ke rencana konsolidasi ARCHITECTURE.md §5 atau tunggu arahan spesifik
+   Aidit soal script ini (belum ada instruksi "boleh ubah apa" untuk TSS, baru "audit dulu").
+5. Fase 3 (AID-54 QA) dan sisa fase 6-8: sama seperti kemarin, cek §2/§5 di atas -- ask
+   `sj1-google-wiring-2026-09-16` (Apps Script API + Gemini key) masih menahan AID-54.
+6. Ingat: `or-nemotron-free` (lane gratis) punya riwayat fabrikasi berulang -- jangan percaya
+   "ok:true" tanpa cek `git log`/`git status` langsung di workspace-nya.
+7. ASUS bisa dipakai lagi (§7) kalau Aidit nyalakan lagi dan minta lanjut setup node dispatch
+   kedua -- prompt aslinya ada di transkrip sesi 2026-09-18 (chat, bukan file tersimpan).
